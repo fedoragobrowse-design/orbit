@@ -16,7 +16,10 @@
 use crate::{ApiError, ApiState, authenticate};
 use axum::{
     Json, Router,
-    extract::{Path, Query, State, ws::{Message, WebSocket, WebSocketUpgrade}},
+    extract::{
+        Path, Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
     http::HeaderMap,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -86,7 +89,10 @@ impl NodeHub {
     /// teardown cannot evict the reconnect that replaced it.
     async fn detach(&self, node: Uuid, connection: Uuid) {
         let mut links = self.links.lock().await;
-        if links.get(&node).is_some_and(|link| link.connection_id == connection) {
+        if links
+            .get(&node)
+            .is_some_and(|link| link.connection_id == connection)
+        {
             links.remove(&node);
         }
     }
@@ -101,7 +107,10 @@ impl NodeHub {
     /// executed twice: the node journal owns idempotency, the server must not
     /// create a second effect by resending.
     async fn call(&self, node: Uuid, message_type: MessageType, payload: Value) -> Result<Value> {
-        let link = self.link(node).await.ok_or(Error::Unavailable("computer node is not connected".into()))?;
+        let link = self
+            .link(node)
+            .await
+            .ok_or(Error::Unavailable("computer node is not connected".into()))?;
         let request_id = Uuid::new_v4();
         let (reply, answer) = oneshot::channel();
         {
@@ -111,16 +120,31 @@ impl NodeHub {
             }
             pending.insert(request_id, reply);
         }
-        let envelope = Envelope { version: VERSION, request_id, node_id: node, message_type, payload };
+        let envelope = Envelope {
+            version: VERSION,
+            request_id,
+            node_id: node,
+            message_type,
+            payload,
+        };
         if envelope.payload.to_string().len() > orbit_computer_node_protocol::MAX_FRAME {
             lock_remove(&link, request_id).await;
-            return Err(Error::Validation("node request exceeds the frame bound".into()));
+            return Err(Error::Validation(
+                "node request exceeds the frame bound".into(),
+            ));
         }
         if link.sender.send(envelope).await.is_err() {
             lock_remove(&link, request_id).await;
             return Err(Error::Unavailable("computer node is not connected".into()));
         }
-        match tokio::time::timeout(REQUEST_TIMEOUT.to_std().map_err(|_| Error::Unavailable("invalid request timeout".into()))?, answer).await {
+        match tokio::time::timeout(
+            REQUEST_TIMEOUT
+                .to_std()
+                .map_err(|_| Error::Unavailable("invalid request timeout".into()))?,
+            answer,
+        )
+        .await
+        {
             Ok(Ok(value)) => node_result(value),
             Ok(Err(_)) => Err(Error::Unavailable("computer node did not answer".into())),
             Err(_) => {
@@ -138,17 +162,33 @@ async fn lock_remove(link: &Link, request_id: Uuid) {
 /// Unwrap a node response envelope payload, turning a node-reported failure
 /// into the matching server error rather than a silent empty result.
 fn node_result(payload: Value) -> Result<Value> {
+    tracing::debug!(payload = %payload, "computer node response");
     if payload["ok"].as_bool() == Some(true) {
         return Ok(payload["payload"].clone());
     }
     Err(match payload["error"].as_str().unwrap_or("UNKNOWN") {
         "FORBIDDEN" => Error::Forbidden,
         "NOT_FOUND" => Error::NotFound,
-        "VERSION_CONFLICT" => Error::Conflict("file version changed".into()),
+        // The node serializes a stale base as `FILE_VERSION_CONFLICT`; surface it
+        // as a conflict (409) rather than a generic 503 so the Files UI can
+        // offer a refresh-then-retry instead of an "unavailable" dead end.
+        "FILE_VERSION_CONFLICT" => Error::Conflict("file version changed".into()),
+        "SECURE_MUTATION_UNAVAILABLE" => Error::UnsupportedCapability,
         "OUTCOME_UNKNOWN" => Error::OutcomeUnknown,
-        "UNSUPPORTED" => Error::UnsupportedCapability,
-        "INVALID" => Error::Validation(payload["message"].as_str().unwrap_or("node rejected the request").into()),
-        _ => Error::Unavailable("computer node request failed".into()),
+        "UNSUPPORTED" | "UNSUPPORTED_CAPABILITY" => Error::UnsupportedCapability,
+        "INVALID" => Error::Validation(
+            payload["message"]
+                .as_str()
+                .unwrap_or("node rejected the request")
+                .into(),
+        ),
+        // `NODE_OFFLINE` is server-side only, but a node may echo it back on a
+        // queued request; map it to unavailable either way.
+        "NODE_OFFLINE" => Error::Unavailable("computer node is offline".into()),
+        other => Error::Unavailable(format!(
+            "computer node reported {other}: {}",
+            payload["message"].as_str().unwrap_or("no detail")
+        )),
     })
 }
 
@@ -170,11 +210,20 @@ fn new_code() -> String {
 }
 
 fn normalize_code(input: &str) -> String {
-    input.trim().to_uppercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+    input
+        .trim()
+        .to_uppercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
 }
 
 fn display_code(code: &str) -> String {
-    code.as_bytes().chunks(5).map(|chunk| String::from_utf8_lossy(chunk).into_owned()).collect::<Vec<_>>().join("-")
+    code.as_bytes()
+        .chunks(5)
+        .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 fn code_hash(code: &str) -> String {
@@ -182,7 +231,9 @@ fn code_hash(code: &str) -> String {
 }
 
 fn verify_key(key: &str) -> Result<()> {
-    let raw = STANDARD.decode(key).map_err(|_| Error::Validation("identity key must be base64".into()))?;
+    let raw = STANDARD
+        .decode(key)
+        .map_err(|_| Error::Validation("identity key must be base64".into()))?;
     if raw.len() != 32 {
         return Err(Error::Validation("identity key must be 32 bytes".into()));
     }
@@ -206,10 +257,12 @@ pub async fn create_pairing_code(
     let id = Uuid::new_v4();
     let mut tx = state.pool.begin().await?;
     // Only the newest code is live: pairing is a deliberate, present-tense act.
-    sqlx::query("UPDATE computer_pairing_codes SET used_at=now() WHERE owner_id=$1 AND used_at IS NULL")
-        .bind(a.scope.owner_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE computer_pairing_codes SET used_at=now() WHERE owner_id=$1 AND used_at IS NULL",
+    )
+    .bind(a.scope.owner_id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("INSERT INTO computer_pairing_codes(id,owner_id,code_hash,expires_at) VALUES($1,$2,$3,now()+make_interval(secs => $4::int))")
         .bind(id)
         .bind(a.scope.owner_id)
@@ -229,7 +282,9 @@ pub async fn create_pairing_code(
     )
     .await?;
     tx.commit().await?;
-    Ok(Json(json!({"id": id, "code": display_code(&code), "expires_in_seconds": CODE_TTL.num_seconds()})))
+    Ok(Json(
+        json!({"id": id, "code": display_code(&code), "expires_in_seconds": CODE_TTL.num_seconds()}),
+    ))
 }
 
 /// Pairing is authenticated by the one-use code alone, over verified TLS. It
@@ -250,11 +305,12 @@ pub async fn pair(
     let session = random_token();
     let session_hash = orbit_computer_node_protocol::sha256(session.as_bytes());
     let mut tx = state.pool.begin().await?;
-    let code = sqlx::query("SELECT owner_id FROM computer_pairing_codes WHERE code_hash=$1 FOR UPDATE")
-        .bind(code_hash(&normalized))
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(Error::Forbidden)?;
+    let code =
+        sqlx::query("SELECT owner_id FROM computer_pairing_codes WHERE code_hash=$1 FOR UPDATE")
+            .bind(code_hash(&normalized))
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(Error::Forbidden)?;
     let owner_id: Uuid = code.get("owner_id");
     let spent = sqlx::query("UPDATE computer_pairing_codes SET used_at=now() WHERE owner_id=$1 AND used_at IS NULL AND expires_at>now()")
         .bind(owner_id)
@@ -281,7 +337,10 @@ pub async fn pair(
     // The principal and node rows must be visible before the pairing event and its
     // audit record reference them, so the identity commit happens first.
     tx.commit().await?;
-    let scope = OwnerScope { owner_id, principal_id: principal };
+    let scope = OwnerScope {
+        owner_id,
+        principal_id: principal,
+    };
     let event = Event {
         id: Uuid::new_v4(),
         owner_id,
@@ -296,7 +355,11 @@ pub async fn pair(
         related_entities: vec![],
         source_event_key: format!("computer:{node_id}:paired"),
     };
-    let event_id = PostgresEventBus { pool: state.pool.clone() }.publish(&scope, event).await?;
+    let event_id = PostgresEventBus {
+        pool: state.pool.clone(),
+    }
+    .publish(&scope, event)
+    .await?;
     let mut audit_tx = state.pool.begin().await?;
     orbit_audit::append(
         &mut audit_tx,
@@ -418,7 +481,9 @@ pub async fn list_roots(
 ) -> Result<Json<Value>, ApiError> {
     let a = authenticate(&state, &headers, false).await?;
     node_row(&state.pool, a.scope.owner_id, id).await?;
-    Ok(Json(json!({ "items": roots_of(&state.pool, a.scope.owner_id, id).await? })))
+    Ok(Json(
+        json!({ "items": roots_of(&state.pool, a.scope.owner_id, id).await? }),
+    ))
 }
 
 /// Revoking a node kills its session credential and its reported roots at once.
@@ -466,6 +531,69 @@ pub async fn revoke_node(
     Ok(Json(json!({ "id": id, "revoked": true })))
 }
 
+/// Rotate a node's session credential without re-pairing. The old credential
+/// stops working at once; the node must use the returned value from then on.
+#[utoipa::path(post, path = "/api/v1/computers/{id}/sessions/renew", responses((status = 200, body = Value)))]
+pub async fn renew_session(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, true).await?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE")
+        .bind(a.scope.owner_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let row = node_row(&state.pool, a.scope.owner_id, id).await?;
+    if row.get::<Option<DateTime<Utc>>, _>("revoked_at").is_some() {
+        return Err(Error::Conflict("computer node is revoked".into()).into());
+    }
+    let session = random_token();
+    let digest = orbit_computer_node_protocol::sha256(session.as_bytes());
+    sqlx::query("UPDATE computer_nodes SET session_hash=$3,revision=revision+1,last_seen=now() WHERE owner_id=$1 AND id=$2")
+        .bind(a.scope.owner_id)
+        .bind(id)
+        .bind(digest)
+        .execute(&mut *tx)
+        .await?;
+    orbit_audit::append(
+        &mut tx,
+        &a.scope,
+        Uuid::new_v4(),
+        None,
+        None,
+        "COMPUTER_SESSION_RENEWED",
+        "owner rotated a computer node session credential",
+        json!({ "node_id": id }),
+    )
+    .await?;
+    tx.commit().await?;
+    state.nodes.detach(id, Uuid::nil()).await;
+    Ok(Json(json!({ "id": id, "session": session })))
+}
+
+/// Drop the live socket without revoking the node. The credential survives;
+/// the node simply reconnects, and reads report `NODE_OFFLINE` meanwhile.
+#[utoipa::path(post, path = "/api/v1/computers/{id}/sessions/revoke", responses((status = 200, body = Value)))]
+pub async fn revoke_session(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, true).await?;
+    let row = node_row(&state.pool, a.scope.owner_id, id).await?;
+    if row.get::<Option<DateTime<Utc>>, _>("revoked_at").is_some() {
+        return Err(Error::Conflict("computer node is revoked".into()).into());
+    }
+    sqlx::query("UPDATE computer_nodes SET connection_id=NULL WHERE owner_id=$1 AND id=$2")
+        .bind(a.scope.owner_id)
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+    state.nodes.detach(id, Uuid::nil()).await;
+    Ok(Json(json!({ "id": id, "disconnected": true })))
+}
 /// A server-initiated root reduction. The server can only revoke or narrow what
 /// the node already reported; it can never create or broaden a grant.
 #[utoipa::path(post, path = "/api/v1/computers/{id}/roots/{root_id}/revoke", responses((status = 200, body = Value)))]
@@ -502,7 +630,9 @@ pub async fn revoke_root(
     .await?;
     tx.commit().await?;
     drop_roots(&state, id, root_id, "ROOT_REVOKED").await;
-    Ok(Json(json!({ "node_id": id, "root_id": root_id, "revoked": true, "revision": revision })))
+    Ok(Json(
+        json!({ "node_id": id, "root_id": root_id, "revoked": true, "revision": revision }),
+    ))
 }
 
 #[utoipa::path(delete, path = "/api/v1/computers/{id}", responses((status = 204, description = "Removed")))]
@@ -554,7 +684,16 @@ pub async fn remove_node(
 async fn drop_roots(state: &ApiState, node: Uuid, root_id: Uuid, reason: &str) {
     if let Some(link) = state.nodes.link(node).await {
         let payload = json!({ "node_id": node, "root_id": root_id, "reason": reason });
-        let _ = link.sender.send(Envelope { version: VERSION, request_id: Uuid::new_v4(), node_id: node, message_type: MessageType::Revoke, payload }).await;
+        let _ = link
+            .sender
+            .send(Envelope {
+                version: VERSION,
+                request_id: Uuid::new_v4(),
+                node_id: node,
+                message_type: MessageType::Revoke,
+                payload,
+            })
+            .await;
     }
 }
 
@@ -569,7 +708,11 @@ struct Registered {
 }
 
 async fn read_envelope(socket: &mut WebSocket, node: Uuid) -> Result<Envelope> {
-    let incoming = socket.next().await.ok_or(Error::Forbidden)?.map_err(|_| Error::Forbidden)?;
+    let incoming = socket
+        .next()
+        .await
+        .ok_or(Error::Forbidden)?
+        .map_err(|_| Error::Forbidden)?;
     match incoming {
         Message::Text(text) => {
             let envelope: Envelope = serde_json::from_str(&text).map_err(|_| Error::Forbidden)?;
@@ -581,7 +724,6 @@ async fn read_envelope(socket: &mut WebSocket, node: Uuid) -> Result<Envelope> {
     }
 }
 
-
 /// Record the roots a node reports.
 ///
 /// This is a report, not a grant: the node created these grants locally and the
@@ -592,9 +734,23 @@ async fn sync_roots(state: &ApiState, node: &Node, capabilities: &Value) {
     for root in capabilities["roots"].as_array().into_iter().flatten() {
         // The protocol carries the root identifier as `id`; the filesystem path is
         // never reported, so the server stores no owner-private location.
-        let (Some(id), Some(mode)) = (root["id"].as_str().and_then(|value| Uuid::parse_str(value).ok()), root["mode"].as_str()) else { continue };
-        if !matches!(mode, "READ" | "READ_WRITE" | "ASK") { continue }
-        let label = root["display_name"].as_str().unwrap_or("root").chars().take(64).collect::<String>();
+        let (Some(id), Some(mode)) = (
+            root["id"]
+                .as_str()
+                .and_then(|value| Uuid::parse_str(value).ok()),
+            root["mode"].as_str(),
+        ) else {
+            continue;
+        };
+        if !matches!(mode, "READ" | "READ_WRITE" | "ASK") {
+            continue;
+        }
+        let label = root["display_name"]
+            .as_str()
+            .unwrap_or("root")
+            .chars()
+            .take(64)
+            .collect::<String>();
         let revision = root["revision"].as_i64().unwrap_or(1);
         let available = root["mutation_available"].as_bool().unwrap_or(false);
         let status = root["index_status"].clone();
@@ -620,14 +776,22 @@ use futures_util::StreamExt;
 /// presented yet, so nothing about this node is trusted beyond the key it
 /// claims, which must equal the key stored at pairing.
 async fn register(state: &ApiState, socket: &mut WebSocket) -> Result<Registered> {
-    let first = socket.next().await.ok_or(Error::Forbidden)?.map_err(|_| Error::Forbidden)?;
-    let Message::Text(text) = first else { return Err(Error::Forbidden) };
+    let first = socket
+        .next()
+        .await
+        .ok_or(Error::Forbidden)?
+        .map_err(|_| Error::Forbidden)?;
+    let Message::Text(text) = first else {
+        return Err(Error::Forbidden);
+    };
     let envelope: Envelope = serde_json::from_str(&text).map_err(|_| Error::Forbidden)?;
     if envelope.version != VERSION || envelope.message_type != MessageType::Register {
         return Err(Error::Forbidden);
     }
     let node_id = envelope.node_id;
-    let key = envelope.payload["identity_key"].as_str().ok_or(Error::Forbidden)?;
+    let key = envelope.payload["identity_key"]
+        .as_str()
+        .ok_or(Error::Forbidden)?;
     verify_key(key)?;
     if envelope.payload["protocol_version"].as_u64() != Some(u64::from(VERSION)) {
         return Err(Error::Forbidden);
@@ -641,7 +805,10 @@ async fn register(state: &ApiState, socket: &mut WebSocket) -> Result<Registered
     if node.get::<Option<DateTime<Utc>>, _>("revoked_at").is_some() {
         return Err(Error::Forbidden);
     }
-    if !bool::from(key.as_bytes().ct_eq(node.get::<String, _>("public_key").as_bytes())) {
+    if !bool::from(
+        key.as_bytes()
+            .ct_eq(node.get::<String, _>("public_key").as_bytes()),
+    ) {
         return Err(Error::Forbidden);
     }
     Ok(Registered {
@@ -658,12 +825,17 @@ async fn register(state: &ApiState, socket: &mut WebSocket) -> Result<Registered
 /// The nonce is sent once and is not reusable: `session_hash` here is derived
 /// from the stored session digest and the nonce, so the wire never carries the
 /// stored credential and a captured challenge cannot be replayed elsewhere.
-async fn challenge(socket: &mut WebSocket, node: Registered) -> Result<(Uuid, Challenge, Registered)> {
+async fn challenge(
+    socket: &mut WebSocket,
+    node: Registered,
+) -> Result<(Uuid, Challenge, Registered)> {
     let nonce = random_token();
     let challenge = Challenge {
         nonce: nonce.clone(),
         node_id: node.node_id,
-        session_hash: orbit_computer_node_protocol::sha256(format!("{}:{}", node.session_hash, nonce).as_bytes()),
+        session_hash: orbit_computer_node_protocol::sha256(
+            format!("{}:{}", node.session_hash, nonce).as_bytes(),
+        ),
         expires_at: Utc::now() + CHALLENGE_TTL,
     };
     let envelope = Envelope {
@@ -673,18 +845,29 @@ async fn challenge(socket: &mut WebSocket, node: Registered) -> Result<(Uuid, Ch
         message_type: MessageType::Challenge,
         payload: serde_json::to_value(&challenge).map_err(Error::from)?,
     };
-    socket.send(Message::Text(serde_json::to_string(&envelope)?.into())).await.map_err(|_| Error::Unavailable("node closed the connection".into()))?;
+    socket
+        .send(Message::Text(serde_json::to_string(&envelope)?.into()))
+        .await
+        .map_err(|_| Error::Unavailable("node closed the connection".into()))?;
     // The AUTHENTICATE reply stays unread here: the caller must read that exact
     // frame itself, so consuming it would leave it reading the frame after it.
     Ok((Uuid::new_v4(), challenge, node))
 }
 
-async fn authenticate_session(state: &ApiState, socket: &mut WebSocket, node: Registered, challenge: &Challenge, connection: Uuid) -> Result<Node> {
+async fn authenticate_session(
+    state: &ApiState,
+    socket: &mut WebSocket,
+    node: Registered,
+    challenge: &Challenge,
+    connection: Uuid,
+) -> Result<Node> {
     let envelope = read_envelope(socket, node.node_id).await?;
     if envelope.message_type != MessageType::Authenticate {
         return Err(Error::Forbidden);
     }
-    let session = envelope.payload["session"].as_str().ok_or(Error::Forbidden)?;
+    let session = envelope.payload["session"]
+        .as_str()
+        .ok_or(Error::Forbidden)?;
     if !bool::from(
         orbit_computer_node_protocol::sha256(session.as_bytes())
             .as_bytes()
@@ -697,7 +880,9 @@ async fn authenticate_session(state: &ApiState, socket: &mut WebSocket, node: Re
     if envelope.payload["session_hash"].as_str() != Some(challenge.session_hash.as_str()) {
         return Err(Error::Forbidden);
     }
-    let signature = envelope.payload["signature"].as_str().ok_or(Error::Forbidden)?;
+    let signature = envelope.payload["signature"]
+        .as_str()
+        .ok_or(Error::Forbidden)?;
     verify_challenge(&node.public_key, challenge, signature).map_err(|_| Error::Forbidden)?;
 
     let owner = sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM computer_nodes WHERE id=$1")
@@ -712,7 +897,11 @@ async fn authenticate_session(state: &ApiState, socket: &mut WebSocket, node: Re
         .bind(&node.capabilities)
         .execute(&state.pool)
         .await?;
-    Ok(Node { node_id: node.node_id, principal_id: node.principal_id, owner_id: owner })
+    Ok(Node {
+        node_id: node.node_id,
+        principal_id: node.principal_id,
+        owner_id: owner,
+    })
 }
 
 struct Node {
@@ -743,20 +932,31 @@ async fn serve(state: ApiState, mut socket: WebSocket) {
         }
     };
     let registered_capabilities = registered.capabilities.clone();
-    let node = match authenticate_session(&state, &mut socket, registered, &challenge, connection).await {
-        Ok(node) => node,
-        Err(error) => {
-            tracing::warn!(%error, node_id = %node_id, "rejected computer node session");
-            return;
-        }
-    };
+    let node =
+        match authenticate_session(&state, &mut socket, registered, &challenge, connection).await {
+            Ok(node) => node,
+            Err(error) => {
+                tracing::warn!(%error, node_id = %node_id, "rejected computer node session");
+                return;
+            }
+        };
     // The REGISTER payload already carries the node's current capabilities, so the
     // server records the reported roots before the first request can reference one.
     sync_roots(&state, &node, &registered_capabilities).await;
     tracing::info!(node_id = %node_id, "computer node connected");
     let (sender, receiver) = mpsc::channel::<Envelope>(SESSION_CAPACITY);
     let pending = Arc::new(Mutex::new(HashMap::new()));
-    state.nodes.attach(node_id, Link { connection_id: connection, sender, pending: pending.clone() }).await;
+    state
+        .nodes
+        .attach(
+            node_id,
+            Link {
+                connection_id: connection,
+                sender,
+                pending: pending.clone(),
+            },
+        )
+        .await;
     serve_loop(&state, &node, connection, &mut socket, receiver, pending).await;
     state.nodes.detach(node_id, connection).await;
     sqlx::query("UPDATE computer_nodes SET connection_id=NULL,last_seen=now() WHERE id=$1 AND connection_id=$2")
@@ -827,10 +1027,17 @@ async fn serve_loop(
 /// sequence, so a reconnect resumes after the last durable ack.
 async fn ingest_events(state: &ApiState, node: &Node, payload: &Value) -> i64 {
     let mut acked: i64 = 0;
-    let scope = OwnerScope { owner_id: node.owner_id, principal_id: node.principal_id };
+    let scope = OwnerScope {
+        owner_id: node.owner_id,
+        principal_id: node.principal_id,
+    };
     for raw in payload["events"].as_array().into_iter().flatten() {
-        let Ok(event) = serde_json::from_value::<FileEvent>(raw.clone()) else { break };
-        if event.sequence <= acked { continue }
+        let Ok(event) = serde_json::from_value::<FileEvent>(raw.clone()) else {
+            break;
+        };
+        if event.sequence <= acked {
+            continue;
+        }
         let kind = match event.event_type.as_str() {
             "FILE_CREATED" => EventType::FileCreated,
             "FILE_MODIFIED" => EventType::FileModified,
@@ -846,7 +1053,9 @@ async fn ingest_events(state: &ApiState, node: &Node, payload: &Value) -> i64 {
             "node_id": node.node_id,
             "metadata": event.metadata,
         });
-        if validate_event(kind, &body).is_err() { break }
+        if validate_event(kind, &body).is_err() {
+            break;
+        }
         let outgoing = Event {
             id: Uuid::new_v4(),
             owner_id: node.owner_id,
@@ -862,7 +1071,14 @@ async fn ingest_events(state: &ApiState, node: &Node, payload: &Value) -> i64 {
             // The node sequence is the idempotency key across reconnects.
             source_event_key: format!("computer:{}:{}", node.node_id, event.sequence),
         };
-        let Ok(event_id) = PostgresEventBus { pool: state.pool.clone() }.publish(&scope, outgoing).await else { break };
+        let Ok(event_id) = PostgresEventBus {
+            pool: state.pool.clone(),
+        }
+        .publish(&scope, outgoing)
+        .await
+        else {
+            break;
+        };
         let recorded = sqlx::query("INSERT INTO computer_event_receipts(owner_id,node_id,sequence,event_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING")
             .bind(node.owner_id)
             .bind(node.node_id)
@@ -872,7 +1088,9 @@ async fn ingest_events(state: &ApiState, node: &Node, payload: &Value) -> i64 {
             .await
             .map(|result| result.rows_affected())
             .unwrap_or(0);
-        if recorded == 0 { break }
+        if recorded == 0 {
+            break;
+        }
         acked = acked.max(event.sequence);
     }
     if acked > 0 {
@@ -984,7 +1202,7 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             id: Uuid::from_u128(0x3c4d_5e6f_7081_92a3_b4c5_d6e7_f809_1a2b),
             name: "files.read".into(),
             version: "1".into(),
-            input_schema: address,
+            input_schema: address.clone(),
             output_schema: json!({
                 "type": "object",
                 "required": ["file_id", "sha256", "size"],
@@ -1000,6 +1218,25 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "content_base64": {"type": "string"},
                 },
             }),
+            effects: read_effects.clone(),
+            default_risk: RiskLevel::Low,
+            permission_keys: vec!["computer.files.read".into()],
+            sandbox_required: false,
+        },
+        ToolDescriptor {
+            id: Uuid::from_u128(0x4d5e_6f70_8192_a3b4_c5d6_e7f8_0901_2b3c),
+            name: "files.watch".into(),
+            version: "1".into(),
+            input_schema: address,
+            output_schema: json!({
+                "type": "object",
+                "required": ["watch_id", "status"],
+                "additionalProperties": false,
+                "properties": {
+                    "watch_id": {"type": "string", "maxLength": 128},
+                    "status": {"type": "string"},
+                },
+            }),
             effects: read_effects,
             default_risk: RiskLevel::Low,
             permission_keys: vec!["computer.files.read".into()],
@@ -1009,7 +1246,10 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
 }
 
 fn descriptor_for(tool: &str) -> Result<ToolDescriptor> {
-    descriptors().into_iter().find(|d| d.name == tool).ok_or(Error::Forbidden)
+    descriptors()
+        .into_iter()
+        .find(|d| d.name == tool)
+        .ok_or(Error::Forbidden)
 }
 
 fn message_for(tool: &str) -> Result<MessageType> {
@@ -1018,6 +1258,9 @@ fn message_for(tool: &str) -> Result<MessageType> {
         "files.search" => MessageType::FileSearch,
         "files.read" => MessageType::FileRead,
         "files.metadata" => MessageType::FileMetadata,
+        // The plan's `files.watch` tool travels the same authorized-read path:
+        // the node starts a recursive watch and returns its watch id.
+        "files.watch" => MessageType::FileWatch,
         _ => return Err(Error::Forbidden),
     })
 }
@@ -1038,22 +1281,42 @@ async fn submit(
 ) -> Result<Dispatch> {
     let descriptor = descriptor_for(tool)?;
     orbit_tools::validate_value(&descriptor.input_schema, &arguments)?;
-    let node: Uuid = serde_json::from_value(arguments["node_id"].clone()).map_err(|_| Error::Validation("node_id must be a uuid".into()))?;
+    let node: Uuid = serde_json::from_value(arguments["node_id"].clone())
+        .map_err(|_| Error::Validation("node_id must be a uuid".into()))?;
     let mut roots = roots_of(&state.pool, scope.owner_id, node).await?;
     let mut scopes = BTreeMap::new();
     for root in &roots {
-        let id: Uuid = serde_json::from_value(root["id"].clone()).map_err(|_| Error::Validation("root id is invalid".into()))?;
-        scopes.insert(format!("root:{id}"), root["revision"].as_i64().unwrap_or_default());
+        let id: Uuid = serde_json::from_value(root["id"].clone())
+            .map_err(|_| Error::Validation("root id is invalid".into()))?;
+        scopes.insert(
+            format!("root:{id}"),
+            root["revision"].as_i64().unwrap_or_default(),
+        );
     }
     if arguments.get("root_ids").is_some() {
         roots.retain(|root| {
-            arguments["root_ids"].as_array().is_some_and(|ids| ids.iter().any(|id| root["id"].as_str() == id.as_str()))
+            arguments["root_ids"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| root["id"].as_str() == id.as_str()))
         });
     }
-    if roots.is_empty() { return Err(Error::Forbidden); }
-    let risk = orbit_risk::RiskClassifier::classify_action(&orbit_risk::ProposedAction { tool_name: tool.to_owned(), arguments: arguments.clone() }, &descriptor, &orbit_risk::ActionContext { optional_escalation: None })?;
+    if roots.is_empty() {
+        return Err(Error::Forbidden);
+    }
+    let risk = orbit_risk::RiskClassifier::classify_action(
+        &orbit_risk::ProposedAction {
+            tool_name: tool.to_owned(),
+            arguments: arguments.clone(),
+        },
+        &descriptor,
+        &orbit_risk::ActionContext {
+            optional_escalation: None,
+        },
+    )?;
     let decision = policy(state, scope, &descriptor, risk.level, &scopes, &arguments).await?;
-    if decision.0 { return Err(Error::Forbidden); }
+    if decision.0 {
+        return Err(Error::Forbidden);
+    }
 
     let task = Uuid::new_v4();
     let call = Uuid::new_v4();
@@ -1124,7 +1387,11 @@ async fn submit(
     )
     .await?;
     tx.commit().await?;
-    Ok(Dispatch { snapshot, authorization, fence })
+    Ok(Dispatch {
+        snapshot,
+        authorization,
+        fence,
+    })
 }
 
 /// `(denied, (epoch, policy_revision), decision)`.
@@ -1136,42 +1403,53 @@ async fn policy(
     scopes: &BTreeMap<String, i64>,
     arguments: &Value,
 ) -> Result<(bool, (i64, i64), Value)> {
-    let epoch = sqlx::query_scalar::<_, i64>("SELECT revision FROM authorization_epochs WHERE owner_id=$1")
-        .bind(scope.owner_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or(Error::Forbidden)?;
+    let epoch =
+        sqlx::query_scalar::<_, i64>("SELECT revision FROM authorization_epochs WHERE owner_id=$1")
+            .bind(scope.owner_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or(Error::Forbidden)?;
     // An owner who never customised their policy still has the documented base
     // policy, exactly as the policy views report it; absence is not a denial.
-    let (revision, rules) = match sqlx::query("SELECT revision,rules FROM policies WHERE owner_id=$1")
-        .bind(scope.owner_id)
-        .fetch_optional(&state.pool)
-        .await?
-    {
-        Some(row) => (row.get::<i64, _>("revision"), row.get::<Value, _>("rules")),
-        None => (1, json!([])),
-    };
-    let grants: Vec<orbit_policy::ScopeGrant> = sqlx::query_scalar("SELECT to_jsonb(g)-'owner_id' FROM scope_grants g WHERE owner_id=$1 AND tool_name=$2")
-        .bind(&descriptor.name)
-        .fetch_all(&state.pool)
-        .await?
-        .into_iter()
-        .filter_map(|value| serde_json::from_value(value).ok())
-        .collect();
+    let (revision, rules) =
+        match sqlx::query("SELECT revision,rules FROM policies WHERE owner_id=$1")
+            .bind(scope.owner_id)
+            .fetch_optional(&state.pool)
+            .await?
+        {
+            Some(row) => (row.get::<i64, _>("revision"), row.get::<Value, _>("rules")),
+            None => (1, json!([])),
+        };
+    let grants: Vec<orbit_policy::ScopeGrant> = sqlx::query_scalar(
+        "SELECT to_jsonb(g)-'owner_id' FROM scope_grants g WHERE owner_id=$1 AND tool_name=$2",
+    )
+    .bind(scope.owner_id)
+    .bind(&descriptor.name)
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .filter_map(|value| serde_json::from_value(value).ok())
+    .collect();
     let settings: Value = sqlx::query_scalar("SELECT value FROM settings WHERE owner_id=$1")
         .bind(scope.owner_id)
         .fetch_optional(&state.pool)
         .await?
         .unwrap_or(json!({}));
-    let autonomy: orbit_core::AutonomyMode = serde_json::from_value(settings["autonomy_mode"].clone()).unwrap_or(orbit_core::AutonomyMode::Observe);
+    let autonomy: orbit_core::AutonomyMode =
+        serde_json::from_value(settings["autonomy_mode"].clone())
+            .unwrap_or(orbit_core::AutonomyMode::Observe);
     let engine = orbit_policy::PolicyEngine {
-        revision: row.get("revision"),
+        revision,
         autonomy,
         rules: serde_json::from_value(rules).unwrap_or_default(),
         grants,
     };
     let decision = engine.evaluate(scope, &descriptor.name, arguments, descriptor, risk, scopes);
-    Ok((decision.denied, (epoch, decision.policy_revision), serde_json::to_value(&decision).map_err(Error::from)?))
+    Ok((
+        decision.denied,
+        (epoch, decision.policy_revision),
+        serde_json::to_value(&decision).map_err(Error::from)?,
+    ))
 }
 
 /// Close a submitted request out. A node that reported success gets COMPLETED;
@@ -1202,12 +1480,19 @@ async fn settle(state: &ApiState, dispatch: &Dispatch, outcome: Result<Value>) -
     sqlx::query("UPDATE tasks SET state=$3,updated_at=now() WHERE owner_id=$1 AND id=$2")
         .bind(dispatch.snapshot.owner_id)
         .bind(task)
-        .bind(if outcome.is_ok() { "COMPLETED" } else { "FAILED" })
+        .bind(if outcome.is_ok() {
+            "COMPLETED"
+        } else {
+            "FAILED"
+        })
         .execute(&mut *tx)
         .await?;
     orbit_audit::append(
         &mut tx,
-        &OwnerScope { owner_id: dispatch.snapshot.owner_id, principal_id: dispatch.snapshot.principal_id },
+        &OwnerScope {
+            owner_id: dispatch.snapshot.owner_id,
+            principal_id: dispatch.snapshot.principal_id,
+        },
         dispatch.snapshot.task_id,
         None,
         Some(task),
@@ -1237,23 +1522,60 @@ fn error_code(error: &Error) -> String {
 }
 
 /// Run one authorized read against a connected node.
-async fn node_read(state: &ApiState, scope: &OwnerScope, tool: &str, arguments: Value) -> Result<Value> {
+async fn node_read(
+    state: &ApiState,
+    scope: &OwnerScope,
+    tool: &str,
+    arguments: Value,
+) -> Result<Value> {
     let message = message_for(tool)?;
-    let node: Uuid = serde_json::from_value(arguments["node_id"].clone()).map_err(|_| Error::Validation("node_id must be a uuid".into()))?;
+    let node: Uuid = serde_json::from_value(arguments["node_id"].clone())
+        .map_err(|_| Error::Validation("node_id must be a uuid".into()))?;
+    // A node whose last heartbeat is older than 60 seconds counts as
+    // disconnected even if its socket has not torn down yet; per the plan an
+    // offline node answers `NODE_OFFLINE`, never a stale read.
+    mark_offline_stale(state, node).await;
     let dispatch = submit(state, scope, tool, arguments).await?;
     let snapshot = serde_json::to_value(&dispatch.snapshot).map_err(Error::from)?;
     let request = ExecutionRequest {
         authorization_id: dispatch.authorization,
         task_fence: dispatch.fence,
         snapshot: snapshot.clone(),
-        action_hash: action_hash(&snapshot).map_err(|error| Error::Serialization(serde_json::Error::io(std::io::Error::other(error.to_string()))))?,
+        action_hash: action_hash(&snapshot).map_err(|error| {
+            Error::Serialization(serde_json::Error::io(std::io::Error::other(
+                error.to_string(),
+            )))
+        })?,
         content_base64: None,
     };
-    let result = match state.nodes.call(node, message, serde_json::to_value(&request).map_err(Error::from)?).await {
-        Ok(response) => node_result(response),
-        Err(error) => Err(error),
-    };
+    let result = state
+        .nodes
+        .call(
+            node,
+            message,
+            serde_json::to_value(&request).map_err(Error::from)?,
+        )
+        .await;
     settle(state, &dispatch, result).await
+}
+
+/// Clear the live link when the heartbeat is stale so `call` reports
+/// `NODE_OFFLINE` instead of racing a dead socket. DB `last_seen` stays the
+/// source of truth for the status surface; this only drops the socket handle.
+async fn mark_offline_stale(state: &ApiState, node: Uuid) {
+    let stale = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+        "SELECT last_seen FROM computer_nodes WHERE id=$1",
+    )
+    .bind(node)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .flatten()
+    .is_none_or(|seen| Utc::now() - seen >= OFFLINE_AFTER);
+    if stale {
+        state.nodes.detach(node, Uuid::nil()).await;
+    }
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -1265,13 +1587,32 @@ pub struct FileQuery {
     pub limit: Option<u32>,
 }
 
+/// Query-string pairs carry no sequence syntax, so the roots a search spans are
+/// a bounded comma-separated list rather than a repeated key.
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct SearchQuery {
     pub node_id: Uuid,
+    #[serde(deserialize_with = "comma_separated_uuids")]
     pub root_ids: Vec<Uuid>,
     pub query: String,
     pub mode: Option<String>,
     pub limit: Option<u32>,
+}
+
+fn comma_separated_uuids<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<Uuid>, D::Error> {
+    let raw = String::deserialize(deserializer)?;
+    let mut ids = Vec::new();
+    for part in raw.split(',').filter(|part| !part.trim().is_empty()) {
+        ids.push(Uuid::parse_str(part.trim()).map_err(serde::de::Error::custom)?);
+    }
+    if ids.is_empty() {
+        return Err(serde::de::Error::custom(
+            "root_ids must list at least one root",
+        ));
+    }
+    Ok(ids)
 }
 
 #[utoipa::path(get, path = "/api/v1/files/list", responses((status = 200, body = Value)))]
@@ -1289,7 +1630,9 @@ pub async fn list_files(
         ("cursor", json!(q.cursor)),
         ("limit", json!(limit)),
     ]);
-    Ok(Json(node_read(&state, &a.scope, "files.list", arguments).await?))
+    Ok(Json(
+        node_read(&state, &a.scope, "files.list", arguments).await?,
+    ))
 }
 
 #[utoipa::path(get, path = "/api/v1/files/search", responses((status = 200, body = Value)))]
@@ -1299,21 +1642,35 @@ pub async fn search_files(
     Query(q): Query<SearchQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let a = authenticate(&state, &headers, false).await?;
-    if q.root_ids.is_empty() || q.root_ids.len() > 16 || q.query.trim().is_empty() || q.query.len() > 512 {
-        return Err(Error::Validation("one to sixteen roots and a bounded query are required".into()).into());
+    if q.root_ids.is_empty()
+        || q.root_ids.len() > 16
+        || q.query.trim().is_empty()
+        || q.query.len() > 512
+    {
+        return Err(Error::Validation(
+            "one to sixteen roots and a bounded query are required".into(),
+        )
+        .into());
     }
     let mode = q.mode.clone().unwrap_or_else(|| "FILENAME".into());
     if !matches!(mode.as_str(), "FILENAME" | "TEXT" | "SEMANTIC") {
-        return Err(Error::Validation("search mode must be FILENAME, TEXT or SEMANTIC".into()).into());
+        return Err(
+            Error::Validation("search mode must be FILENAME, TEXT or SEMANTIC".into()).into(),
+        );
     }
     let arguments = json!({
+        // Every node request names one anchor root; a search additionally carries
+        // the full span so the node can widen it to roots it already holds.
+        "root_id": q.root_ids[0],
         "node_id": q.node_id,
         "root_ids": q.root_ids,
         "query": q.query.trim(),
         "mode": mode,
         "limit": q.limit.unwrap_or(50).clamp(1, 50),
     });
-    Ok(Json(node_read(&state, &a.scope, "files.search", arguments).await?))
+    Ok(Json(
+        node_read(&state, &a.scope, "files.search", arguments).await?,
+    ))
 }
 
 #[utoipa::path(get, path = "/api/v1/files/metadata", responses((status = 200, body = Value)))]
@@ -1329,7 +1686,9 @@ pub async fn file_metadata(
         ("relative_path", json!(q.relative_path)),
         ("file_id", json!(q.cursor)),
     ]);
-    Ok(Json(node_read(&state, &a.scope, "files.metadata", arguments).await?))
+    Ok(Json(
+        node_read(&state, &a.scope, "files.metadata", arguments).await?,
+    ))
 }
 
 #[utoipa::path(get, path = "/api/v1/files/read", responses((status = 200, body = Value)))]
@@ -1345,10 +1704,32 @@ pub async fn read_file(
         ("relative_path", json!(q.relative_path)),
         ("file_id", json!(q.cursor)),
     ]);
-    Ok(Json(node_read(&state, &a.scope, "files.read", arguments).await?))
+    Ok(Json(
+        node_read(&state, &a.scope, "files.read", arguments).await?,
+    ))
 }
 
-// ------------------------------------------------------------- mutation proposals
+#[utoipa::path(post, path = "/api/v1/files/watch", responses((status = 200, body = Value)))]
+pub async fn watch_files(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Query(q): Query<FileQuery>,
+) -> Result<Json<Value>, ApiError> {
+    // Subscribe through the plan's `files.watch` tool over the same
+    // authorized-read path as list/search/read. The node starts a recursive
+    // watch on the granted root and returns its watch id; callers narrow with
+    // the node-held registration, never by widening the root.
+    let a = authenticate(&state, &headers, false).await?;
+    let arguments = arguments(vec![
+        ("node_id", json!(q.node_id)),
+        ("root_id", json!(q.root_id)),
+        ("relative_path", json!(q.relative_path)),
+        ("file_id", json!(q.cursor)),
+    ]);
+    Ok(Json(
+        node_read(&state, &a.scope, "files.watch", arguments).await?,
+    ))
+}
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct ProposalWrite {
@@ -1384,10 +1765,15 @@ async fn propose(
     tool: &str,
     arguments: Value,
 ) -> Result<Value> {
-    let node: Uuid = serde_json::from_value(arguments["node_id"].clone()).map_err(|_| Error::Validation("node_id must be a uuid".into()))?;
+    let node: Uuid = serde_json::from_value(arguments["node_id"].clone())
+        .map_err(|_| Error::Validation("node_id must be a uuid".into()))?;
     let roots = roots_of(&state.pool, scope.owner_id, node).await?;
-    let root: Uuid = serde_json::from_value(arguments["root_id"].clone()).map_err(|_| Error::Validation("root_id must be a uuid".into()))?;
-    let grant = roots.iter().find(|r| r["id"].as_str() == Some(root.to_string().as_str())).ok_or(Error::Forbidden)?;
+    let root: Uuid = serde_json::from_value(arguments["root_id"].clone())
+        .map_err(|_| Error::Validation("root_id must be a uuid".into()))?;
+    let grant = roots
+        .iter()
+        .find(|r| r["id"].as_str() == Some(root.to_string().as_str()))
+        .ok_or(Error::Forbidden)?;
     // Only READ_WRITE roots may even propose a mutation, and never without
     // consent; the node re-checks both before any effect.
     let mode = grant["mode"].as_str().unwrap_or("READ");
@@ -1401,10 +1787,51 @@ async fn propose(
     };
     let descriptor = descriptor_for(tool)?;
     orbit_tools::validate_value(&descriptor.input_schema, &arguments)?;
-    let scopes = BTreeMap::from([(format!("root:{root}"), grant["revision"].as_i64().unwrap_or_default())]);
-    let risk = orbit_risk::RiskClassifier::classify_action(&orbit_risk::ProposedAction { tool_name: tool.to_owned(), arguments: arguments.clone() }, &descriptor, &orbit_risk::ActionContext { optional_escalation: None })?;
-    let (denied, (epoch, policy_revision), decision) = policy(state, scope, &descriptor, risk.level, &scopes, &arguments).await?;
-    if denied { return Err(Error::Forbidden.into()); }
+    // Fail a stale base now, before an approval id exists for it: when the
+    // caller names an expected version, the live file (when reachable) must
+    // still carry it. An offline node proves nothing, so the check is skipped
+    // there and the node enforces the version again at dispatch.
+    if let Some(expected) = arguments["expected_version"].as_str()
+        && let Some(node_id) = arguments["node_id"]
+            .as_str()
+            .and_then(|s| s.parse::<Uuid>().ok())
+        && let Some(root_id) = arguments["root_id"]
+            .as_str()
+            .and_then(|s| s.parse::<Uuid>().ok())
+        && state.nodes.link(node_id).await.is_some()
+    {
+        let probe = crate::computers::arguments(vec![
+            ("node_id", json!(node_id)),
+            ("root_id", json!(root_id)),
+            ("relative_path", arguments["relative_path"].clone()),
+            ("file_id", arguments["file_id"].clone()),
+        ]);
+        if let Ok(live) = node_read(state, scope, "files.metadata", probe).await
+            && let Some(current) = live["version"].as_str()
+            && current != expected
+        {
+            return Err(Error::Conflict("file version changed".into()).into());
+        }
+    }
+    let scopes = BTreeMap::from([(
+        format!("root:{root}"),
+        grant["revision"].as_i64().unwrap_or_default(),
+    )]);
+    let risk = orbit_risk::RiskClassifier::classify_action(
+        &orbit_risk::ProposedAction {
+            tool_name: tool.to_owned(),
+            arguments: arguments.clone(),
+        },
+        &descriptor,
+        &orbit_risk::ActionContext {
+            optional_escalation: None,
+        },
+    )?;
+    let (denied, (epoch, policy_revision), decision) =
+        policy(state, scope, &descriptor, risk.level, &scopes, &arguments).await?;
+    if denied {
+        return Err(Error::Forbidden.into());
+    }
 
     let task = Uuid::new_v4();
     let call = Uuid::new_v4();
@@ -1456,12 +1883,14 @@ async fn propose(
         .bind(approval)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE tasks SET state='WAITING_FOR_APPROVAL',wait_reason=$3 WHERE owner_id=$1 AND id=$2")
-        .bind(scope.owner_id)
-        .bind(task)
-        .bind(format!("approval:{approval}"))
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE tasks SET state='WAITING_FOR_APPROVAL',wait_reason=$3 WHERE owner_id=$1 AND id=$2",
+    )
+    .bind(scope.owner_id)
+    .bind(task)
+    .bind(format!("approval:{approval}"))
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("INSERT INTO approvals(id,owner_id,task_id,call_id,snapshot,action_hash,risk,reasons,preview,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now()+interval '1 hour')")
         .bind(approval)
         .bind(scope.owner_id)
@@ -1486,7 +1915,9 @@ async fn propose(
     )
     .await?;
     tx.commit().await?;
-    Ok(json!({ "approval_id": approval, "call_id": call, "task_id": task, "state": "WAITING_FOR_APPROVAL", "tool": tool, "preview": orbit_approvals::preview(&snapshot) }))
+    Ok(
+        json!({ "approval_id": approval, "call_id": call, "task_id": task, "state": "WAITING_FOR_APPROVAL", "tool": tool, "preview": orbit_approvals::preview(&snapshot) }),
+    )
 }
 
 #[utoipa::path(post, path = "/api/v1/files/write", request_body = ProposalWrite, responses((status = 200, body = Value)))]
@@ -1503,7 +1934,9 @@ pub async fn propose_write(
         "content_base64": input.content_base64,
         "expected_version": input.expected_version,
     });
-    Ok(Json(propose(&state, &a.scope, "files.write", arguments).await?))
+    Ok(Json(
+        propose(&state, &a.scope, "files.write", arguments).await?,
+    ))
 }
 
 #[utoipa::path(post, path = "/api/v1/files/move", request_body = ProposalMove, responses((status = 200, body = Value)))]
@@ -1520,7 +1953,9 @@ pub async fn propose_move(
         "destination_path": input.destination_path,
         "expected_version": input.expected_version,
     });
-    Ok(Json(propose(&state, &a.scope, "files.move", arguments).await?))
+    Ok(Json(
+        propose(&state, &a.scope, "files.move", arguments).await?,
+    ))
 }
 
 #[utoipa::path(post, path = "/api/v1/files/copy", request_body = ProposalCopy, responses((status = 200, body = Value)))]
@@ -1536,7 +1971,9 @@ pub async fn propose_copy(
         "relative_path": input.relative_path,
         "destination_path": input.destination_path,
     });
-    Ok(Json(propose(&state, &a.scope, "files.copy", arguments).await?))
+    Ok(Json(
+        propose(&state, &a.scope, "files.copy", arguments).await?,
+    ))
 }
 
 // ------------------------------------------------------------------ registry
@@ -1547,10 +1984,11 @@ pub async fn propose_copy(
 pub async fn seed_tools(state: &ApiState) -> orbit_core::Result<()> {
     // Before the owner exists there is nobody to seed; ensure_setup runs first
     // and the next start fills the registry in.
-    let owner: Option<Option<Uuid>> = sqlx::query_scalar("SELECT owner_id FROM installation WHERE singleton")
-        .fetch_optional(&state.pool)
-        .await?
-        .flatten();
+    let owner: Option<Option<Uuid>> =
+        sqlx::query_scalar("SELECT owner_id FROM installation WHERE singleton")
+            .fetch_optional(&state.pool)
+            .await?
+            .flatten();
     let Some(owner) = owner else { return Ok(()) };
     let mut all = orbit_tools::descriptors();
     all.extend(crate::runtimes::descriptors());
@@ -1578,14 +2016,26 @@ pub fn router() -> Router<ApiState> {
         .route("/api/v1/computers/pairing-codes", post(create_pairing_code))
         .route("/api/v1/computers/pair", post(pair))
         .route("/api/v1/computers/connect", get(connect))
-        .route("/api/v1/computers/{id}", get(node_detail).delete(remove_node))
+        .route(
+            "/api/v1/computers/{id}",
+            get(node_detail).delete(remove_node),
+        )
         .route("/api/v1/computers/{id}/revoke", post(revoke_node))
+        .route("/api/v1/computers/{id}/sessions/renew", post(renew_session))
+        .route(
+            "/api/v1/computers/{id}/sessions/revoke",
+            post(revoke_session),
+        )
         .route("/api/v1/computers/{id}/roots", get(list_roots))
-        .route("/api/v1/computers/{id}/roots/{root_id}/revoke", post(revoke_root))
+        .route(
+            "/api/v1/computers/{id}/roots/{root_id}/revoke",
+            post(revoke_root),
+        )
         .route("/api/v1/files/list", get(list_files))
         .route("/api/v1/files/search", get(search_files))
         .route("/api/v1/files/read", get(read_file))
         .route("/api/v1/files/metadata", get(file_metadata))
+        .route("/api/v1/files/watch", post(watch_files))
         .route("/api/v1/files/write", post(propose_write))
         .route("/api/v1/files/move", post(propose_move))
         .route("/api/v1/files/copy", post(propose_copy))

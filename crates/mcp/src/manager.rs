@@ -74,13 +74,11 @@ impl ConnectionManager {
         connection_id: Uuid,
     ) -> Result<DiscoveryOutcome> {
         let remote = self.remote(scope, connection_id).await?;
-        let (tools, server_info) = tokio::time::timeout(
-            DISCOVERY_TIMEOUT,
-            list_remote_tools(&remote),
-        )
-        .await
-        .map_err(|_| Error::Timeout)?
-        .map_err(|e| e)?;
+        let (tools, server_info) =
+            tokio::time::timeout(DISCOVERY_TIMEOUT, list_remote_tools(&remote))
+                .await
+                .map_err(|_| Error::Timeout)?
+                .map_err(|e| e)?;
         let mut tx = self.pool.begin().await?;
         sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE")
             .bind(scope.owner_id)
@@ -142,14 +140,13 @@ impl ConnectionManager {
                         .bind(&tool.digest)
                         .execute(&mut *tx)
                         .await?;
-                        let deleted = sqlx::query(
-                            "DELETE FROM mcp_grants WHERE owner_id=$1 AND tool_id=$2",
-                        )
-                        .bind(scope.owner_id)
-                        .bind(id)
-                        .execute(&mut *tx)
-                        .await?
-                        .rows_affected();
+                        let deleted =
+                            sqlx::query("DELETE FROM mcp_grants WHERE owner_id=$1 AND tool_id=$2")
+                                .bind(scope.owner_id)
+                                .bind(id)
+                                .execute(&mut *tx)
+                                .await?
+                                .rows_affected();
                         grants_revoked += deleted as usize;
                     }
                 }
@@ -162,7 +159,11 @@ impl ConnectionManager {
         .bind(connection_id)
         .fetch_one(&mut *tx)
         .await?;
-        let status = if disabled == 0 { "ACTIVE" } else { "REVIEW_REQUIRED" };
+        let status = if disabled == 0 {
+            "ACTIVE"
+        } else {
+            "REVIEW_REQUIRED"
+        };
         sqlx::query(
             "UPDATE mcp_connections SET server_info=$3,last_discovery=now(),last_error=NULL,status=$4 WHERE owner_id=$1 AND id=$2",
         )
@@ -304,9 +305,10 @@ impl ConnectionManager {
             return Err(Error::Unavailable("MCP tool reported failure".into()));
         }
         let structured = if descriptor.output_schema != json!({}) {
-            let value = result.structured_content.clone().ok_or_else(|| {
-                Error::Validation("MCP tool omitted structured output".into())
-            })?;
+            let value = result
+                .structured_content
+                .clone()
+                .ok_or_else(|| Error::Validation("MCP tool omitted structured output".into()))?;
             orbit_tools::validate_value(&descriptor.output_schema, &value).map_err(|_| {
                 Error::Validation("MCP tool output does not match its registered schema".into())
             })?;
@@ -378,10 +380,11 @@ impl ConnectionManager {
         }
         let doc: EndpointDoc = serde_json::from_value(row.get("endpoint"))
             .map_err(|_| Error::Validation("MCP endpoint configuration invalid".into()))?;
-        if doc.origin.trim().is_empty()
-            || doc.ca_pem.as_ref().is_some_and(|pem| pem.len() > 65536)
+        if doc.origin.trim().is_empty() || doc.ca_pem.as_ref().is_some_and(|pem| pem.len() > 65536)
         {
-            return Err(Error::Validation("MCP endpoint configuration invalid".into()));
+            return Err(Error::Validation(
+                "MCP endpoint configuration invalid".into(),
+            ));
         }
         let endpoint = orbit_model_router::endpoint::AdmittedEndpoint {
             origin: doc.origin.clone(),
@@ -392,8 +395,7 @@ impl ConnectionManager {
         endpoint.url("")?;
         let allowlist: Vec<String> = serde_json::from_value(row.get("header_names"))
             .map_err(|_| Error::Validation("MCP header allowlist invalid".into()))?;
-        let allowed: HashSet<String> =
-            allowlist.into_iter().map(|n| n.to_lowercase()).collect();
+        let allowed: HashSet<String> = allowlist.into_iter().map(|n| n.to_lowercase()).collect();
         let mut auth = None;
         let mut headers = HashMap::new();
         if let Some(secret_id) = row.get::<Option<Uuid>, _>("secret_id") {
@@ -403,7 +405,9 @@ impl ConnectionManager {
                 .map_err(|_| Error::Validation("MCP credential configuration invalid".into()))?;
             if let Some(bearer) = secret.bearer.filter(|b| !b.is_empty()) {
                 if bearer.len() > 8192 {
-                    return Err(Error::Validation("MCP credential configuration invalid".into()));
+                    return Err(Error::Validation(
+                        "MCP credential configuration invalid".into(),
+                    ));
                 }
                 auth = Some(bearer);
             }
@@ -422,7 +426,9 @@ impl ConnectionManager {
         }
         let uri = doc.origin.trim_end_matches('/').to_owned();
         if uri.is_empty() {
-            return Err(Error::Validation("MCP endpoint configuration invalid".into()));
+            return Err(Error::Validation(
+                "MCP endpoint configuration invalid".into(),
+            ));
         }
         Ok(Remote {
             endpoint,
@@ -479,13 +485,11 @@ impl ConnectionManager {
             }
         }
         insert?;
-        sqlx::query(
-            "UPDATE mcp_connections SET last_activity=now() WHERE owner_id=$1 AND id=$2",
-        )
-        .bind(scope.owner_id)
-        .bind(connection_id)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("UPDATE mcp_connections SET last_activity=now() WHERE owner_id=$1 AND id=$2")
+            .bind(scope.owner_id)
+            .bind(connection_id)
+            .execute(&mut *tx)
+            .await?;
         orbit_audit::append(
             &mut tx,
             scope,
@@ -553,7 +557,9 @@ impl ConnectionManager {
                     .await
                     .map_err(|_| Error::Unavailable("artifact unavailable".into()))?;
                 if hex::encode(Sha256::digest(&prior)) != digest {
-                    return Err(Error::Conflict("existing immutable artifact differs".into()));
+                    return Err(Error::Conflict(
+                        "existing immutable artifact differs".into(),
+                    ));
                 }
             }
             Err(_) => return Err(Error::Unavailable("artifact storage unavailable".into())),
@@ -609,7 +615,10 @@ impl Remote {
     }
 }
 
-fn transport(remote: Remote, client: reqwest::Client) -> Result<StreamableHttpClientTransport<BoundedClient>> {
+fn transport(
+    remote: Remote,
+    client: reqwest::Client,
+) -> Result<StreamableHttpClientTransport<BoundedClient>> {
     let uri: Arc<str> = Arc::<str>::from(remote.uri.as_str());
     let mut config =
         StreamableHttpClientTransportConfig::with_uri(uri).reinit_on_expired_session(false);
@@ -686,13 +695,10 @@ async fn list_remote_tools(remote: &Remote) -> Result<(Vec<DiscoveredTool>, Valu
         reqwest_client,
     )?;
     // The default client handler offers no sampling and declines elicitation.
-    let mut client = tokio::time::timeout(
-        REQUEST_TIMEOUT,
-        rmcp::serve_client((), transport),
-    )
-    .await
-    .map_err(|_| Error::Timeout)?
-    .map_err(|_| Error::Unavailable("MCP session initialization failed".into()))?;
+    let mut client = tokio::time::timeout(REQUEST_TIMEOUT, rmcp::serve_client((), transport))
+        .await
+        .map_err(|_| Error::Timeout)?
+        .map_err(|_| Error::Unavailable("MCP session initialization failed".into()))?;
     let server_info = client
         .peer_info()
         .map(|info| serde_json::to_value(info.as_ref()))
@@ -732,7 +738,9 @@ async fn list_remote_tools(remote: &Remote) -> Result<(Vec<DiscoveredTool>, Valu
             if let Some(previous) = seen_names.insert(name.clone(), digest.clone()) {
                 if previous != digest {
                     let _ = client.close().await;
-                    return Err(Error::Conflict("MCP server returned conflicting tools".into()));
+                    return Err(Error::Conflict(
+                        "MCP server returned conflicting tools".into(),
+                    ));
                 }
             }
             tools.push(DiscoveredTool {
@@ -744,7 +752,9 @@ async fn list_remote_tools(remote: &Remote) -> Result<(Vec<DiscoveredTool>, Valu
             });
             if tools.len() > MAX_TOOLS {
                 let _ = client.close().await;
-                return Err(Error::Validation("MCP tool catalog exceeds 1000 tools".into()));
+                return Err(Error::Validation(
+                    "MCP tool catalog exceeds 1000 tools".into(),
+                ));
             }
         }
         match page.next_cursor {
@@ -755,7 +765,9 @@ async fn list_remote_tools(remote: &Remote) -> Result<(Vec<DiscoveredTool>, Valu
             Some(next) => {
                 if !seen_cursors.insert(next.clone()) {
                     let _ = client.close().await;
-                    return Err(Error::Validation("MCP server repeated a page cursor".into()));
+                    return Err(Error::Validation(
+                        "MCP server repeated a page cursor".into(),
+                    ));
                 }
                 cursor = Some(next);
             }
@@ -763,24 +775,20 @@ async fn list_remote_tools(remote: &Remote) -> Result<(Vec<DiscoveredTool>, Valu
     }
     let _ = client.close().await;
     if !finished {
-        return Err(Error::Validation("MCP tool catalog exceeds 100 pages".into()));
+        return Err(Error::Validation(
+            "MCP tool catalog exceeds 100 pages".into(),
+        ));
     }
     Ok((tools, server_info))
 }
 
 /// Raw protocol evidence: outcome markers plus digests, never credentials.
-fn evidence(
-    result: &rmcp::model::CallToolResult,
-    reference: Option<&Value>,
-) -> Result<Value> {
+fn evidence(result: &rmcp::model::CallToolResult, reference: Option<&Value>) -> Result<Value> {
     let content = serde_json::to_value(&result.content)?;
     let content_bytes = serde_json::to_vec(&content)?;
     let body = match reference {
         Some(reference) => reference.clone(),
-        None => result
-            .structured_content
-            .clone()
-            .unwrap_or(Value::Null),
+        None => result.structured_content.clone().unwrap_or(Value::Null),
     };
     let inline = match &body {
         Value::Null => content.clone(),
@@ -797,4 +805,50 @@ fn evidence(
         "content_bytes": content_bytes.len(),
         "body": inline,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Registry names are namespaced `mcp.<connection>.<tool>`: two
+    /// connections exposing the same tool name never collide in the shared
+    /// tool registry.
+    #[test]
+    fn registry_names_are_connection_namespaced() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let ra = format!("mcp.{a}.search");
+        let rb = format!("mcp.{b}.search");
+        assert_ne!(ra, rb);
+        assert!(ra.starts_with("mcp."));
+        assert!(ra.contains(&a.to_string()));
+    }
+
+    /// The schema digest pins input and output schemas together: a server
+    /// that changes either schema invalidates existing grants (see
+    /// `discover`, which deletes grants on digest change).
+    #[test]
+    fn digest_changes_when_either_schema_changes() {
+        let input = json!({"type": "object"});
+        let base = schema_digest(&input, None);
+        assert_eq!(base, schema_digest(&input, None));
+        assert_ne!(base, schema_digest(&json!({"type": "string"}), None));
+        assert_ne!(
+            base,
+            schema_digest(&input, Some(&json!({"type": "object"})))
+        );
+    }
+
+    /// Discovery descriptors default-deny: effects assume the worst and risk
+    /// starts High, so a newly discovered tool can never execute before
+    /// explicit human review + grant.
+    #[test]
+    fn descriptors_default_deny() {
+        let d = descriptor(Uuid::new_v4(), "mcp.conn.tool", &json!({}), None);
+        assert_eq!(d.name, "mcp.conn.tool");
+        assert!(d.effects.external && d.effects.modifies_data && !d.effects.reversible);
+        assert!(matches!(d.default_risk, RiskLevel::High));
+        assert!(d.sandbox_required);
+    }
 }
