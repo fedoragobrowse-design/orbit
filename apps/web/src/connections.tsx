@@ -22,13 +22,14 @@ import {
 } from "./ui";
 
 const tabs = [
-  { to: "runtimes", label: "Runtimes" },
-  { to: "computers", label: "Computers" },
-  { to: "mcp", label: "MCP" },
-  { to: "calendars", label: "Calendars" },
-  { to: "github", label: "GitHub" },
-  { to: "home-assistant", label: "Home Assistant" },
-  { to: "api", label: "API" },
+  { to: "/connections/runtimes", label: "Runtimes" },
+  { to: "/connections/email", label: "Email" },
+  { to: "/connections/computers", label: "Computers" },
+  { to: "/connections/mcp", label: "MCP" },
+  { to: "/connections/calendars", label: "Calendars" },
+  { to: "/connections/github", label: "GitHub" },
+  { to: "/connections/home-assistant", label: "Home Assistant" },
+  { to: "/connections/api", label: "API" },
 ] as const;
 
 function gated(title: string, reason: string, extra?: React.ReactNode) {
