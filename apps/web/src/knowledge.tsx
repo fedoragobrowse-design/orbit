@@ -16,10 +16,13 @@ import {
   Empty,
   ErrorNotice,
   Field,
+  Input,
   Json,
   PageHeader,
   Resource,
+  Select,
   Status,
+  Textarea,
 } from "./ui";
 
 export function Memory() {
@@ -408,6 +411,195 @@ function Retention() {
 }
 
 const SCHEDULE_TYPES: Record<string, true> = { SCHEDULE_TRIGGER: true, TIMER_TRIGGER: true };
+function AutomationManager() {
+  const client = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const toggle = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      post<RecordData>(`/automations/${id}/enable`, { enabled }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["/automations"] }),
+  });
+  const removeAutomation = useMutation({
+    mutationFn: (id: string) =>
+      api<void>(`/automations/${id}`, { method: "DELETE" }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["/automations"] }),
+  });
+  return (
+    <section className="section" aria-label="Automations">
+      <div className="panel">
+        <h2>Automations</h2>
+        <Resource
+          path="/automations"
+          empty={
+            <Empty title="No automations yet">
+              Create a schedule or file-event routine below.
+            </Empty>
+          }
+        >
+          {(items) => (
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Instructions</th>
+                  <th scope="col">Trigger</th>
+                  <th scope="col">Next run</th>
+                  <th scope="col">Enabled</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((row) => (
+                  <tr key={row.id}>
+                    <th scope="row">{text(row.instructions).slice(0, 80)}</th>
+                    <td>{text((row.trigger as RecordData)?.kind ?? row.trigger)}</td>
+                    <td>{timestamp(row.next_run)}</td>
+                    <td>
+                      <Status value={row.enabled} />
+                    </td>
+                    <td>
+                      <button
+                        className="secondary"
+                        disabled={toggle.isPending}
+                        onClick={() =>
+                          toggle.mutate({
+                            id: String(row.id),
+                            enabled: !row.enabled,
+                          })
+                        }
+                      >
+                        {row.enabled ? "Disable" : "Enable"}
+                      </button>{" "}
+                      <button
+                        className="danger"
+                        disabled={removeAutomation.isPending}
+                        onClick={() => removeAutomation.mutate(String(row.id))}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Resource>
+        {(toggle.error || removeAutomation.error) && (
+          <ErrorNotice
+            error={(toggle.error ?? removeAutomation.error)!}
+            retry={() => {
+              toggle.reset();
+              removeAutomation.reset();
+            }}
+          />
+        )}
+        {open ? (
+          <NewAutomation onDone={() => setOpen(false)} />
+        ) : (
+          <button className="secondary" onClick={() => setOpen(true)}>
+            Add automation
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function NewAutomation({ onDone }: { onDone: () => void }) {
+  const client = useQueryClient();
+  const [form, setForm] = useState({
+    kind: "timer",
+    expression: "",
+    runAt: "",
+    eventType: "EMAIL_RECEIVED",
+    instructions: "",
+  });
+  const create = useMutation({
+    mutationFn: () => {
+      const trigger =
+        form.kind === "cron"
+          ? { kind: "cron", expression: form.expression, timezone: "UTC" }
+          : form.kind === "timer"
+            ? {
+                kind: "timer",
+                run_at: form.runAt
+                  ? new Date(form.runAt).toISOString()
+                  : new Date(Date.now() + 3600_000).toISOString(),
+              }
+            : { kind: "event", event_type: form.eventType };
+      return post<RecordData>("/automations", {
+        trigger,
+        instructions: form.instructions,
+      });
+    },
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ["/automations"] });
+      onDone();
+    },
+  });
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        create.mutate();
+      }}
+    >
+      <Select
+        label="Trigger kind"
+        value={form.kind}
+        onChange={(e) => setForm({ ...form, kind: e.target.value })}
+      >
+        <option value="timer">One-shot timer</option>
+        <option value="cron">Cron schedule</option>
+        <option value="event">Event trigger</option>
+      </Select>
+      {form.kind === "cron" && (
+        <Input
+          label="Cron expression (UTC)"
+          required
+          placeholder="0 9 * * *"
+          value={form.expression}
+          onChange={(e) => setForm({ ...form, expression: e.target.value })}
+        />
+      )}
+      {form.kind === "timer" && (
+        <Input
+          label="Run at (defaults to one hour from now)"
+          type="datetime-local"
+          value={form.runAt}
+          onChange={(e) => setForm({ ...form, runAt: e.target.value })}
+        />
+      )}
+      {form.kind === "event" && (
+        <Select
+          label="Event type"
+          value={form.eventType}
+          onChange={(e) => setForm({ ...form, eventType: e.target.value })}
+        >
+          <option value="EMAIL_RECEIVED">Email received</option>
+          <option value="FILE_CREATED">File created</option>
+          <option value="TASK_COMPLETED">Task completed</option>
+        </Select>
+      )}
+      <Textarea
+        label="Instructions"
+        required
+        value={form.instructions}
+        onChange={(e) => setForm({ ...form, instructions: e.target.value })}
+      />
+      {create.error && (
+        <ErrorNotice error={create.error} retry={() => create.reset()} />
+      )}
+      <div className="actions">
+        <button type="button" className="secondary" onClick={onDone}>
+          Cancel
+        </button>
+        <button type="submit" disabled={create.isPending}>
+          {create.isPending ? "Saving…" : "Save automation"}
+        </button>
+      </div>
+    </form>
+  );
+}
 
 export function Automations() {
   return (
@@ -416,21 +608,7 @@ export function Automations() {
         title="Automations"
         description="Recurring work Orbit runs on a schedule."
       />
-      <div className="notice info" role="note">
-        <div>
-          <p>
-            <strong>Not available in this build.</strong> The Automation API
-            (Milestone 8) is not served by this backend.
-          </p>
-          <p>
-            <small>
-              There are no schedules or routines to create yet, so this page
-              makes no changes. Below is the real schedule activity this
-              backend has recorded.
-            </small>
-          </p>
-        </div>
-      </div>
+      <AutomationManager />
 
       <section className="section" aria-label="Schedule activity">
         <div className="panel">

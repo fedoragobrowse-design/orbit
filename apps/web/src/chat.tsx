@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   label,
@@ -14,8 +15,10 @@ import {
   Empty,
   ErrorNotice,
   Evidence,
+  Input,
   PageHeader,
   Resource,
+  Select,
   Status,
   Textarea,
 } from "./ui";
@@ -197,9 +200,10 @@ export function Chat() {
               </Link>
             </div>
             <p className="muted">
-              Attachments need the Milestone 3 upload API, not served by this
-              backend. Each sent message creates a USER_MESSAGE event; the
-              backend queues a notification task and notification for it.
+              Each sent message creates a USER_MESSAGE event; the backend
+              queues a notification task and notification for it. File
+              attachments ride the agent run instead of a separate upload
+              API in this build.
             </p>
             {send.error && <ErrorNotice error={send.error} />}
           </form>
@@ -250,58 +254,159 @@ export function Chat() {
   );
 }
 
-const PLANNED_AGENTS = [
-  {
-    name: "General Assistant",
-    note: "Default assistant for chat messages. Needs the Milestone 3 agent runtime API.",
-  },
-  {
-    name: "File Agent",
-    note: "Planned file helper. Needs the Milestone 6 file agent API.",
-  },
-  {
-    name: "Email Agent",
-    note: "Planned mail helper. Mail accounts exist, but the helper needs the Milestone 3 agent runtime API.",
-  },
-];
+const AGENT_ROLES = ["FAST", "PRIVATE", "REASONING", "CODING", "VISION", "EMBEDDING"];
+
+function NewAgent({ onDone }: { onDone: () => void }) {
+  const client = useQueryClient();
+  const [form, setForm] = useState({
+    name: "",
+    purpose: "",
+    instructions: "",
+    allowed_tools: "",
+    model_role: "FAST",
+  });
+  const create = useMutation({
+    mutationFn: () =>
+      post<RecordData>("/agents", {
+        agent: {
+          name: form.name,
+          purpose: form.purpose || form.name,
+          instructions: form.instructions || form.purpose || form.name,
+          allowed_tools: form.allowed_tools
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+          model_role: form.model_role,
+          context_strategy: {
+            include_memory: true,
+            history_messages: 20,
+            max_context_characters: 16000,
+          },
+          limits: {
+            max_model_calls: 10,
+            max_tool_calls: 20,
+            max_active_seconds: 600,
+            max_tokens: 32000,
+            max_retries: 2,
+            max_subagent_depth: 0,
+          },
+          autonomy_constraints: [],
+          memory_permissions: { read_types: [], write_types: [], project_ids: [] },
+          sandbox_required: false,
+        },
+      }),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ["/agents"] });
+      onDone();
+    },
+  });
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        create.mutate();
+      }}
+    >
+      <Input
+        label="Name"
+        required
+        value={form.name}
+        onChange={(e) => setForm({ ...form, name: e.target.value })}
+      />
+      <Textarea
+        label="Purpose"
+        value={form.purpose}
+        onChange={(e) => setForm({ ...form, purpose: e.target.value })}
+      />
+      <Textarea
+        label="Instructions"
+        value={form.instructions}
+        onChange={(e) => setForm({ ...form, instructions: e.target.value })}
+      />
+      <Input
+        label="Allowed tools (comma-separated)"
+        placeholder="files.read, email.send"
+        value={form.allowed_tools}
+        onChange={(e) => setForm({ ...form, allowed_tools: e.target.value })}
+      />
+      <Select
+        label="Model role"
+        value={form.model_role}
+        onChange={(e) => setForm({ ...form, model_role: e.target.value })}
+      >
+        {AGENT_ROLES.map((option) => (
+          <option key={option} value={option}>
+            {label(option)}
+          </option>
+        ))}
+      </Select>
+      {create.error && <ErrorNotice error={create.error} retry={() => create.reset()} />}
+      <div className="actions">
+        <button type="button" className="secondary" onClick={onDone}>
+          Cancel
+        </button>
+        <button type="submit" disabled={create.isPending}>
+          {create.isPending ? "Saving…" : "Save agent"}
+        </button>
+      </div>
+    </form>
+  );
+}
 
 export function Agents() {
+  const [open, setOpen] = useState(false);
   return (
     <>
       <PageHeader
         title="Agents"
         description="Bounded assistants with explicit tools, model roles, and memory access."
       />
-      <section className="panel section">
-        <h2>Not available in this build</h2>
-        <p>
-          Agents need the Milestone 3 agent API — not served by this backend.
-        </p>
-        <h3>What you can do now</h3>
-        <ul>
-          <li>
-            <Link className="safe-link" to="/chat">
-              Send a message
-            </Link>{" "}
-            — creates a USER_MESSAGE event plus a notification task.
-          </li>
-          <li>
-            <Link className="safe-link" to="/tasks">
-              Track it in Tasks
-            </Link>{" "}
-            — inspect state, checkpoints, evidence, and recovery.
-          </li>
-        </ul>
-      </section>
-      <section className="panel section">
-        <h2>Planned agents</h2>
-        <ul>
-          {PLANNED_AGENTS.map((a) => (
-            <li key={a.name}>
-              <strong>{a.name}.</strong> {a.note}
-            </li>
-          ))}
-        </ul>
+      <section className="section" aria-label="Agents">
+        <div className="panel">
+          <h2>Agents</h2>
+          <Resource
+            path="/agents"
+            empty={
+              <Empty title="No agents yet">
+                Define a bounded assistant with explicit tools and limits.
+              </Empty>
+            }
+          >
+            {(items) => (
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Name</th>
+                    <th scope="col">Model role</th>
+                    <th scope="col">Tools</th>
+                    <th scope="col">Enabled</th>
+                    <th scope="col">Rev</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((row) => (
+                    <tr key={row.id}>
+                      <th scope="row">{text(row.name)}</th>
+                      <td>{label(row.model_role)}</td>
+                      <td>{text(row.allowed_tools)}</td>
+                      <td>
+                        <Status value={row.enabled} />
+                      </td>
+                      <td>{text(row.revision)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Resource>
+          {open ? (
+            <NewAgent onDone={() => setOpen(false)} />
+          ) : (
+            <button className="secondary" onClick={() => setOpen(true)}>
+              Add agent
+            </button>
+          )}
+        </div>
       </section>
     </>
   );

@@ -171,13 +171,13 @@ export function Home() {
               <Link to="/settings">Settings</Link>
             </p>
             <p className="muted">
-              Connect a computer node (Milestone 6) — not available in this
-              build.
+              <Link to="/computers">Computers</Link> lists paired machines;
+              pairing codes live there.
             </p>
             <h3>Active routines</h3>
             <p className="muted">
-              Routines need the automation API (Milestone 8) — not available
-              in this build.
+              <Link to="/automations">Automations</Link> lists schedules and
+              event routines.
             </p>
           </section>
         </div>
@@ -214,20 +214,17 @@ export function Home() {
               )}
             </form>
             <p className="muted">
-              Messages are recorded as events. Chat needs the agent runtime
-              API (Milestone 3), not yet served by this backend.
+              Messages are recorded as events and answered by the agent
+              runtime over your configured models.
             </p>
           </section>
           <section className="panel projects">
             <h2>Your projects</h2>
             <p className="muted">
-              Project memory needs the memory API, not yet served by this
-              backend. Recent file and message events appear under{" "}
+              <Link to="/memory">Memory</Link> lists projects and what Orbit
+              remembers. Recent file and message events appear under{" "}
               <Link to="/activity">Activity</Link> instead.
             </p>
-            <Link className="safe-link" to="/activity">
-              Browse activity
-            </Link>
           </section>
         </div>
       </div>
@@ -606,6 +603,80 @@ export function Activity() {
     </>
   );
 }
+function RetentionSettings() {
+  const settings = useQuery({
+    queryKey: ["retention"],
+    queryFn: () => api<RecordData>("/retention"),
+  });
+  const [form, setForm] = useState<Record<string, string>>({});
+  const save = useMutation({
+    mutationFn: (body: Record<string, number>) => put<RecordData>("/retention", body),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["retention"] }),
+  });
+  if (settings.isPending)
+    return (
+      <section className="panel form">
+        <h2>Retention</h2>
+        <p role="status">Loading retention…</p>
+      </section>
+    );
+  if (settings.error)
+    return (
+      <section className="panel form">
+        <h2>Retention</h2>
+        <ErrorNotice error={settings.error} retry={() => settings.refetch()} />
+      </section>
+    );
+  const current = settings.data ?? {};
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    const body: Record<string, number> = {};
+    for (const name of [
+      "event_body_days",
+      "conversation_body_days",
+      "runtime_artifact_days",
+      "connector_cache_days",
+    ]) {
+      const raw = form[name] ?? (current[name] != null ? String(current[name]) : "");
+      const value = Math.floor(Number(raw));
+      if (Number.isFinite(value) && value >= 1) body[name] = value;
+    }
+    save.mutate(body);
+  };
+  return (
+    <section className="panel form">
+      <h2>Retention</h2>
+      <p className="muted">
+        Pending approvals and runtime evidence are protected from ordinary
+        cleanup.
+      </p>
+      <form onSubmit={submit}>
+        {[
+          "event_body_days",
+          "conversation_body_days",
+          "runtime_artifact_days",
+          "connector_cache_days",
+        ].map((name) => (
+          <label key={name}>
+            {name.replaceAll("_", " ")}
+            <input
+              type="number"
+              min={1}
+              value={form[name] ?? (current[name] != null ? String(current[name]) : "")}
+              onChange={(e) => setForm({ ...form, [name]: e.target.value })}
+            />
+          </label>
+        ))}
+        {save.error && (
+          <ErrorNotice error={save.error} retry={() => save.reset()} />
+        )}
+        <button disabled={save.isPending}>
+          {save.isPending ? "Saving…" : "Save retention"}
+        </button>
+      </form>
+    </section>
+  );
+}
 type SettingsData = {
   installation_mode: string;
   autonomy_mode: string;
@@ -697,19 +768,14 @@ export function Settings() {
           <button disabled={save.isPending}>Save privacy and autonomy</button>
         </form>
       )}
-      <section className="panel form">
-        <h2>Retention</h2>
-        <p className="muted">
-          Retention controls need the memory API, not yet served by this
-          backend. Pending approvals and runtime evidence are protected from
-          ordinary cleanup.
-        </p>
-      </section>
+      <RetentionSettings />
       <section className="panel form">
         <h2>Policies and budgets</h2>
         <p className="muted">
-          Policy rules and budgets need the policy API, not yet served by this
-          backend. Denials win; approval and sandbox requirements accumulate.
+          <Link to="/approvals">Approvals</Link> enforce the standing policy:
+          denials win, and approval plus sandbox requirements accumulate.
+          Standing rules are managed through the policy crate by the owner —
+          there is no separate rules API in this build.
         </p>
       </section>
       {save.error && <ErrorNotice error={save.error} />}{" "}

@@ -16,6 +16,7 @@ import {
   Empty,
   ErrorNotice,
   Field,
+  Input,
   Json,
   PageHeader,
   Status,
@@ -307,30 +308,20 @@ export function Connections() {
         <Route path="email" element={<Email />} />
         <Route
           path="computers"
-          element={gated(
-            "Computers",
-            "Computer nodes let Orbit work alongside your machines. Node pairing needs the Node API (Milestone 6), not yet served by this backend.",
-            <p>
-              <Link className="safe-link" to="/computers">
-                Open the Computers page
-              </Link>{" "}
-              for the full status.
-            </p>,
-          )}
+          element={
+            <div className="panel">
+              <h2>Computers</h2>
+              <p>
+                Nodes pair and enrol from the{" "}
+                <Link className="safe-link" to="/computers">
+                  Computers page
+                </Link>{" "}
+                — pairing codes and revocation live there.
+              </p>
+            </div>
+          }
         />
-        <Route
-          path="mcp"
-          element={gated(
-            "MCP",
-            "MCP tool connections need the Milestone 10 MCP API, not served by this backend.",
-            <p>
-              <Link className="safe-link" to="/approvals">
-                Tools registered so far are listed under Approvals
-              </Link>
-              .
-            </p>,
-          )}
-        />
+        <Route path="mcp" element={<McpConnections />} />
         <Route
           path="calendars"
           element={gated(
@@ -370,6 +361,151 @@ export function Connections() {
         />
       </Routes>
     </>
+  );
+}
+function McpConnections() {
+  const client = useQueryClient();
+  const [adding, setAdding] = useState(false);
+  const connections = useQuery({
+    queryKey: ["mcp-connections"],
+    queryFn: () => api<{ items: RecordData[] }>("/mcp/connections"),
+  });
+  const invalidate = () =>
+    client.invalidateQueries({ queryKey: ["mcp-connections"] });
+  const removeConnection = useMutation({
+    mutationFn: (id: string) => remove(`/mcp/connections/${id}`),
+    onSuccess: invalidate,
+  });
+  if (connections.isPending)
+    return (
+      <div className="panel">
+        <p role="status">Loading MCP connections…</p>
+      </div>
+    );
+  if (connections.error)
+    return (
+      <div className="panel">
+        <ErrorNotice
+          error={connections.error}
+          retry={() => connections.refetch()}
+        />
+      </div>
+    );
+  const items = connections.data?.items ?? [];
+  return (
+    <div className="panel">
+      <h2>MCP</h2>
+      <p>
+        <small>
+          MCP servers expose tools through a connection Orbit admits first.
+          Tool calls still need your approval.
+        </small>
+      </p>
+      {!items.length ? (
+        <Empty title="No MCP connections yet">
+          Add a server origin to discover its tools.
+        </Empty>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Status</th>
+              <th scope="col">Enabled</th>
+              <th scope="col">Last discovery</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((row) => (
+              <tr key={String(row.id)}>
+                <th scope="row">{text(row.name)}</th>
+                <td>
+                  <Status value={row.status} />
+                </td>
+                <td>
+                  <Status value={row.enabled} />
+                </td>
+                <td>{timestamp(row.last_discovery)}</td>
+                <td>
+                  <button
+                    className="danger"
+                    disabled={removeConnection.isPending}
+                    onClick={() => removeConnection.mutate(String(row.id))}
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {removeConnection.error && (
+        <ErrorNotice
+          error={removeConnection.error}
+          retry={() => removeConnection.reset()}
+        />
+      )}
+      <p>
+        <Link className="safe-link" to="/approvals">
+          Tools registered so far are listed under Approvals
+        </Link>
+        .
+      </p>
+      {adding ? (
+        <NewMcpConnection onDone={() => setAdding(false)} />
+      ) : (
+        <button className="secondary" onClick={() => setAdding(true)}>
+          Add MCP connection
+        </button>
+      )}
+    </div>
+  );
+}
+
+function NewMcpConnection({ onDone }: { onDone: () => void }) {
+  const client = useQueryClient();
+  const [form, setForm] = useState({ name: "", origin: "" });
+  const create = useMutation({
+    mutationFn: () => post<RecordData>("/mcp/connections", form),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ["mcp-connections"] });
+      onDone();
+    },
+  });
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        create.mutate();
+      }}
+    >
+      <Input
+        label="Name"
+        required
+        value={form.name}
+        onChange={(e) => setForm({ ...form, name: e.target.value })}
+      />
+      <Input
+        label="Server origin"
+        required
+        placeholder="https://mcp.example.com"
+        value={form.origin}
+        onChange={(e) => setForm({ ...form, origin: e.target.value })}
+      />
+      {create.error && (
+        <ErrorNotice error={create.error} retry={() => create.reset()} />
+      )}
+      <div className="actions">
+        <button type="button" className="secondary" onClick={onDone}>
+          Cancel
+        </button>
+        <button type="submit" disabled={create.isPending}>
+          {create.isPending ? "Saving…" : "Save connection"}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -643,51 +779,242 @@ function NewEmailAccount({ onDone }: { onDone: () => void }) {
 }
 
 export function Computers() {
+  const client = useQueryClient();
+  const nodes = useQuery({
+    queryKey: ["computers"],
+    queryFn: () => api<{ items: RecordData[] }>("/computers"),
+  });
+  const invalidate = () => client.invalidateQueries({ queryKey: ["computers"] });
+  const pairing = useMutation({
+    mutationFn: () => post<RecordData>("/computers/pairing-codes"),
+  });
+  const revoke = useMutation({
+    mutationFn: (id: string) => post<RecordData>(`/computers/${id}/revoke`),
+    onSuccess: invalidate,
+  });
+  if (nodes.isPending)
+    return (
+      <>
+        <PageHeader
+          title="Computers"
+          description="Machines paired with your Orbit."
+        />
+        <div className="panel">
+          <p role="status">Loading machines…</p>
+        </div>
+      </>
+    );
+  if (nodes.error)
+    return (
+      <>
+        <PageHeader
+          title="Computers"
+          description="Machines paired with your Orbit."
+        />
+        <div className="panel">
+          <ErrorNotice error={nodes.error} retry={() => nodes.refetch()} />
+        </div>
+      </>
+    );
+  const items = nodes.data?.items ?? [];
   return (
     <>
       <PageHeader
         title="Computers"
         description="Machines paired with your Orbit."
       />
-      <div className="notice info" role="note">
-        <div>
-          <p>
-            <strong>Not available in this build.</strong> Computer nodes need
-            the Node API (Milestone 6) — not served by this backend.
-          </p>
-          <p>
-            <small>
-              No machines are paired, so this page lists nothing. Pairing a
-              machine — including macOS machines via the OMP node agent —
-              becomes possible once the Node API lands; see the Orbit node
-              pairing docs then for the enrolment steps.
-            </small>
-          </p>
-        </div>
+      <div className="panel">
+        <h2>Paired machines</h2>
+        {!items.length ? (
+          <Empty title="No machines paired yet">
+            Create a one-use pairing code, then enrol the node agent on the
+            machine — including macOS machines via the OMP node agent.
+          </Empty>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Connected</th>
+                <th scope="col">Last seen</th>
+                <th scope="col">Roots</th>
+                <th scope="col">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((row) => (
+                <tr key={String(row.id)}>
+                  <th scope="row">{text(row.display_name)}</th>
+                  <td>
+                    <Status value={row.connected} />
+                  </td>
+                  <td>{timestamp(row.last_seen)}</td>
+                  <td>
+                    {Array.isArray(row.roots)
+                      ? row.roots.map((r) => text((r as RecordData).display_name)).join(", ") || "—"
+                      : "—"}
+                  </td>
+                  <td>
+                    <button
+                      className="danger"
+                      disabled={revoke.isPending}
+                      onClick={() => revoke.mutate(String(row.id))}
+                    >
+                      Revoke
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {revoke.error && (
+          <ErrorNotice error={revoke.error} retry={() => revoke.reset()} />
+        )}
+      </div>
+      <div className="panel">
+        <h2>Pair a machine</h2>
+        <p>
+          <small>
+            Codes are one-use and expire after ten minutes. The node presents
+            the code over verified TLS when it enrols.
+          </small>
+        </p>
+        {pairing.data ? (
+          <div>
+            <p>
+              Pairing code: <strong>{text(pairing.data.code)}</strong>
+            </p>
+            <p>
+              <small>
+                Expires in {text(pairing.data.expires_in_seconds)} seconds.
+                Creating another code invalidates this one.
+              </small>
+            </p>
+          </div>
+        ) : (
+          <button
+            className="secondary"
+            disabled={pairing.isPending}
+            onClick={() => pairing.mutate()}
+          >
+            {pairing.isPending ? "Creating…" : "Create pairing code"}
+          </button>
+        )}
+        {pairing.error && (
+          <ErrorNotice error={pairing.error} retry={() => pairing.reset()} />
+        )}
       </div>
     </>
   );
 }
 
 export function Files() {
+  const [nodeId, setNodeId] = useState("");
+  const [rootId, setRootId] = useState("");
+  const [path, setPath] = useState("");
+  const [browse, setBrowse] = useState<{
+    node_id: string;
+    root_id: string;
+    relative_path: string;
+  } | null>(null);
+  const nodes = useQuery({
+    queryKey: ["computers"],
+    queryFn: () => api<{ items: RecordData[] }>("/computers"),
+  });
+  const listing = useQuery({
+    queryKey: ["files", browse],
+    enabled: browse !== null,
+    queryFn: () =>
+      api<RecordData>(
+        `/files/list?node_id=${encodeURIComponent(browse!.node_id)}&root_id=${encodeURIComponent(browse!.root_id)}${browse!.relative_path ? `&relative_path=${encodeURIComponent(browse!.relative_path)}` : ""}`,
+      ),
+  });
+  const nodeItems = nodes.data?.items ?? [];
+  const selected = nodeItems.find((n) => String(n.id) === nodeId);
+  const roots = Array.isArray(selected?.roots)
+    ? (selected.roots as RecordData[])
+    : [];
   return (
     <>
       <PageHeader title="Files" description="Files Orbit can see." />
-      <div className="notice info" role="note">
-        <div>
-          <p>
-            <strong>Not available in this build.</strong> Files need the
-            Files API (Milestone 6) — not served by this backend.
-          </p>
-          <p>
-            <small>
-              File browsing is version-gated: the backend exposes no file
-              listing in this build, so this page lists nothing rather than
-              guessing at your files.
-            </small>
-          </p>
-        </div>
+      <div className="panel">
+        <h2>Browse files</h2>
+        <p>
+          <small>
+            Reads go through the paired node over its live channel, scoped to
+            the roots you approved for that machine.
+          </small>
+        </p>
+        {!nodeItems.length ? (
+          <Empty title="No machines paired yet">
+            Pair a machine on the Computers page first — file browsing needs
+            a live node with approved roots.
+          </Empty>
+        ) : (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              setBrowse({ node_id: nodeId, root_id: rootId, relative_path: path });
+            }}
+          >
+            <Field label="Machine">
+              <select
+                required
+                value={nodeId}
+                onChange={(e) => {
+                  setNodeId(e.target.value);
+                  setRootId("");
+                }}
+              >
+                <option value="">Choose a machine…</option>
+                {nodeItems.map((n) => (
+                  <option key={String(n.id)} value={String(n.id)}>
+                    {text(n.display_name)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {!!roots.length && (
+              <Field label="Root">
+                <select
+                  required
+                  value={rootId}
+                  onChange={(e) => setRootId(e.target.value)}
+                >
+                  <option value="">Choose a root…</option>
+                  {roots.map((r) => (
+                    <option key={String(r.id)} value={String(r.id)}>
+                      {text(r.display_name)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+            <Input
+              label="Subdirectory (optional)"
+              placeholder="documents"
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
+            />
+            <div className="actions">
+              <button type="submit" disabled={!nodeId || !rootId}>
+                List files
+              </button>
+            </div>
+          </form>
+        )}
       </div>
+      {browse && (
+        <div className="panel">
+          <h2>Listing</h2>
+          {listing.isPending && <p role="status">Loading…</p>}
+          {listing.error && (
+            <ErrorNotice error={listing.error} retry={() => listing.refetch()} />
+          )}
+          {listing.data && <Json value={listing.data} />}
+        </div>
+      )}
     </>
   );
 }

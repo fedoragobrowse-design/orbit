@@ -143,17 +143,19 @@ test("settings: privacy form saves with revision", async ({ page }) => {
   await expect(page.getByText(/saved|revision|Saved/i).first()).toBeVisible();
 });
 
-test("unavailable surfaces name their milestone, not a dead end", async ({
+test("still-unavailable surfaces name their gap, not a dead end", async ({
   page,
 }) => {
   for (const [url, name] of [
-    ["/agents", "Agents"],
-    ["/computers", "Computers"],
-    ["/files", "Files"],
-    ["/automations", "Automations"],
+    ["/connections/calendars", "Calendars"],
+    ["/connections/github", "GitHub"],
+    ["/connections/home-assistant", "Home Assistant"],
+    ["/connections/api", "API"],
   ] as const) {
     await page.goto(url);
-    await expect(page.locator("h1", { hasText: name })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name, exact: true }),
+    ).toBeVisible();
     await expect(page.getByText("Not available in this build")).toBeVisible();
   }
 });
@@ -164,6 +166,10 @@ test("wired surfaces load real data instead of a gate", async ({ page }) => {
     ["/approvals", "Approvals"],
     ["/memory", "Memory"],
     ["/connections", "Connections"],
+    ["/agents", "Agents"],
+    ["/computers", "Computers"],
+    ["/files", "Files"],
+    ["/automations", "Automations"],
   ] as const) {
     await page.goto(url);
     await expect(page.locator("h1", { hasText: name })).toBeVisible();
@@ -206,4 +212,40 @@ test("connections: runtime and email tabs render against real endpoints", async 
   await expect(
     page.getByRole("button", { name: "Add mail account" }),
   ).toBeVisible();
+});
+
+// One login covers all four write paths: the per-email rate gate (10
+// attempts/15min) counts every serial sign-in, so separate tests would trip
+// it. Same assertions, one session.
+test("wired write paths persist (agents, automations, computers, retention)", async ({
+  page,
+}) => {
+  await page.goto("/agents");
+  await expect(page.locator("h1", { hasText: "Agents" })).toBeVisible();
+  await page.getByRole("button", { name: "Add agent" }).click();
+  await page.getByLabel("Name").fill("e2e-agent");
+  await page.getByLabel("Purpose").fill("e2e purpose");
+  await page.getByLabel("Instructions").fill("e2e instructions");
+  await page.getByRole("button", { name: "Save agent" }).click();
+  await expect(page.getByRole("rowheader", { name: "e2e-agent" })).toBeVisible();
+
+  await page.goto("/automations");
+  await expect(page.locator("h1", { hasText: "Automations" })).toBeVisible();
+  await page.getByRole("button", { name: "Add automation" }).click();
+  await page.getByLabel("Instructions").fill("e2e automation instructions");
+  await page.getByRole("button", { name: "Save automation" }).click();
+  await expect(
+    page.getByRole("rowheader", { name: /e2e automation/ }),
+  ).toBeVisible();
+
+  await page.goto("/computers");
+  await expect(
+    page.getByRole("heading", { name: "Paired machines" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Create pairing code" }).click();
+  await expect(page.getByText("Pairing code:")).toBeVisible();
+
+  await page.goto("/settings");
+  await expect(page.getByRole("heading", { name: "Retention" })).toBeVisible();
+  await expect(page.getByText("Not available in this build")).toHaveCount(0);
 });

@@ -48,7 +48,7 @@ pub struct CreateAutomationRequest {
 }
 
 fn default_model_role() -> String {
-    "CHAT".into()
+    "FAST".into()
 }
 fn default_notification_behavior() -> String {
     "NONE".into()

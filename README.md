@@ -24,8 +24,9 @@ Web: `http://127.0.0.1:8080` · API: `http://127.0.0.1:3000` (via web proxy at
 
 ## Milestone truth
 
-Milestone 1 (foundation) is live: auth, settings, events, tasks with recovery,
-activity, notifications, SSE stream. Later milestones (providers/models,
-agents/chat, approvals, memory, automations, computers/files, email, MCP)
-surface as honest "not available in this build" states in the web workspace
-until their backend API lands. No mock routes, no fake success.
+Milestones 1–10 are live: auth, settings, events, tasks with recovery,
+activity, notifications, SSE stream, providers/models, agents/chat,
+approvals, memory/retention, automations, computers/files with pairing,
+email, MCP. The web workspace wires all of these for real; only native
+calendars, GitHub, Home Assistant, and computer-use screen control stay
+gated. No mock routes, no fake success.
