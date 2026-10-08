@@ -1,0 +1,9 @@
+# Workstation-only live acceptance. Does not modify an existing Ollama service.
+# Start after the owner of a previous disposable probe releases loopback11435.
+services:
+  ollama:
+    environment:
+      OLLAMA_MODELS: /models
+    volumes:
+      - /var/snap/ollama/common/models:/models:ro
+    ports: ["127.0.0.1:11435:11434"]

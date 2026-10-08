@@ -1,0 +1,16 @@
+[package]
+name = "orbit-scheduler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+orbit-core = { path = "../core" }
+orbit-audit = { path = "../audit" }
+sqlx.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true

@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+: "${ORBIT_APP_DB_PASSWORD:?A separately generated application password is required}"
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --set=app_password="$ORBIT_APP_DB_PASSWORD" <<'SQL'
+CREATE ROLE orbit_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD :'app_password';
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO orbit_runtime;
+GRANT CONNECT ON DATABASE orbit TO orbit_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO orbit_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO orbit_runtime;
+SQL

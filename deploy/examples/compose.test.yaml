@@ -1,0 +1,117 @@
+name: orbit-test
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: orbit_test
+      POSTGRES_PASSWORD: orbit_test
+      POSTGRES_DB: orbit_test
+    ports: ["127.0.0.1:55432:5432"]
+    volumes:
+      - test-db:/var/lib/postgresql/data
+      - ../docker/test-databases.sql:/docker-entrypoint-initdb.d/10-test-databases.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U orbit_test -d orbit_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [orbit-test]
+  test-ca:
+    build: {context: ../.., dockerfile: deploy/docker/test-ca.Dockerfile}
+    volumes: [test-ca-private:/ca, test-mail-tls:/mail, test-web-tls:/web, test-ca-trust:/trust]
+    networks: [orbit-test]
+  greenmail:
+    image: greenmail/standalone:2.1.14
+    environment:
+      GREENMAIL_OPTS: "-Dgreenmail.imaps.hostname=0.0.0.0 -Dgreenmail.imaps.port=3993 -Dgreenmail.smtps.hostname=0.0.0.0 -Dgreenmail.smtps.port=3465 -Dgreenmail.users=assistant:orbit-fixture-pass@orbit.test,recipient:orbit-fixture-pass@orbit.test -Dgreenmail.users.login=email -Dgreenmail.tls.keystore.file=/tls/greenmail.p12 -Dgreenmail.tls.keystore.password=orbit-fixture-keystore"
+    ports: ["127.0.0.1:19993:3993", "127.0.0.1:19465:3465"]
+    volumes: [test-mail-tls:/tls:ro]
+    depends_on:
+      test-ca: {condition: service_completed_successfully}
+    networks: [orbit-test]
+  fixtures:
+    build: {context: ../.., dockerfile: deploy/docker/fixtures.Dockerfile}
+    environment: {ORBIT_FIXTURE_BIND: "0.0.0.0:18090"}
+    ports: ["127.0.0.1:18090:18090"]
+    networks: [orbit-test]
+  ollama:
+    image: ollama/ollama:0.34.0
+    profiles: [ollama]
+    volumes: [test-models:/root/.ollama]
+    networks: [orbit-test]
+  server:
+    build: {context: ../.., dockerfile: deploy/docker/server.Dockerfile}
+    environment:
+      DATABASE_URL: postgres://orbit_runtime:orbit_runtime_fixture@postgres:5432/orbit_e2e
+      ORBIT_MIGRATION_DATABASE_URL: postgres://orbit_test:orbit_test@postgres:5432/orbit_e2e
+      ORBIT_BIND: 0.0.0.0:3000
+      ORBIT_PUBLIC_ORIGIN: http://127.0.0.1:18080
+      ORBIT_KEY_DIR: /var/lib/orbit/keys
+      ORBIT_ARTIFACT_DIR: /var/lib/orbit/artifacts
+    volumes: [test-e2e-keys:/var/lib/orbit/keys, test-e2e-artifacts:/var/lib/orbit/artifacts, test-ca-trust:/tls:ro]
+    depends_on:
+      postgres: {condition: service_healthy}
+      test-ca: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:3000/ready]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    networks: [orbit-test]
+  web:
+    build: {context: ../.., dockerfile: deploy/docker/web.Dockerfile}
+    ports: ["127.0.0.1:18080:8080", "127.0.0.1:${ORBIT_TEST_TLS_PORT:-19443}:8443"]
+    volumes:
+      - ../docker/Caddyfile.test:/etc/caddy/Caddyfile:ro
+      - test-web-tls:/tls:ro
+      - test-web-data:/data
+      - test-web-config:/config
+    depends_on:
+      server: {condition: service_healthy}
+      test-ca: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/ready]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    networks: [orbit-test]
+  node:
+    profiles: [node]
+    build: {context: ../.., dockerfile: deploy/docker/server.Dockerfile}
+    entrypoint: [orbit-computer-node]
+    command: [serve, --config, /var/lib/orbit-node/node.json]
+    volumes: [test-node-state:/var/lib/orbit-node, test-ca-trust:/tls:ro]
+    depends_on:
+      web: {condition: service_healthy}
+    networks: [orbit-test]
+  e2e-reset:
+    profiles: [e2e-maintenance]
+    image: alpine:3.22
+    network_mode: none
+    user: "0:0"
+    command: [sh, -ec, "find /keys /artifacts /node -mindepth 1 -maxdepth 1 -exec rm -rf {} +; chown 10001:10001 /keys /artifacts /node; chmod 700 /keys /artifacts /node"]
+    volumes: [test-e2e-keys:/keys, test-e2e-artifacts:/artifacts, test-node-state:/node]
+  node-security:
+    profiles: [native-security]
+    build: {context: ../.., dockerfile: deploy/docker/node-security.Dockerfile}
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE, SETUID, SETGID]
+    security_opt: ["seccomp:../docker/node-security-seccomp.json"]
+    tmpfs: ["/tmp:exec,size=256m"]
+networks:
+  orbit-test:
+    name: orbit-test
+volumes:
+  test-db:
+    name: orbit-test-db
+  test-ca-private: {name: orbit-test-ca-private}
+  test-mail-tls: {name: orbit-test-mail-tls}
+  test-web-tls: {name: orbit-test-web-tls}
+  test-ca-trust: {name: orbit-test-ca-trust}
+  test-e2e-keys: {name: orbit-test-e2e-keys}
+  test-e2e-artifacts: {name: orbit-test-e2e-artifacts}
+  test-node-state: {name: orbit-test-node-state}
+  test-web-data: {name: orbit-test-web-data}
+  test-web-config: {name: orbit-test-web-config}
+  test-models: {name: orbit-test-models}

@@ -1,0 +1,14 @@
+[package]
+name = "orbit-approvals"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+orbit-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+serde_jcs.workspace = true
+sha2.workspace = true
+hex.workspace = true

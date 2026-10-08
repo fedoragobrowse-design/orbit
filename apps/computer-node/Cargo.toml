@@ -1,0 +1,42 @@
+[package]
+name = "orbit-computer-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+native-security = []
+
+[dependencies]
+orbit-computer-node-protocol = { path = "../../crates/computer-node-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+hex.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+rand.workspace = true
+libc = "0.2"
+clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
+base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
+rustls = { version = "0.23", features = ["ring"], default-features = false }
+rustls-pemfile = "2"
+tokio-rustls = { workspace = true }
+webpki-roots = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+notify = "8"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_IO", "Win32_System_SystemInformation", "Wdk_Storage_FileSystem", "Wdk_Foundation"] }
+
+[dev-dependencies]
+tempfile = "3"

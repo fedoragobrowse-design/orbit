@@ -1,0 +1,4 @@
+{$ORBIT_HOST} {
+  {$ORBIT_TLS_POLICY}
+  reverse_proxy web:8080
+}

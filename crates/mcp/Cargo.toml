@@ -1,0 +1,30 @@
+[package]
+name = "orbit-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+[dependencies]
+orbit-core = { path = "../core" }
+orbit-audit = { path = "../audit" }
+orbit-secrets = { path = "../secrets" }
+orbit-model-router = { path = "../model-router" }
+orbit-tools = { path = "../tools" }
+rmcp = { version = "=3.4.1", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
+reqwest = { version = "=0.13.2", default-features = false, features = ["rustls", "json", "stream"] }
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+hex.workspace = true
+futures-util.workspace = true
+async-stream.workspace = true
+bytes = "1"
+http = "1"
+sse-stream = "0.2"
+jsonschema = { version = "0.33", default-features = false }
+[dev-dependencies]
+orbit-fixtures = { path = "../../tests/fixtures" }
+anyhow.workspace = true

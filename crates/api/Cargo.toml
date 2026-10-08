@@ -1,0 +1,42 @@
+[package]
+name = "orbit-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+rand.workspace = true
+sha2.workspace = true
+hex.workspace = true
+argon2.workspace = true
+subtle.workspace = true
+async-stream.workspace = true
+futures-util.workspace = true
+utoipa.workspace = true
+tracing.workspace = true
+base64.workspace = true
+orbit-core = { path = "../core" }
+orbit-audit = { path = "../audit" }
+orbit-event-bus = { path = "../event-bus" }
+orbit-secrets = { path = "../secrets" }
+orbit-model-router = { path = "../model-router" }
+orbit-policy = { path = "../policy" }
+orbit-risk = { path = "../risk" }
+orbit-approvals = { path = "../approvals" }
+orbit-tools = { path = "../tools" }
+orbit-agent-runtime = { path = "../agent-runtime" }
+orbit-task-runtime = { path = "../task-runtime" }
+orbit-aiec-runtime = { path = "../aiec-runtime" }
+orbit-computer-node-protocol = { path = "../computer-node-protocol" }
+orbit-memory = { path = "../memory" }
+orbit-scheduler = { path = "../scheduler" }
+orbit-email = { path = "../email" }
+orbit-mcp = { path = "../mcp" }

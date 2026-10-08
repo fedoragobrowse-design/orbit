@@ -1,0 +1,19 @@
+services:
+  server:
+    environment:
+      ORBIT_PUBLIC_ORIGIN: ${ORBIT_PUBLIC_ORIGIN:?Set the exact https origin}
+  gateway:
+    image: caddy:2.10.2-alpine
+    ports: ["${ORBIT_TLS_BIND:-0.0.0.0}:443:443", "${ORBIT_TLS_BIND:-0.0.0.0}:80:80"]
+    environment:
+      ORBIT_HOST: ${ORBIT_HOST:?Set the reachable domain or LAN IP}
+      ORBIT_TLS_POLICY: ${ORBIT_TLS_POLICY:-}
+    volumes:
+      - ./deploy/examples/Caddyfile.tls:/etc/caddy/Caddyfile:ro
+      - tls-data:/data
+      - tls-config:/config
+    depends_on: [web]
+    networks: [orbit]
+volumes:
+  tls-data: {}
+  tls-config: {}

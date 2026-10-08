@@ -1,0 +1,27 @@
+(orbit_test_app) {
+  header {
+    X-Content-Type-Options nosniff
+    Referrer-Policy same-origin
+    X-Frame-Options DENY
+    Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+  }
+  @backend path /api/* /health /ready
+  handle @backend {
+    reverse_proxy server:3000 {
+      flush_interval -1
+    }
+  }
+  handle {
+    root * /srv
+    try_files {path} /index.html
+    file_server
+  }
+}
+
+http://:8080 {
+  import orbit_test_app
+}
+https://web:8443 {
+  tls /tls/web.crt /tls/web.key
+  import orbit_test_app
+}

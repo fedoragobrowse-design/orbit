@@ -1,0 +1,57 @@
+name: orbit
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: orbit
+      POSTGRES_PASSWORD: ${ORBIT_DB_PASSWORD:?Set ORBIT_DB_PASSWORD in .env}
+      ORBIT_APP_DB_PASSWORD: ${ORBIT_APP_DB_PASSWORD:?Set ORBIT_APP_DB_PASSWORD in .env}
+      POSTGRES_DB: orbit
+    volumes:
+      - database:/var/lib/postgresql/data
+      - ./deploy/docker/production-database.sh:/docker-entrypoint-initdb.d/10-orbit-roles.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U orbit -d orbit"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [orbit]
+  server:
+    build: {context: ., dockerfile: deploy/docker/server.Dockerfile}
+    environment:
+      DATABASE_URL: postgres://orbit_runtime:${ORBIT_APP_DB_PASSWORD}@postgres:5432/orbit
+      ORBIT_MIGRATION_DATABASE_URL: postgres://orbit:${ORBIT_DB_PASSWORD}@postgres:5432/orbit
+      ORBIT_BIND: 0.0.0.0:3000
+      ORBIT_PUBLIC_ORIGIN: ${ORBIT_PUBLIC_ORIGIN:-http://127.0.0.1:8080}
+      ORBIT_KEY_DIR: /var/lib/orbit/keys
+      ORBIT_ARTIFACT_DIR: /var/lib/orbit/artifacts
+    volumes: ["keys:/var/lib/orbit/keys", "artifacts:/var/lib/orbit/artifacts"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:3000/ready]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+    networks: [orbit]
+  web:
+    build: {context: ., dockerfile: deploy/docker/web.Dockerfile}
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      server: {condition: service_healthy}
+    restart: unless-stopped
+    networks: [orbit]
+  ollama:
+    image: ollama/ollama:0.34.0
+    profiles: [ollama]
+    volumes: ["models:/root/.ollama"]
+    restart: unless-stopped
+    networks: [orbit]
+networks:
+  orbit: {}
+volumes:
+  database: {}
+  keys: {}
+  artifacts: {}
+  models: {}
