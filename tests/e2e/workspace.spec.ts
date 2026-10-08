@@ -220,32 +220,49 @@ test("connections: runtime and email tabs render against real endpoints", async 
 test("wired write paths persist (agents, automations, computers, retention)", async ({
   page,
 }) => {
-  await page.goto("/agents");
-  await expect(page.locator("h1", { hasText: "Agents" })).toBeVisible();
-  await page.getByRole("button", { name: "Add agent" }).click();
-  await page.getByLabel("Name").fill("e2e-agent");
-  await page.getByLabel("Purpose").fill("e2e purpose");
-  await page.getByLabel("Instructions").fill("e2e instructions");
-  await page.getByRole("button", { name: "Save agent" }).click();
-  await expect(page.getByRole("rowheader", { name: "e2e-agent" })).toBeVisible();
+  await test.step("agents: create persists a row", async () => {
+    await page.goto("/agents");
+    await expect(page.locator("h1", { hasText: "Agents" })).toBeVisible();
+    await page.getByRole("button", { name: "Add agent" }).click();
+    await page.getByLabel("Name").fill("e2e-agent");
+    await page.getByLabel("Purpose").fill("e2e purpose");
+    await page.getByLabel("Instructions").fill("e2e instructions");
+    await page.getByRole("button", { name: "Save agent" }).click();
+    await expect(
+      page.getByRole("rowheader", { name: "e2e-agent" }),
+    ).toBeVisible();
+  });
 
-  await page.goto("/automations");
-  await expect(page.locator("h1", { hasText: "Automations" })).toBeVisible();
-  await page.getByRole("button", { name: "Add automation" }).click();
-  await page.getByLabel("Instructions").fill("e2e automation instructions");
-  await page.getByRole("button", { name: "Save automation" }).click();
-  await expect(
-    page.getByRole("rowheader", { name: /e2e automation/ }),
-  ).toBeVisible();
+  await test.step("automations: create and toggle persist", async () => {
+    await page.goto("/automations");
+    await expect(page.locator("h1", { hasText: "Automations" })).toBeVisible();
+    await page.getByRole("button", { name: "Add automation" }).click();
+    await page.getByLabel("Instructions").fill("e2e automation instructions");
+    await page.getByRole("button", { name: "Save automation" }).click();
+    const row = page.getByRole("row", {
+      name: /e2e automation instructions/,
+    });
+    await expect(row).toBeVisible();
+    await row.getByRole("button", { name: "Disable" }).click();
+    await expect(
+      row.getByRole("button", { name: "Enable" }),
+    ).toBeVisible();
+  });
 
-  await page.goto("/computers");
-  await expect(
-    page.getByRole("heading", { name: "Paired machines" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Create pairing code" }).click();
-  await expect(page.getByText("Pairing code:")).toBeVisible();
+  await test.step("computers: pairing code round-trip", async () => {
+    await page.goto("/computers");
+    await expect(
+      page.getByRole("heading", { name: "Paired machines" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Create pairing code" }).click();
+    await expect(page.getByText("Pairing code:")).toBeVisible();
+  });
 
-  await page.goto("/settings");
-  await expect(page.getByRole("heading", { name: "Retention" })).toBeVisible();
-  await expect(page.getByText("Not available in this build")).toHaveCount(0);
+  await test.step("settings: retention form loads real values", async () => {
+    await page.goto("/settings");
+    await expect(
+      page.getByRole("heading", { name: "Retention" }),
+    ).toBeVisible();
+    await expect(page.getByText("Not available in this build")).toHaveCount(0);
+  });
 });

@@ -415,8 +415,15 @@ function AutomationManager() {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
   const toggle = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      post<RecordData>(`/automations/${id}/enable`, { enabled }),
+    mutationFn: ({
+      id,
+      enabled,
+      expected_revision,
+    }: {
+      id: string;
+      enabled: boolean;
+      expected_revision: number;
+    }) => post<RecordData>(`/automations/${id}/enable`, { enabled, expected_revision }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["/automations"] }),
   });
   const removeAutomation = useMutation({
@@ -464,6 +471,7 @@ function AutomationManager() {
                           toggle.mutate({
                             id: String(row.id),
                             enabled: !row.enabled,
+                            expected_revision: Number(row.revision ?? 0),
                           })
                         }
                       >
