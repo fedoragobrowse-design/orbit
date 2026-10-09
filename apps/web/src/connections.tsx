@@ -888,6 +888,7 @@ export function Files() {
             onSubmit={(event) => {
               event.preventDefault();
               setBrowse({ node_id: nodeId, root_id: rootId, relative_path: path });
+              try { localStorage.setItem("orbit.files.context", JSON.stringify({ node_id: nodeId, root_id: rootId })); } catch { /* private mode: header files search stays memory-only */ }
             }}
           >
             <Field label="Machine">

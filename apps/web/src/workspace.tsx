@@ -116,6 +116,7 @@ export function Home() {
               All tasks
             </Link>
           </section>
+          <BriefPanel />
           <section className="recent">
             <h2>Recent activity</h2>
             <Resource
@@ -231,6 +232,20 @@ export function Home() {
       </div>
     </>
   );
+}
+function BriefPanel() {
+ const brief = useQuery({ queryKey: ["brief"], queryFn: () => api<RecordData>("/brief"), staleTime: 60_000 });
+ if (brief.isPending) return <section className="panel"><h2>Morning brief</h2><p role="status">Gathering…</p></section>;
+ if (brief.error || !brief.data) return null;
+ const d = brief.data;
+ const approvals = Array.isArray(d.approvals) ? (d.approvals as RecordData[]) : [];
+ const pending = Number(d.approvals_pending ?? 0);const unread = Number(d.notifications_unread ?? 0);const open = Number(d.tasks_open ?? 0);
+ if (!pending && !unread && !open) return null;
+ return <section className="panel attention"><h2>Morning brief</h2>
+  <p>{pending} approval{pending === 1 ? "" : "s"} waiting · {unread} unread notification{unread === 1 ? "" : "s"} · {open} open task{open === 1 ? "" : "s"}</p>
+  {approvals.slice(0, 3).map((a) => <div className="row" key={text(a.id)}><div className="row-main"><h3><Link to="/approvals">Pending approval</Link></h3><div className="row-meta"><span>{timestamp(text(a.created_at))}</span></div></div></div>)}
+  <p className="muted"><Link to="/approvals">Approvals</Link> · <Link to="/tasks">Tasks</Link></p>
+ </section>;
 }
 function Notification({ row }: { row: RecordData }) {
   const action = useMutation({

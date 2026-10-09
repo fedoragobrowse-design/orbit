@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod auth;
 pub mod automations;
+pub mod brief;
 pub mod computers;
 pub mod email;
 pub mod foundation;
@@ -9,6 +10,7 @@ pub mod marketplace;
 pub mod mcp;
 pub mod memory;
 pub mod models;
+pub mod ops;
 pub mod push;
 pub mod runtimes;
 use axum::{
@@ -65,13 +67,7 @@ impl IntoResponse for ApiError {
         (status,Json(json!({"error":{"code":code,"message":self.0.to_string(),"request_id":Uuid::new_v4()}}))).into_response()
     }
 }
-pub async fn authenticate(
-    state: &ApiState,
-    headers: &HeaderMap,
-    mutation: bool,
-) -> Result<AuthSession, ApiError> {
-    auth::authenticate(state, headers, mutation).await
-}
+pub async fn authenticate(state: &ApiState, headers: &HeaderMap, mutation: bool) -> Result<AuthSession, ApiError> { ops::guard(state, headers, mutation).await }
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .merge(auth::router())
@@ -87,6 +83,8 @@ pub fn router(state: ApiState) -> Router {
         .merge(computers::router())
         .merge(agents::router())
         .merge(push::router())
+        .merge(ops::router())
+        .merge(brief::router())
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
 }

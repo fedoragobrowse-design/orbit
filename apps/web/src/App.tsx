@@ -23,6 +23,7 @@ import {
   Cpu,
   Settings as SettingsIcon,
   Users,
+  Wrench,
 } from "lucide-react";
 import { api, post, queryClient, setSession, type Session } from "./api";
 import { syncPushSubscription } from "./push";
@@ -34,6 +35,7 @@ import { Memory, Automations } from "./knowledge";
 import { Models } from "./models";
 import { Marketplace } from "./marketplace";
 import { Connections, Computers, Files } from "./connections";
+import { Ops, GlobalSearch } from "./ops";
 const DraftContext = createContext<{
   drafts: Record<string, string>;
   save: (key: string, value: string) => void;
@@ -63,6 +65,7 @@ const destinations = [
       ["/connections", "Connections", Plug],
       ["/models", "Models", Cpu],
       ["/marketplace", "Marketplace", Store],
+      ["/ops", "Ops", Wrench],
       ["/settings", "Settings", SettingsIcon],
     ],
   ],
@@ -177,6 +180,7 @@ export function App() {
           {logout.error && <ErrorNotice error={logout.error} />}
         </aside>
         <main id="main" className="main" tabIndex={-1}>
+          <GlobalSearch />
           {!online && (
             <div className="offline-banner" role="status">
               You are offline. Saved metadata may be stale; your unsent drafts
@@ -202,6 +206,7 @@ export function App() {
             <Route path="/computers" element={<Computers />} />
             <Route path="/files" element={<Files />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/ops" element={<Ops />} />
             <Route
               path="*"
               element={
