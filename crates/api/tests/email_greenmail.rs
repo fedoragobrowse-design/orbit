@@ -21,8 +21,12 @@ use uuid::Uuid;
 fn imap_port() -> u16 { std::env::var("ORBIT_GREENMAIL_IMAP_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(19993) }
 fn smtp_port() -> u16 { std::env::var("ORBIT_GREENMAIL_SMTP_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(19465) }
 async fn live() -> bool {
+    // IMAPS/SMTPS are TLS-only: probe with a TLS handshake, not plaintext TCP (a plaintext connect succeeds at TCP then hangs, tripping the timeout).
     for port in [imap_port(), smtp_port()] {
-        if tokio::time::timeout(std::time::Duration::from_secs(2), tokio::net::TcpStream::connect(("127.0.0.1", port))).await.map(|r| r.is_ok()) != Ok(true) {
+        let probe = tokio::time::timeout(std::time::Duration::from_secs(5), tokio::task::spawn_blocking(move || {
+            std::process::Command::new("timeout").args(["4", "python3", "-c", &format!("import socket,ssl; c=ssl.create_default_context(); c.check_hostname=False; c.verify_mode=ssl.CERT_NONE; s=c.wrap_socket(socket.socket(), server_hostname='x'); s.settimeout(3); s.connect(('127.0.0.1',{port})); s.close()")]).status().map(|s| s.success()).unwrap_or(false)
+        }));
+        if probe.await.map(|r| r.unwrap_or(false)) != Ok(true) {
             return false;
         }
     }
@@ -60,8 +64,14 @@ async fn gate<T>(label: &str, r: Result<T, orbit_core::Error>) -> Option<T> {
         }
     }
 }
-fn db_url() -> String {
-    std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://orbit_test:orbit_test@127.0.0.1:55432/orbit_test".into())
+async fn hermetic_db_url() -> (String, Option<String>) {
+    // Hermetic per-run database: the shared orbit_test DB accumulates secret rows encrypted under keys this run cannot reopen.
+    if let Ok(url) = std::env::var("DATABASE_URL") { return (url, None); }
+    let db = format!("orbit_greenmail_{}", std::process::id());
+    let admin = PgPool::connect("postgres://orbit_test:orbit_test@127.0.0.1:55432/postgres").await.expect("test postgres admin reachable");
+    sqlx::query(&format!("DROP DATABASE IF EXISTS {db}")).execute(&admin).await.unwrap();
+    sqlx::query(&format!("CREATE DATABASE {db} OWNER orbit_test")).execute(&admin).await.unwrap();
+    (format!("postgres://orbit_test:orbit_test@127.0.0.1:55432/{db}"), Some(db))
 }
 #[tokio::test]
 async fn greenmail_imap_smtp_roundtrip_with_quarantine() {
@@ -73,7 +83,8 @@ async fn greenmail_imap_smtp_roundtrip_with_quarantine() {
         eprintln!("SKIP: GreenMail fixture CA unavailable (set ORBIT_GREENMAIL_CA_PEM or ORBIT_GREENMAIL_CA_FILE); live-connector proof skipped");
         return;
     };
-    let pool = PgPool::connect(&db_url()).await.expect("owned test postgres reachable");
+    let (url, db_name) = hermetic_db_url().await;
+    let pool = PgPool::connect(&url).await.expect("owned test postgres reachable");
     sqlx::migrate!("../../migrations").run(&pool).await.expect("migrations apply");
     let owner = Uuid::new_v4();
     let principal = Uuid::new_v4();
@@ -81,8 +92,8 @@ async fn greenmail_imap_smtp_roundtrip_with_quarantine() {
     sqlx::query("INSERT INTO authorization_epochs(owner_id) VALUES($1)").bind(owner).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO principals(id,owner_id,principal_type,auth_method,trust_level,source) VALUES($1,$2,'WEB_USER','password','OWNER_AUTHENTICATED','test')").bind(principal).bind(owner).execute(&pool).await.unwrap();
     let scope = OwnerScope { owner_id: owner, principal_id: principal };
-    // Stable across runs: the shared test DB keeps secret rows encrypted under this key, so a fresh dir per run would fail reopen with "master key missing".
-    let key_dir = std::env::var("ORBIT_TEST_KEY_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::temp_dir().join("orbit-test-secrets"));
+    // Fresh key dir per hermetic DB: zero secret rows exist, so a fresh master key always opens.
+    let key_dir = std::env::var("ORBIT_TEST_KEY_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::temp_dir().join(format!("orbit-test-secrets-{}", std::process::id())));
     let store = orbit_secrets::SecretStore::open(pool.clone(), &key_dir).await.expect("secret store opens");
     let credential = orbit_email::Credential { username: "assistant@orbit.test".into(), password: "orbit-fixture-pass".into() };
     let credential_bytes = serde_json::to_vec(&json!({"username": credential.username, "password": credential.password})).unwrap();
@@ -130,4 +141,10 @@ async fn greenmail_imap_smtp_roundtrip_with_quarantine() {
     assert_eq!(proof["sha256"].as_str().unwrap(), hex::encode(sha2::Sha256::digest(&bytes)).as_str(), "stored message path must satisfy the quarantine_store attachment digest check");
     let quarantined = orbit_email::quarantine_store(&format!("email-body-{uid}.txt"), "text/plain", body.as_bytes()).expect("stored body must satisfy the quarantine_store guard");
     assert_eq!(quarantined.size, body.len());
+    if let Some(db) = db_name.filter(|d| d.starts_with("orbit_greenmail_")) {
+        pool.close().await;
+        let admin = PgPool::connect("postgres://orbit_test:orbit_test@127.0.0.1:55432/postgres").await.unwrap();
+        sqlx::query(&format!("DROP DATABASE IF EXISTS {db}")).execute(&admin).await.unwrap();
+        std::fs::remove_dir_all(&key_dir).ok();
+    }
 }
