@@ -8,7 +8,7 @@ const SERVICE: u32 = 61001;
 const OWNER: u32 = 61002;
 const OTHER: u32 = 61003;
 fn config(path: &Path) -> NodeConfig {
-    NodeConfig { server: "https://fixture.invalid".into(), owner_id: uuid::Uuid::new_v4(), node_id: uuid::Uuid::new_v4(), session: String::new(), identity_key: String::new(), state_dir: path.to_owned(), ca_file: None, roots: vec![], owner_uid: Some(OWNER), service_uid: Some(SERVICE), embedding: None }
+    NodeConfig { server: "https://fixture.invalid".into(), owner_id: uuid::Uuid::new_v4(), node_id: uuid::Uuid::new_v4(), session: String::new(), identity_key: String::new(), state_dir: path.parent().map(|p| p.join("node-state")).unwrap_or_else(|| path.to_owned()), ca_file: None, roots: vec![], owner_uid: Some(OWNER), service_uid: Some(SERVICE), embedding: None }
 }
 fn grant(path: &Path) -> RootGrant { RootGrant { id: uuid::Uuid::new_v4(), path: path.to_owned(), mode: RootMode::ReadWrite, revision: 1, revoked: false, namespace_protected: true } }
 fn fixture() -> tempfile::TempDir {

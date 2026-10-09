@@ -1,0 +1,9 @@
+target/
+.git/
+tests/e2e/.runtime.lock
+.visual/
+.env
+*.log
+node_modules/
+apps/web/node_modules/
+apps/web/dist/
