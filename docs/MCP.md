@@ -67,3 +67,18 @@ deterministic rmcp Streamable HTTP endpoint at `/mcp` (see
 echo, including an `is_error` mode for failure paths). Point a connection
 at the fixtures host `/mcp` (marked `local: true`) to exercise discovery,
 schema-change revocation, and grant-gated calls without external servers.
+
+## Marketplace parity
+
+Marketplace packages are the install-time twin of MCP grants: manifests come
+from the Orbit-MarketPlace repo index over HTTPS (no vendored cache; each
+response documents its `index_source` URL), the sha256 `content_digest` is
+recomputed and the ed25519 signature verified per the repo's `SIGNING.md`
+before anything persists, install requires echoing `requested_capabilities`
+back as `approved_capabilities` plus `accept_trust_level`, and every
+install/remove writes a `MARKETPLACE_INSTALLED`/`MARKETPLACE_REMOVED` audit
+row. Installed packages run ONLY via the sandbox path (`sandbox_only=true`);
+there is no in-process execution. `orbit market` CLI: ROADMAP — no CLI crate
+exists in this repo (`apps/server` is the API server, `apps/computer-node`
+is a runner), so the CLI needs a new binary crate with login, search,
+preview, and install subcommands backed by these routes.

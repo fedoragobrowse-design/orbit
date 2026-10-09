@@ -24,6 +24,8 @@ futures-util.workspace = true
 utoipa.workspace = true
 tracing.workspace = true
 base64.workspace = true
+ed25519-dalek.workspace = true
+reqwest.workspace = true
 orbit-core = { path = "../core" }
 orbit-audit = { path = "../audit" }
 orbit-event-bus = { path = "../event-bus" }

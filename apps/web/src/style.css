@@ -659,6 +659,21 @@ dialog::backdrop {
   padding: 12px 0;
   border-bottom: 1px solid var(--line);
 }
+.warning {
+  padding: 16px;
+  background: #f5ebda;
+  color: #805600;
+  border-radius: 8px;
+  margin: 16px 0;
+}
+.warning ul { margin: 8px 0 0; }
+.ok { color: var(--action); font-weight: 600; }
+.bad { color: var(--danger); font-weight: 600; }
+.caps { display: grid; gap: 8px; margin: 12px 0; }
+.caps > div { display: grid; grid-template-columns: 160px 1fr; gap: 12px; }
+.caps dt { font-weight: 600; }
+.preview { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+.consent { display: flex; gap: 12px; align-items: start; margin-top: 16px; font-weight: 600; }
 .summary-line:last-child {
   border: 0;
 }

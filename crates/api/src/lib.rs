@@ -5,6 +5,7 @@ pub mod computers;
 pub mod email;
 pub mod foundation;
 pub mod gateway;
+pub mod marketplace;
 pub mod mcp;
 pub mod memory;
 pub mod models;
@@ -81,6 +82,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(runtimes::router())
         .merge(email::router())
         .merge(mcp::router())
+        .merge(marketplace::router())
         .merge(computers::router())
         .merge(agents::router())
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))

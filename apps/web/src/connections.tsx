@@ -512,103 +512,55 @@ function NewMcpConnection({ onDone }: { onDone: () => void }) {
 function Email() {
   const client = useQueryClient();
   const [adding, setAdding] = useState(false);
-  const [removing, setRemoving] = useState<string | null>(null);
-  const accounts = useQuery({
-    queryKey: ["email-accounts"],
-    queryFn: () => api<{ items: RecordData[] }>("/email/accounts"),
-  });
-  const invalidate = () =>
-    client.invalidateQueries({ queryKey: ["email-accounts"] });
-  const run = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: "test" | "sync" }) =>
-      post<RecordData>(`/email/accounts/${id}/${action}`),
-    onSuccess: invalidate,
-  });
-  const removeAccount = useMutation({
-    mutationFn: (id: string) => remove(`/email/accounts/${id}`),
-    onSuccess: invalidate,
-  });
-  if (accounts.isPending)
-    return (
-      <div className="panel">
-        <p role="status">Loading accounts…</p>
-      </div>
-    );
-  if (accounts.error)
-    return (
-      <div className="panel">
-        <ErrorNotice error={accounts.error} retry={() => accounts.refetch()} />
-      </div>
-    );
+  const [confirm, setConfirm] = useState<{ kind: "revoke" | "purge"; id: string; name: string } | null>(null);
+  const accounts = useQuery({ queryKey: ["email-accounts"], queryFn: () => api<{ items: RecordData[] }>("/email/accounts") });
+  const checkpoints = useQuery({ queryKey: ["email-checkpoints"], queryFn: () => api<{ items: RecordData[] }>("/email/checkpoints") });
+  const invalidate = () => { client.invalidateQueries({ queryKey: ["email-accounts"] }); client.invalidateQueries({ queryKey: ["email-checkpoints"] }); };
+  const run = useMutation({ mutationFn: ({ id, action }: { id: string; action: "test" | "sync" }) => post<RecordData>(`/email/accounts/${id}/${action}`), onSuccess: invalidate });
+  const toggle = useMutation({ mutationFn: (row: RecordData) => api<RecordData>(`/email/accounts/${String(row.id)}`, { method: "PATCH", body: JSON.stringify({ enabled: !(row.enabled as boolean), expected_revision: row.revision as number }) }), onSuccess: invalidate });
+  const removeAccount = useMutation({ mutationFn: (id: string) => remove(`/email/accounts/${id}`), onSuccess: invalidate });
+  const purgeAccount = useMutation({ mutationFn: (id: string) => remove(`/email/accounts/${id}/purge`), onSuccess: invalidate });
+  if (accounts.isPending) return (<div className="panel"><p role="status">Loading accounts…</p></div>);
+  if (accounts.error) return (<div className="panel"><ErrorNotice error={accounts.error} retry={() => accounts.refetch()} /></div>);
   const items = accounts.data?.items ?? [];
-  const error = run.error ?? removeAccount.error;
+  const points = checkpoints.data?.items ?? [];
+  const error = run.error ?? toggle.error ?? removeAccount.error ?? purgeAccount.error ?? checkpoints.error;
+  const busy = run.isPending || toggle.isPending || removeAccount.isPending || purgeAccount.isPending;
+  const checkpointSummary = (id: string) => {
+    const rows = points.filter((p) => String(p.account_id) === id);
+    if (checkpoints.isPending) return "Loading…";
+    if (!rows.length) return "Never synced";
+    const high = Math.max(...rows.map((p) => Number(p.last_uid ?? 0)));
+    return `${rows.length} mailbox${rows.length === 1 ? "" : "es"} · highest UID ${Number.isFinite(high) ? high : 0}`;
+  };
+  const pending = confirm?.kind === "revoke" ? removeAccount.isPending : purgeAccount.isPending;
   return (
     <div className="panel">
       <h2>Email</h2>
-      <p>
-        <small>
-          Orbit polls the mailboxes you name and can draft replies. Sending
-          still needs your approval.
-        </small>
-      </p>
-      {!items.length ? (
-        <Empty title="No mail accounts yet">
-          Add an IMAP and SMTP pair to let Orbit read and draft mail.
-        </Empty>
-      ) : (
+      <p><small>Orbit polls the mailboxes you name and can draft replies. Sending still needs your approval. Pausing stops polling; revoking disconnects but keeps stored mail; purging deletes the account and its stored messages and drafts.</small></p>
+      {!items.length ? (<Empty title="No mail accounts yet">Add an IMAP and SMTP pair to let Orbit read and draft mail.</Empty>) : (
         <table>
-          <thead>
-            <tr>
-              <th scope="col">Name</th>
-              <th scope="col">From</th>
-              <th scope="col">Mailboxes</th>
-              <th scope="col">Enabled</th>
-              <th scope="col">Last sync</th>
-              <th scope="col">Actions</th>
-            </tr>
-          </thead>
+          <thead><tr><th scope="col">Name</th><th scope="col">From</th><th scope="col">Scopes (mailboxes)</th><th scope="col">Enabled</th><th scope="col">Last sync</th><th scope="col">Checkpoints</th><th scope="col">Actions</th></tr></thead>
           <tbody>
             {items.map((row) => {
               const config = (row.config ?? {}) as RecordData;
+              const mailboxes = Array.isArray(config.mailboxes) ? (config.mailboxes as unknown[]).map(text) : [];
+              const id = String(row.id);
               return (
-                <tr key={String(row.id)}>
+                <tr key={id}>
                   <th scope="row">{text(row.name)}</th>
                   <td>{text(config.from_address)}</td>
-                  <td>
-                    {Array.isArray(config.mailboxes)
-                      ? (config.mailboxes as unknown[]).map(text).join(", ")
-                      : "—"}
-                  </td>
-                  <td>
-                    <Status value={row.enabled} />
-                  </td>
+                  <td>{mailboxes.length ? mailboxes.join(", ") : "—"}</td>
+                  <td><Status value={row.enabled} /></td>
                   <td>{timestamp(row.last_sync)}</td>
+                  <td><small>{checkpointSummary(id)}</small></td>
                   <td>
                     <div className="actions">
-                      <button
-                        className="secondary"
-                        disabled={run.isPending}
-                        onClick={() =>
-                          run.mutate({ id: String(row.id), action: "test" })
-                        }
-                      >
-                        Test
-                      </button>
-                      <button
-                        className="secondary"
-                        disabled={run.isPending}
-                        onClick={() =>
-                          run.mutate({ id: String(row.id), action: "sync" })
-                        }
-                      >
-                        Sync
-                      </button>
-                      <button
-                        className="danger"
-                        onClick={() => setRemoving(String(row.id))}
-                      >
-                        Remove
-                      </button>
+                      <button className="secondary" disabled={busy} onClick={() => run.mutate({ id, action: "test" })}>Test</button>
+                      <button className="secondary" disabled={busy} onClick={() => run.mutate({ id, action: "sync" })}>Sync</button>
+                      <button className="secondary" disabled={busy} onClick={() => toggle.mutate(row)}>{row.enabled ? "Pause" : "Resume"}</button>
+                      <button className="danger" disabled={busy} onClick={() => setConfirm({ kind: "revoke", id, name: text(row.name) })}>Revoke</button>
+                      <button className="danger" disabled={busy} onClick={() => setConfirm({ kind: "purge", id, name: text(row.name) })}>Purge</button>
                     </div>
                   </td>
                 </tr>
@@ -617,33 +569,13 @@ function Email() {
           </tbody>
         </table>
       )}
-      {error && (
-        <ErrorNotice error={error} retry={() => removeAccount.reset()} />
-      )}
-      {removing && (
-        <Confirm
-          title="Remove this mail account?"
-          action="Remove"
-          pending={removeAccount.isPending}
-          onClose={() => setRemoving(null)}
-          onConfirm={() => {
-            removeAccount.mutate(removing);
-            setRemoving(null);
-          }}
-        >
-          <p>
-            Orbit stops polling these mailboxes. Stored mail credentials stay
-            in the secret store.
-          </p>
+      {error && (<ErrorNotice error={error} retry={() => { run.reset(); toggle.reset(); removeAccount.reset(); purgeAccount.reset(); checkpoints.refetch(); }} />)}
+      {confirm && (
+        <Confirm title={confirm.kind === "revoke" ? `Revoke ${confirm.name || "this mail account"}?` : `Purge ${confirm.name || "this mail account"} and its stored mail?`} action={confirm.kind === "revoke" ? "Revoke" : "Purge"} pending={pending} onClose={() => setConfirm(null)} onConfirm={() => { (confirm.kind === "revoke" ? removeAccount : purgeAccount).mutate(confirm.id); setConfirm(null); }}>
+          {confirm.kind === "revoke" ? (<p>Orbit stops polling these mailboxes and disconnects its credentials. Stored messages and drafts are kept.</p>) : (<p>This deletes the account plus its stored messages and drafts. This cannot be undone.</p>)}
         </Confirm>
       )}
-      {adding ? (
-        <NewEmailAccount onDone={() => setAdding(false)} />
-      ) : (
-        <button className="secondary" onClick={() => setAdding(true)}>
-          Add mail account
-        </button>
-      )}
+      {adding ? (<NewEmailAccount onDone={() => setAdding(false)} />) : (<button className="secondary" onClick={() => setAdding(true)}>Add mail account</button>)}
     </div>
   );
 }

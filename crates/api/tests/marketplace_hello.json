@@ -1,0 +1,47 @@
+{
+  "manifest_version": 1,
+  "name": "hello-skill",
+  "version": "0.1.0",
+  "kind": "skill",
+  "description": "Minimal greeting skill: warm one-line hellos with no network, no secrets, and read-only workspace access.",
+  "content_digest": "sha256:a6abcf105bc28a0dd20e0e70c10d35dc8574d4db7978bfb3e0a2eb91cb430dd6",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "3c98b0489759b858a6ca547f38f64c165fd97b1b4c838952390b676727284d58"
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "4ad776295fd5218076c5d18b03ab1f83280cf7cb63ae9c6c5d867427adb3d394"
+    }
+  ],
+  "publisher": {
+    "name": "Orbit Marketplace Demo",
+    "key": "Sad5yRapQu4svjZHbUHGJaK0WoKD1XgVwNTErsFIUqc=",
+    "key_id": "demo-2026-hello"
+  },
+  "requested_capabilities": {
+    "network": {
+      "hosts": [],
+      "egress": false
+    },
+    "filesystem": {
+      "scopes": [
+        "workspace"
+      ],
+      "read_only": true
+    },
+    "secrets": [],
+    "tools": []
+  },
+  "trust_level": "experimental",
+  "versions_pinned": {
+    "orbit-manifest": "1",
+    "python": "3.12.3"
+  },
+  "signature": {
+    "algorithm": "ed25519",
+    "key_id": "demo-2026-hello",
+    "value": "LUJTXXdua6mSZ/G3QolJFXOqkQEmstRekFoHUv1i/imtsCyVio1y+uOhnWrjOOlU5/lyitRU0kWu8Rc3Vol8BQ=="
+  }
+}

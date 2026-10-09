@@ -12,7 +12,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::HeaderMap,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use orbit_core::{ActionSnapshot, AuthorizedAction, Error};
 use orbit_email::{AccountConfig, Credential, DraftContent, EmailProvider, MailService};
@@ -36,6 +36,7 @@ pub fn router() -> Router<ApiState> {
     Router::new()
         .route("/api/v1/email/accounts", get(list_accounts).post(create_account))
         .route("/api/v1/email/accounts/{id}", get(account_detail).patch(update_account).delete(remove_account))
+        .route("/api/v1/email/accounts/{id}/purge", delete(purge_account))
         .route("/api/v1/email/accounts/{id}/test", post(test_account))
         .route("/api/v1/email/accounts/{id}/sync", post(sync_account))
         .route("/api/v1/email/messages", get(list_messages))
@@ -312,6 +313,30 @@ pub async fn remove_account(State(state): State<ApiState>, headers: HeaderMap, P
     Ok(Json(json!({"removed": true, "ingestion_stopped": true})))
 }
 
+#[utoipa::path(delete, path = "/api/v1/email/accounts/{id}/purge", params(("id" = Uuid, Path)), responses((status = 200, body = Value)))]
+pub async fn purge_account(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>, ApiError> {
+    let auth = authenticate(&state, &headers, true).await?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE").bind(auth.scope.owner_id).fetch_one(&mut *tx).await?;
+    let row = sqlx::query("SELECT imap_secret_id,smtp_secret_id FROM email_accounts WHERE owner_id=$1 AND id=$2 FOR UPDATE").bind(auth.scope.owner_id).bind(id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
+    let imap_id: Uuid = row.get("imap_secret_id");
+    let smtp_id: Uuid = row.get("smtp_secret_id");
+    // No email child table cascades off the account row, so every owned row goes first; the secret revoke below only unlinks credentials.
+    let versions = sqlx::query("DELETE FROM email_draft_versions WHERE owner_id=$1 AND draft_id IN (SELECT id FROM email_drafts WHERE owner_id=$1 AND account_id=$2)").bind(auth.scope.owner_id).bind(id).execute(&mut *tx).await?.rows_affected();
+    let drafts = sqlx::query("DELETE FROM email_drafts WHERE owner_id=$1 AND account_id=$2").bind(auth.scope.owner_id).bind(id).execute(&mut *tx).await?.rows_affected();
+    let messages = sqlx::query("DELETE FROM email_messages WHERE owner_id=$1 AND account_id=$2").bind(auth.scope.owner_id).bind(id).execute(&mut *tx).await?.rows_affected();
+    sqlx::query("DELETE FROM email_checkpoints WHERE owner_id=$1 AND account_id=$2").bind(auth.scope.owner_id).bind(id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM email_ingestion_leases WHERE owner_id=$1 AND account_id=$2").bind(auth.scope.owner_id).bind(id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM email_accounts WHERE owner_id=$1 AND id=$2").bind(auth.scope.owner_id).bind(id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE authorization_epochs SET revision=revision+1 WHERE owner_id=$1").bind(auth.scope.owner_id).execute(&mut *tx).await?;
+    orbit_audit::append(&mut tx, &auth.scope, Uuid::new_v4(), None, None, "EMAIL_ACCOUNT_PURGED", "owner purged mail account and its source data", json!({"account_id": id, "messages": messages, "drafts": drafts, "draft_versions": versions})).await?;
+    tx.commit().await?;
+    let store = SecretStore::open(state.pool.clone(), &state.key_dir).await?;
+    store.revoke(&auth.scope, imap_id).await?;
+    store.revoke(&auth.scope, smtp_id).await?;
+    Ok(Json(json!({"purged": true, "messages": messages, "drafts": drafts})))
+}
+
 #[utoipa::path(post, path = "/api/v1/email/accounts/{id}/test", params(("id" = Uuid, Path)), responses((status = 200, body = Value)))]
 pub async fn test_account(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>, ApiError> {
     let auth = authenticate(&state, &headers, true).await?;
@@ -531,7 +556,7 @@ pub async fn list_checkpoints(State(state): State<ApiState>, headers: HeaderMap,
 #[derive(utoipa::OpenApi)]
 #[openapi(
     paths(
-        list_accounts, create_account, account_detail, update_account, remove_account,
+        list_accounts, create_account, account_detail, update_account, remove_account, purge_account,
         test_account, sync_account, list_messages, message_detail,
         list_drafts, create_draft, draft_detail, update_draft, send_draft,
         list_checkpoints

@@ -18,7 +18,7 @@ All MIME/body parsing of untrusted mail happens before trust elevation: `transpo
 
 | Connector | Kind | Status | Missing |
 |---|---|---|---|
-| IMAP/SMTP | `mail-imap` | LIVE-PROVEN path (GreenMail fixture `greenmail/standalone:2.1.14`, IMAPS 3993/SMTPS 3465 in `deploy/examples/compose.test.yaml`) | — |
+| IMAP/SMTP | `mail-imap` | LIVE-PROVEN (`crates/api/tests/email_greenmail.rs` vs fixture `greenmail/standalone:2.1.14`, host 127.0.0.1:19993 IMAPS / 127.0.0.1:19465 SMTPS in `deploy/examples/compose.test.yaml`) | — |
 | Gmail-OAuth | `mail-gmail-oauth` | UNAVAILABLE | owner OAuth client credentials |
 | Google Calendar | `cal-gcal-oauth` | UNAVAILABLE | owner OAuth client credentials |
 | Microsoft Graph | `mail-graph-oauth` | UNAVAILABLE | owner OAuth client credentials |

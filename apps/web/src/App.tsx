@@ -17,6 +17,7 @@ import {
   BookOpen,
   Folder,
   Plug,
+  Store,
   ShieldCheck,
   Workflow,
   Cpu,
@@ -30,6 +31,7 @@ import { Chat, Agents } from "./chat";
 import { Approvals } from "./approvals";
 import { Memory, Automations } from "./knowledge";
 import { Models } from "./models";
+import { Marketplace } from "./marketplace";
 import { Connections, Computers, Files } from "./connections";
 const DraftContext = createContext<{
   drafts: Record<string, string>;
@@ -59,6 +61,7 @@ const destinations = [
       ["/agents", "Agents", Users],
       ["/connections", "Connections", Plug],
       ["/models", "Models", Cpu],
+      ["/marketplace", "Marketplace", Store],
       ["/settings", "Settings", SettingsIcon],
     ],
   ],
@@ -194,6 +197,7 @@ export function App() {
             <Route path="/memory/projects/:id" element={<Memory />} />
             <Route path="/automations" element={<Automations />} />
             <Route path="/models" element={<Models />} />
+            <Route path="/marketplace" element={<Marketplace />} />
             <Route path="/connections/*" element={<Connections />} />
             <Route path="/computers" element={<Computers />} />
             <Route path="/files" element={<Files />} />
