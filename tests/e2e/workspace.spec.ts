@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { goldenJourneys } from "./golden";
 
 // Serial M1 journey against the isolated orbit-test deployment
 // (tests/e2e/run-server.mjs owns lifecycle; this file never touches a
@@ -271,11 +272,13 @@ test("wired write paths persist (agents, automations, computers, retention)", as
     await expect(page.getByText("Pairing code:")).toBeVisible();
   });
 
-  await test.step("settings: retention form loads real values", async () => {
-    await page.goto("/settings");
+  await test.step("memory: retention form loads real values", async () => {
+    await page.goto("/memory");
     await expect(
       page.getByRole("heading", { name: "Retention" }),
     ).toBeVisible();
     await expect(page.getByText("Not available in this build")).toHaveCount(0);
   });
+
+  await goldenJourneys(page);
 });
