@@ -1,4 +1,6 @@
+pub mod connector;
 pub mod transport;
+pub use connector::{Connector,ConnectorManifest,PollHandle,RateLimits,SyncState};
 use orbit_core::{OwnerScope,AuthorizedAction,Error,Result};
 use orbit_secrets::SecretStore;
 use serde::{Serialize,Deserialize};
@@ -9,6 +11,12 @@ use sha2::{Digest,Sha256};
 use base64::{Engine,engine::general_purpose::STANDARD};
 use std::time::Duration;
 pub const MAX_MESSAGE_BYTES:usize=1024*1024;
+/// Quarantine store guard: inbound bodies/attachments + uploaded bytes land hashed, size-bounded, MIME-sniffed, and blocked on path-traversal / archive-bomb patterns.
+pub const MAX_QUARANTINE_BYTES:usize=10*1024*1024;
+#[derive(Debug,Clone,serde::Serialize,serde::Deserialize)]
+pub struct QuarantinedBlob{pub sha256:String,pub size:usize,pub mime:String,pub name:String}
+pub fn sniff_mime(name:&str,bytes:&[u8])->String{if bytes.len()>=4&&bytes[0]==0x50&&bytes[1]==0x4B&&(bytes[2]==0x03||bytes[2]==0x05||bytes[2]==0x07){return "application/zip".into()}if bytes.len()>=6&&(bytes.starts_with(b"GIF87a")||bytes.starts_with(b"GIF89a")){return "image/gif".into()}if bytes.len()>=4&&bytes[0]==0x89&&bytes[1]==0x50&&bytes[2]==0x4E&&bytes[3]==0x47{return "image/png".into()}if bytes.len()>=3&&bytes[0]==0xFF&&bytes[1]==0xD8&&bytes[2]==0xFF{return "image/jpeg".into()}if bytes.len()>=5&&bytes.starts_with(b"%PDF-"){return "application/pdf".into()}if bytes.iter().all(|b|*b==b'\n'||*b==b'\r'||*b==b'\t'||(0x20..=0x7E).contains(b)||*b>=0x80){let ext=name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();return match ext.as_str(){"txt"|"md"|"csv"|"json"|"eml" =>format!("text/{ext}"),_=>"text/plain".into()}} "application/octet-stream".into()}
+pub fn quarantine_store(name:&str,claimed_mime:&str,bytes:&[u8])->Result<QuarantinedBlob>{if bytes.len()>MAX_QUARANTINE_BYTES||bytes.len()>MAX_MESSAGE_BYTES*10{return Err(Error::Validation("quarantined blob exceeds size bound".into()))}if name.is_empty()||name.len()>256||name.contains(['\0','\\'])||name.contains("..")||name.starts_with('/')||name.contains(':'){return Err(Error::Validation("quarantined name fails path-traversal screen".into()))}let sniffed=sniff_mime(name,bytes);if sniffed=="application/zip"&&bytes.windows(2).filter(|w|w==b"PK").count()>512{return Err(Error::Validation("quarantined archive fails bomb screen".into()))}let safe:String=name.chars().filter(|c|c.is_ascii_alphanumeric()||matches!(c,'_'|'-'|'.'|' ')).take(120).collect();let safe=safe.trim().trim_matches('.');let safe=if safe.is_empty(){"attachment.bin"}else{safe};let mime=if claimed_mime.len()<=120&&claimed_mime.bytes().all(|c|c.is_ascii_graphic()){claimed_mime}else{&sniffed};Ok(QuarantinedBlob{sha256:hex::encode(Sha256::digest(bytes)),size:bytes.len(),mime:mime.into(),name:safe.into()})}
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccountConfig{pub imap_host:String,pub imap_port:u16,pub smtp_host:String,pub smtp_port:u16,pub from_address:String,pub mailboxes:Vec<String>,pub archive_mailbox:Option<String>,#[serde(default="poll_default")]pub poll_seconds:u64,pub ca_pem:Option<String>}
@@ -54,7 +62,7 @@ impl MailService{
    let validity=imap.select(mailbox).await?;let checkpoint=sqlx::query("SELECT uidvalidity,last_uid FROM email_checkpoints WHERE owner_id=$1 AND account_id=$2 AND mailbox=$3").bind(scope.owner_id).bind(id).bind(mailbox).fetch_optional(&self.pool).await?;
    let last=checkpoint.as_ref().filter(|r|r.get::<i64,_>("uidvalidity")==validity).map(|r|r.get::<i64,_>("last_uid")).unwrap_or(0);if checkpoint.as_ref().is_some_and(|r|r.get::<i64,_>("uidvalidity")!=validity){rescanned=true}
    let uids=imap.search(last+1).await?;
-   for uid in uids.into_iter().take(50){let raw=imap.fetch(uid).await?;let message=transport::parse_message(&raw)?;let mut tx=self.pool.begin().await?;
+   for uid in uids.into_iter().take(50){let raw=imap.fetch(uid).await?;let message=transport::parse_message(&raw)?;quarantine_store(&format!("email-body-{uid}.txt"),"text/plain",message.body_text.as_bytes())?;for a in &message.attachments{let bytes=STANDARD.decode(&a.content_base64).map_err(|_|Error::Validation("quarantined attachment undecodable".into()))?;let q=quarantine_store(&a.name,&a.mime,&bytes)?;if q.sha256!=a.sha256{return Err(Error::Conflict("quarantined attachment digest mismatch".into()))}}let mut tx=self.pool.begin().await?;
     sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE").bind(scope.owner_id).fetch_one(&mut *tx).await?;
     let live:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM email_accounts a JOIN email_ingestion_leases l ON l.owner_id=a.owner_id AND l.account_id=a.id WHERE a.owner_id=$1 AND a.id=$2 AND a.enabled AND a.revision=$3 AND l.lease_holder=$4 AND l.fence=$5 AND l.lease_until>now())").bind(scope.owner_id).bind(id).bind(revision).bind(holder).bind(fence).fetch_one(&mut *tx).await?;if !live{return Err(Error::Forbidden)}
     let msg=Uuid::new_v4();let inserted=sqlx::query("INSERT INTO email_messages(id,owner_id,account_id,mailbox,uidvalidity,uid,source_key,message_id,thread_references,metadata,body_text,attachments) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING").bind(msg).bind(scope.owner_id).bind(id).bind(mailbox).bind(validity).bind(uid).bind(&message.source_key).bind(&message.message_id).bind(json!(message.references)).bind(&message.metadata).bind(&message.body_text).bind(json!(message.attachments)).execute(&mut *tx).await?.rows_affected()>0;

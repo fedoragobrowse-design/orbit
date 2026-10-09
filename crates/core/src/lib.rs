@@ -26,6 +26,17 @@ pub struct OwnerScope {pub owner_id:Uuid,pub principal_id:Uuid}
 pub struct Event {pub id:Uuid,pub owner_id:Uuid,pub event_type:EventType,pub source:String,pub principal_id:Uuid,pub timestamp:DateTime<Utc>,pub payload:Value,pub trust_level:TrustLevel,pub privacy_class:PrivacyClass,pub correlation_id:Uuid,pub related_entities:Vec<Uuid>,pub source_event_key:String}
 #[derive(Debug,Clone,Serialize,Deserialize,ToSchema)]
 pub struct ContextBlock {pub kind:ContextKind,pub text_or_reference:String,pub privacy_class:PrivacyClass,pub trust_level:TrustLevel,pub source_reference:String}
+impl ContextBlock {
+ pub fn untrusted(kind:ContextKind,text_or_reference:String,privacy_class:PrivacyClass,source_reference:String)->Self{Self{kind,text_or_reference,privacy_class,trust_level:TrustLevel::UntrustedExternal,source_reference}}
+ /// Test-visible rule: trusted constructors reject any source_reference carrying an untrusted provenance marker.
+ pub fn is_untrusted_source(source:&str)->bool{let s=source.to_ascii_lowercase();["email:","attachment:","event-task:","orbit-memory:","mcp:","marketplace:","calendar:","file:","upload:","untrusted","external"].iter().any(|p|s.contains(p))}
+ /// Instruction-bearing payload screen: the agent context path calls this before any authorization.
+ pub fn looks_like_injection(text:&str)->bool{let s=text.to_ascii_lowercase();s.contains("ignore")&&s.contains("instruction")||s.contains("send all files")||s.contains("exfiltrate")||s.contains("ignore prior")||s.contains("disregard")&&s.contains("instruction")}
+ pub fn user_instruction(text_or_reference:String,privacy_class:PrivacyClass,source_reference:String)->Result<Self>{if Self::is_untrusted_source(&source_reference){return Err(Error::Validation("untrusted source cannot author UserInstruction".into()))}Ok(Self{kind:ContextKind::UserInstruction,text_or_reference,privacy_class,trust_level:TrustLevel::OwnerAuthenticated,source_reference})}
+ pub fn system_policy(text_or_reference:String,privacy_class:PrivacyClass,source_reference:String)->Result<Self>{if Self::is_untrusted_source(&source_reference){return Err(Error::Validation("untrusted source cannot author SystemPolicy".into()))}Ok(Self{kind:ContextKind::SystemPolicy,text_or_reference,privacy_class,trust_level:TrustLevel::System,source_reference})}
+ /// Taint propagation: summaries, memory candidates, and drafts derived from untrusted content stay UNTRUSTED_EXTERNAL and never promote into privileged kinds.
+ pub fn derived(&self,kind:ContextKind,text_or_reference:String)->Self{let forced=matches!(kind,ContextKind::ToolOutput|ContextKind::UntrustedExternalContent|ContextKind::Memory);let tainted=self.trust_level==TrustLevel::UntrustedExternal||forced;let kind=if self.trust_level==TrustLevel::UntrustedExternal{match kind{ContextKind::UserInstruction|ContextKind::SystemPolicy=>ContextKind::UntrustedExternalContent,k=>k}}else{kind};Self{kind,text_or_reference,privacy_class:self.privacy_class,trust_level:if tainted{TrustLevel::UntrustedExternal}else{self.trust_level},source_reference:self.source_reference.clone()}}
+}
 
 #[derive(Debug,Clone,Serialize,Deserialize,ToSchema)]
 pub struct ToolEffects {pub external:bool,pub modifies_data:bool,pub reversible:bool,pub credential_access:bool,pub affected_party:String,pub network:bool}

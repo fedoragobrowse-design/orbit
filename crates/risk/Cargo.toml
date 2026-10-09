@@ -10,3 +10,6 @@ orbit-core = { path = "../core" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+[features]
+default = []
+http-advisor = []

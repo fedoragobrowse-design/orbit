@@ -186,9 +186,8 @@ impl orbit_agent_runtime::Dispatcher for AgentDispatcher {
         proposal_key: &str,
     ) -> orbit_core::Result<Value> {
         let key = proposal_key.to_owned();
-        if let Some(existing)=sqlx::query("SELECT id,state,proposal_digest FROM tool_calls WHERE owner_id=$1 AND task_id=$2 AND proposal_key=$3").bind(scope.owner_id).bind(task).bind(&key).fetch_optional(&self.pool).await?{
-   return Ok(json!({"call_id":existing.get::<Uuid,_>("id"),"state":existing.get::<String,_>("state"),"proposal_digest":existing.get::<String,_>("proposal_digest"),"replayed":true}));
-  }
+        if orbit_core::ContextBlock::looks_like_injection(&args.to_string()){let call=Uuid::new_v4();let hash=orbit_computer_node_protocol::sha256(format!("{task}:{proposal_key}:{name}").as_bytes());let denied=serde_json::to_value(&orbit_policy::PolicyDecision{outcome:orbit_policy::PolicyOutcome::Deny,denied:true,requires_approval:false,requires_sandbox:false,matched_rules:vec![],policy_revision:1,scope_revisions:BTreeMap::new(),reason_codes:vec!["PROMPT_INJECTION_QUARANTINED".into()]})?;let mut tx=self.pool.begin().await?;sqlx::query("INSERT INTO tool_calls(id,owner_id,task_id,agent_id,proposal_key,proposal_digest,snapshot,action_hash,descriptor,descriptor_digest,risk,policy_decision,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'DENIED')").bind(call).bind(scope.owner_id).bind(task).bind(agent).bind(&key).bind(&hash).bind(json!({"tool_name":name,"arguments":args,"denied":"prompt injection quarantined"})).bind(&hash).bind(json!({"name":name,"admitted":false})).bind(&hash).bind(json!({"level":"FORBIDDEN","reasons":["prompt injection quarantined"]})).bind(&denied).execute(&mut *tx).await?;orbit_audit::append(&mut tx,scope,task,None,Some(task),"PROMPT_INJECTION_QUARANTINED","tainted proposal denied before authorization",json!({"call_id":call,"tool_name":name})).await?;tx.commit().await?;return Ok(json!({"call_id":call,"state":"DENIED","proposal_digest":hash}))}
+        if let Some(existing)=sqlx::query("SELECT id,state,proposal_digest FROM tool_calls WHERE owner_id=$1 AND task_id=$2 AND proposal_key=$3").bind(scope.owner_id).bind(task).bind(&key).fetch_optional(&self.pool).await?{return Ok(json!({"call_id":existing.get::<Uuid,_>("id"),"state":existing.get::<String,_>("state"),"proposal_digest":existing.get::<String,_>("proposal_digest"),"replayed":true}))}
         let journal = match self.admission(scope, agent, name, &args).await {
             // Policy DENY never parks for approval: it records DENIED with no consent row.
             Ok((descriptor, decision, risk))
@@ -222,7 +221,7 @@ impl orbit_agent_runtime::Dispatcher for AgentDispatcher {
             state,
             expires_at,
         ) = match journal {
-            Ok(((descriptor, decision, risk_level), _)) => {
+            Ok(((descriptor, decision, _risk_level), _)) => {
                 let epoch = sqlx::query_scalar::<_, i64>(
                     "SELECT revision FROM authorization_epochs WHERE owner_id=$1",
                 )
@@ -801,22 +800,9 @@ pub async fn upload_attachment(
     body: Body,
 ) -> Result<Json<Value>, ApiError> {
     let a = authenticate(&s, &h, true).await?;
-    let bytes = axum::body::to_bytes(body, 10 * 1024 * 1024)
-        .await
-        .map_err(|_| Error::Validation("attachment body unreadable".into()))?;
-    Ok(Json(
-        orbit_agent_runtime::attachments::upload(
-            &s.pool,
-            &s.artifact_dir,
-            &a.scope,
-            &q.filename,
-            q.content_type
-                .as_deref()
-                .unwrap_or("application/octet-stream"),
-            &bytes,
-        )
-        .await?,
-    ))
+    let bytes = axum::body::to_bytes(body, 10 * 1024 * 1024).await.map_err(|_| Error::Validation("attachment body unreadable".into()))?;
+    let quarantined = orbit_email::quarantine_store(&q.filename, q.content_type.as_deref().unwrap_or("application/octet-stream"), &bytes)?;
+    Ok(Json(orbit_agent_runtime::attachments::upload(&s.pool, &s.artifact_dir, &a.scope, &quarantined.name, &quarantined.mime, &bytes).await?))
 }
 #[utoipa::path(get,path="/api/v1/chat/attachments/{id}",responses((status=200)))]
 pub async fn download_attachment(
