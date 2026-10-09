@@ -16,8 +16,12 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - runner: macos-15
             target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
           - runner: windows-2025
             target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target/ci
@@ -30,12 +34,16 @@ jobs:
         with:
           shared-key: rust-${{ matrix.target }}
           workspaces: . -> target/ci
-      # Protocol crate is portable: check+test on every OS. The node binary is
-      # Linux-gated (native port + Unix control socket pending), so its legs
-      # run check-only off Linux and full tests on Linux until the port lands.
+      # Protocol crate is portable: check+test on every OS/arch. The node
+      # binary is Linux-gated (native port + Unix control socket pending:
+      # index.rs calls native::metadata_only and transport calls
+      # native::mutate_journaled / admin control fns with no non-Linux
+      # definitions), so its check+test run on the ubuntu legs only until the
+      # port lands. No macOS/Windows node pass is claimed until Actions runs.
       - run: cargo check --locked -p orbit-computer-node-protocol --target ${{ matrix.target }}
       - run: cargo test --locked -p orbit-computer-node-protocol --target ${{ matrix.target }}
-      - run: cargo check --locked -p orbit-computer-node --target ${{ matrix.target }}
+      - if: startsWith(matrix.runner, 'ubuntu-')
+        run: cargo check --locked -p orbit-computer-node --target ${{ matrix.target }}
       - if: startsWith(matrix.runner, 'ubuntu-')
         run: cargo test --locked -p orbit-computer-node --target ${{ matrix.target }}
   # Workspace-wide check+test needs live Postgres (127.0.0.1:55432 per
@@ -76,10 +84,10 @@ jobs:
   android-apk:
     runs-on: ubuntu-24.04
     steps:
-      - run: echo 'UNAVAILABLE: no Android app scope checked in' >> "$GITHUB_STEP_SUMMARY"
+      - run: "echo 'UNAVAILABLE: no Android app scope checked in' >> \"$GITHUB_STEP_SUMMARY\""
   # iOS: same — no Xcode project exists, and signed/IPA distribution needs
   # Apple-team credentials that CI must never fake. Explicit scope note.
   ios-scope:
     runs-on: macos-15
     steps:
-      - run: echo 'UNAVAILABLE: no iOS target in repo; iPhone path is companion-only via the PWA fast path' >> "$GITHUB_STEP_SUMMARY"
+      - run: "echo 'UNAVAILABLE: no iOS target in repo; iPhone path is companion-only via the PWA fast path' >> \"$GITHUB_STEP_SUMMARY\""

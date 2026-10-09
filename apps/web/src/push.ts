@@ -1,4 +1,4 @@
-import { post } from "./api";
+import { api, post } from "./api";
 function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
   const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
   const raw = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
@@ -24,7 +24,7 @@ export async function syncPushSubscription(reg: ServiceWorkerRegistration): Prom
     }
     if (Notification.permission === "default") return;
     let key: VapidKey;
-    try { key = await post<VapidKey>("/push/vapid-key"); } catch { return; }
+    try { key = await api<VapidKey>("/push/vapid-key"); } catch { return; }
     if (!key.public_key) return;
     const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key.public_key).buffer as ArrayBuffer });
     const payload = toPushSub(sub);
@@ -37,7 +37,7 @@ export async function enablePush(reg: ServiceWorkerRegistration): Promise<boolea
     if (!("pushManager" in reg) || !("Notification" in window)) return false;
     const permission = await Notification.requestPermission();
     if (permission !== "granted") return false;
-    const key = await post<VapidKey>("/push/vapid-key");
+    const key = await api<VapidKey>("/push/vapid-key");
     if (!key.public_key) return false;
     const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key.public_key).buffer as ArrayBuffer });
     const payload = toPushSub(sub);

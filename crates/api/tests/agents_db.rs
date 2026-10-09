@@ -47,13 +47,7 @@ async fn owner(pool: &PgPool) -> orbit_core::OwnerScope {
     }
 }
 
-fn dispatcher(pool: &PgPool) -> orbit_api::agents::AgentDispatcher {
-    orbit_api::agents::AgentDispatcher {
-        pool: pool.clone(),
-        key_dir: std::path::PathBuf::from("/tmp"),
-        artifact_dir: std::path::PathBuf::from("/tmp"),
-    }
-}
+fn dispatcher(pool: &PgPool) -> orbit_api::agents::AgentDispatcher { orbit_api::agents::AgentDispatcher { pool: pool.clone(), key_dir: std::path::PathBuf::from("/tmp"), artifact_dir: std::path::PathBuf::from("/tmp"), origin: "http://localhost:3000".into() } }
 
 async fn agent(pool: &PgPool, scope: &orbit_core::OwnerScope, tools: &[&str]) -> Uuid {
     let available: Vec<orbit_core::ToolDescriptor> = orbit_tools::descriptors()
