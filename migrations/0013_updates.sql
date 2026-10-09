@@ -1,0 +1,2 @@
+CREATE TABLE releases(id uuid PRIMARY KEY,owner_id uuid NOT NULL REFERENCES users(id),version text NOT NULL,channel text NOT NULL DEFAULT 'stable',digest text NOT NULL,signature text NOT NULL,artifact_url text NOT NULL,notes text NOT NULL DEFAULT '',published_at timestamptz NOT NULL DEFAULT now(),UNIQUE(owner_id,id),UNIQUE(owner_id,channel,version));
+CREATE INDEX releases_owner_channel ON releases(owner_id,channel,published_at,id);

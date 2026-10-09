@@ -1,6 +1,7 @@
 pub mod index;
 pub mod transport;
 pub mod admin;
+pub mod update;
 #[cfg(target_os = "linux")] pub mod linux;
 #[cfg(windows)] pub mod windows;
 use orbit_computer_node_protocol::sha256;

@@ -654,6 +654,11 @@ function PushToggle() {
     </section>
   );
 }
+function UpdateNotice() {
+  const q = useQuery({ queryKey: ["updates-check"], queryFn: () => api<{ update_available: boolean; latest_version: string }>("/updates/check?channel=stable&current=web-0.1.0"), staleTime: 300_000 });
+  if (!q.data?.update_available) return null;
+  return (<p role="status">Update available: v{q.data.latest_version} — refresh to apply.</p>);
+}
 
 export function Settings() {
   const q = useQuery({
@@ -741,6 +746,7 @@ export function Settings() {
         </form>
       )}
       <PushToggle />
+      <UpdateNotice />
       <section className="panel form">
         <h2>Policies and budgets</h2>
         <p className="muted">
