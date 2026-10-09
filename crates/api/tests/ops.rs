@@ -7,22 +7,39 @@ use orbit_core::EventType;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
-fn db_url() -> String { std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://orbit_test:orbit_test@127.0.0.1:55432/orbit_test".into()) }
-async fn pool() -> PgPool {
- let pool = PgPool::connect(&db_url()).await.expect("owned test postgres reachable");
+async fn pool() -> (PgPool, Option<String>, std::path::PathBuf) {
+ // Hermetic per-run database + key dir: the shared orbit_test DB accumulates secret rows encrypted under keys this run cannot reopen.
+ if let Ok(url) = std::env::var("DATABASE_URL") {
+  let pool = PgPool::connect(&url).await.expect("owned test postgres reachable");
+  sqlx::migrate!("../../migrations").run(&pool).await.expect("migrations apply");
+  return (pool, None, std::env::var("ORBIT_TEST_KEY_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::temp_dir().join("orbit-test-secrets")));
+ }
+ let tag: String = Uuid::new_v4().simple().to_string()[..8].to_owned();
+ let db = format!("orbit_ops_{}_{tag}", std::process::id());
+ let admin = PgPool::connect("postgres://orbit_test:orbit_test@127.0.0.1:55432/postgres").await.expect("test postgres admin reachable");
+ sqlx::query(&format!("DROP DATABASE IF EXISTS {db}")).execute(&admin).await.unwrap();
+ sqlx::query(&format!("CREATE DATABASE {db} OWNER orbit_test")).execute(&admin).await.unwrap();
+ let pool = PgPool::connect(&format!("postgres://orbit_test:orbit_test@127.0.0.1:55432/{db}")).await.expect("owned test postgres reachable");
  sqlx::migrate!("../../migrations").run(&pool).await.expect("migrations apply");
- pool
+ (pool, Some(db), std::env::temp_dir().join(format!("orbit-test-secrets-{}_{tag}", std::process::id())))
+}
+async fn cleanup(pool: &PgPool, db: &Option<String>, key_dir: &std::path::Path) {
+ if let Some(db) = db.as_ref().filter(|d| d.starts_with("orbit_ops_")) {
+  pool.close().await;
+  let admin = PgPool::connect("postgres://orbit_test:orbit_test@127.0.0.1:55432/postgres").await.unwrap();
+  sqlx::query(&format!("DROP DATABASE IF EXISTS {db}")).execute(&admin).await.unwrap();
+  std::fs::remove_dir_all(key_dir).ok();
+ }
 }
 struct Ctx { state: ApiState, scope: orbit_core::OwnerScope, headers: HeaderMap, key_dir: std::path::PathBuf, artifact_dir: std::path::PathBuf }
-async fn ctx(pool: &PgPool, tag: &str) -> Ctx {
+async fn ctx(pool: &PgPool, tag: &str, key_dir: &std::path::Path) -> Ctx {
  let owner = Uuid::new_v4();let principal = Uuid::new_v4();
  sqlx::query("INSERT INTO users(id,email,display_name,password_hash) VALUES($1,$2,'t','x')").bind(owner).bind(format!("ops-{tag}-{owner}@example.invalid")).execute(pool).await.unwrap();
  sqlx::query("INSERT INTO authorization_epochs(owner_id) VALUES($1)").bind(owner).execute(pool).await.unwrap();
  sqlx::query("INSERT INTO principals(id,owner_id,principal_type,auth_method,trust_level,source) VALUES($1,$2,'WEB_USER','password','OWNER_AUTHENTICATED','test')").bind(principal).bind(owner).execute(pool).await.unwrap();
  let token = format!("ops-token-{tag}-{owner}");let csrf = format!("ops-csrf-{tag}-{owner}");
  sqlx::query("INSERT INTO sessions(id,owner_id,principal_id,token_hash,csrf_token,expires_at) VALUES($1,$2,$3,$4,$5,now()+interval '1 hour')").bind(Uuid::new_v4()).bind(owner).bind(principal).bind(orbit_api::auth::hash(&token)).bind(&csrf).execute(pool).await.unwrap();
- // Stable across runs: the shared test DB keeps secret rows encrypted under this key, so a fresh dir per run would fail reopen with "master key missing" (same convention as email_greenmail.rs).
- let key_dir = std::env::var("ORBIT_TEST_KEY_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::temp_dir().join("orbit-test-secrets"));
+ let key_dir = key_dir.to_owned();
  let base = std::env::temp_dir().join(format!("orbit-ops-{tag}-{owner}"));
  let artifact_dir = base.join("artifacts");
  let origin = "http://127.0.0.1:8080".to_string();
@@ -40,8 +57,7 @@ async fn publish(state: &ApiState, headers: &HeaderMap, key: &str) -> Result<Val
 fn must_fail<T>(r: Result<T, orbit_api::ApiError>, what: &str) { assert!(r.is_err(), "{what} must fail while frozen"); }
 #[tokio::test]
 async fn kill_switch_freezes_mutations_reads_stay_open() {
- let pool = pool().await;let c = ctx(&pool, "kill").await;
- // Baseline mutation succeeds.
+ let (pool, db, key_dir) = pool().await;let c = ctx(&pool, "kill", &key_dir).await;
  ok!(publish(&c.state, &c.headers, "ops-kill-before").await, "publish before kill");
  // Engage.
  let Json(killed) = ok!(ops::kill(State(c.state.clone()), c.headers.clone()).await, "kill");
@@ -61,10 +77,11 @@ async fn kill_switch_freezes_mutations_reads_stay_open() {
  assert_eq!(resumed["frozen"], json!(false));
  ok!(publish(&c.state, &c.headers, "ops-kill-after").await, "publish after resume");
  let _ = std::fs::remove_dir_all(c.artifact_dir.parent().unwrap());
+ cleanup(&pool, &db, &key_dir).await;
 }
 #[tokio::test]
 async fn automation_dry_run_has_zero_side_effects() {
- let pool = pool().await;let c = ctx(&pool, "dryrun").await;
+ let (pool, db, key_dir) = pool().await;let c = ctx(&pool, "dryrun", &key_dir).await;
  let Json(created) = ok!(orbit_api::automations::create_automation(State(c.state.clone()), c.headers.clone(), Json(orbit_api::automations::CreateAutomationRequest { trigger: json!({"kind":"timer","run_at":"2030-01-01T00:00:00Z"}), filters: Value::Null, agent_id: None, instructions: "summarize inbox".into(), policy_scope: Value::Null, model_role: "FAST".into(), notification_behavior: "IN_APP".into(), timezone: "UTC".into(), enabled: true })).await, "create automation");
  let id = created["id"].as_str().expect("automation id").to_string();
  let count = async || -> (i64, i64, i64) {
@@ -81,10 +98,11 @@ async fn automation_dry_run_has_zero_side_effects() {
  let after = count().await;
  assert_eq!(before, after, "dry-run must create no task/event/fire rows");
  let _ = std::fs::remove_dir_all(c.artifact_dir.parent().unwrap());
+ cleanup(&pool, &db, &key_dir).await;
 }
 #[tokio::test]
 async fn encrypted_backup_round_trips_one_row() {
- let pool = pool().await;let c = ctx(&pool, "backup").await;
+ let (pool, db, key_dir) = pool().await;let c = ctx(&pool, "backup", &key_dir).await;
  let mem = Uuid::new_v4();
  sqlx::query("INSERT INTO memory_records(id,owner_id,type,subject,normalized_subject,entity_key,value,source,source_reference,confidence,trust_level,privacy_class) VALUES($1,$2,'PERSON','Ada','ada','person:ada','{\"role\":\"owner\"}','test','ops',0.9,'OWNER_AUTHENTICATED','PRIVATE')").bind(mem).bind(c.scope.owner_id).execute(&pool).await.unwrap();
  let Json(bk) = ok!(ops::backup(State(c.state.clone()), c.headers.clone()).await, "backup");
@@ -103,4 +121,5 @@ async fn encrypted_backup_round_trips_one_row() {
  assert_eq!(row["type"], json!("PERSON"));
  assert_eq!(bk["tables"]["memory_records"], json!(1));
  let _ = std::fs::remove_dir_all(c.artifact_dir.parent().unwrap());
+ cleanup(&pool, &db, &key_dir).await;
 }

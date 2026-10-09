@@ -141,7 +141,7 @@ async fn greenmail_imap_smtp_roundtrip_with_quarantine() {
     assert_eq!(proof["sha256"].as_str().unwrap(), hex::encode(sha2::Sha256::digest(&bytes)).as_str(), "stored message path must satisfy the quarantine_store attachment digest check");
     let quarantined = orbit_email::quarantine_store(&format!("email-body-{uid}.txt"), "text/plain", body.as_bytes()).expect("stored body must satisfy the quarantine_store guard");
     assert_eq!(quarantined.size, body.len());
-    if let Some(db) = db_name.filter(|d| d.starts_with("orbit_greenmail_")) {
+    if let Some(db) = db_name.as_ref().filter(|d| d.starts_with("orbit_greenmail_")) {
         pool.close().await;
         let admin = PgPool::connect("postgres://orbit_test:orbit_test@127.0.0.1:55432/postgres").await.unwrap();
         sqlx::query(&format!("DROP DATABASE IF EXISTS {db}")).execute(&admin).await.unwrap();
