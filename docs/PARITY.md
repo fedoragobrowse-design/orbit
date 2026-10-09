@@ -14,9 +14,9 @@ Status key: **LIVE-PROVEN** = exercised by a test/e2e path that exists in-repo. 
 | Calendar sources | Yes — calendar ingest (ghost.ai) | UNAVAILABLE — missing owner OAuth client credentials AND CalDAV poller | docs/CONNECTORS.md:22-25 (`cal-gcal-oauth`, `cal-caldav` UNAVAILABLE rows); no calendar poller exists under crates/email/src/ |
 | Nodes / multi-machine | Yes — multi-device reach (ghost.ai/core) | BUILT — pairing-code pair, outbound-only node session, digest-bound file ops, revoke/renew | crates/api/src/computers.rs:250-251 (pairing codes), :293-294 (pair), :2013-2028 (router); docs/NODES.md:12-15 (default-deny, traversal refusal) |
 | Shell execution | Yes — agent runs commands (ghost.ai) | BUILT — `shell.execute` ONLY via sandbox path (create→upload→execute→collect→destroy), consent-spec pinned | crates/api/src/runtimes.rs:19-37 (router), :305-308 (`shell.execute` descriptor), :440-472 (dispatch, consent checks) |
-| Marketplace / skills | Yes — skill store (ghost.ai) | BUILT — signed installs, digest+ed25519 verify, capability screen, sandbox-only exec; DB negative tests pass | crates/api/src/marketplace.rs:23 (router), :62-66 (over-broad screen + manifest check); crates/api/tests/marketplace.rs:23-26 (tamper/unsigned/capability tests) |
+| Marketplace / skills | Yes — skill store (ghost.ai) | LIVE-PROVEN — signed installs, digest+ed25519 verify, capability screen, sandbox-only exec; tamper/unsigned/capability DB tests green | crates/api/src/marketplace.rs:63-70 (checked_manifest); crates/api/tests/marketplace.rs:23-26 (tamper/unsigned/capability tests) |
 | PWA / phone approvals | Yes — phone app approvals (ghost.ai) | BUILT — Web Push (VAPID, encrypted secret store) + service worker + installable manifest; in-app list stays authoritative | crates/api/src/push.rs:368-373 (router); migrations/0012_push.sql:1-3; apps/web/src/push.ts:16-33 (sync); apps/web/public/sw.js; apps/web/public/manifest.webmanifest; apps/web/src/workspace.tsx:687-704 (PushToggle) |
-| Backup / restore | Yes — backup story (ghost.ai) | UNAVAILABLE — missing backup export/restore endpoints; reuse target is the encrypted secret store | No backup/restore route in crates/api/src/lib.rs:77-89; retention only deletes (crates/api/src/memory.rs:353-383); secrets store reuse candidate: crates/secrets/src/lib.rs |
+| Backup / restore | Yes — backup story (ghost.ai) | LIVE-PROVEN — encrypted chunked backup to secrets store, idempotent owner-scoped restore, audit excluded by design | crates/api/src/ops.rs:60-104 (backup/restore); crates/api/tests/ops.rs::encrypted_backup_round_trips_one_row |
 | Installers | Yes — appliance unbox (ghost.ai/cart) | BUILT — `install.sh` + node installers with signed dry-run transcripts | install.sh; install-node.sh; install-node.ps1; docs/INSTALL.md:15-24,92-95 (method + transcripts) |
 | Embeddings | Yes — semantic recall (ghost.ai) | BUILT — embedding role + pgvector store; installer pulls `nomic-embed-text` via Ollama; lexical search path exists | crates/model-router/src/lib.rs:150-180 (`embed`); crates/memory/src/retrieval.rs:60-65 (`store_embedding`); crates/api/src/memory.rs:303-318 (lexical search); docs/INSTALL.md:38-43 (model pull, offline notice) |
 | Screen history (7-day) | Yes — 7-day screen history (TechCrunch 2026-10-05) | UNAVAILABLE — no screen capture by design; privacy reason: Orbit never screenshots the owner device, so there is no frame pipeline, no frame store, no 7-day retention job | No screen-frame code in crates/+apps/ (only unrelated hit: auth-replay "captured challenge" in crates/api/src/computers.rs:827; no frame table in migrations/) |
@@ -24,7 +24,24 @@ Status key: **LIVE-PROVEN** = exercised by a test/e2e path that exists in-repo. 
 | Hardware bundling | Yes — $3,499 appliance, spec above (ghost.ai/core, ghost.ai/cart) | Software-only by design — no appliance SKU, no fulfillment; reference-hardware guidance below (guidance-not-tested) | This section; no hardware crate exists (crates/ is software-only, verified 2026-10-08) |
 | Audit trail | Yes — activity log (ghost.ai) | BUILT — append-only audit table + trigger | migrations/0001_foundation.sql:22-26 (`audit_events`, immutable trigger); crates/audit/src/lib.rs:7-11 (`append`) |
 | Retention controls | Ghost: 7-day screen window (TechCrunch 2026-10-05) | BUILT — per-kind day windows, owner-tunable; approvals/runtime evidence protected from cleanup | crates/api/src/memory.rs:353-383 (get/put retention); migrations/0007_memory.sql:36-38 (`retention_settings`); apps/web/src/knowledge.tsx:331-346 (Retention UI) |
-| Ops / doctor CLI | Ghost: appliance diagnostics (ghost.ai/core) | UNAVAILABLE — `orbit doctor`/CLI binary does not exist; document as script or minimal addition (no CLI crate in crates/) | crates/ has no CLI crate (18 crates, none CLI — verified 2026-10-08); route registry crates/api/src/lib.rs:77-89 has no ops routes |
+| Ops / doctor CLI | Ghost: appliance diagnostics (ghost.ai/core) | LIVE-PROVEN (script) — kill switch with central 403 guard, automation dry-run with zero side effects, `scripts/doctor.sh` PASS/FAIL/SKIP checks | crates/api/src/ops.rs:24-54 (guard/kill/resume/status); crates/api/tests/ops.rs (3 tests green); scripts/doctor.sh |
+| Morning brief | Digest/notification feature class | LIVE-PROVEN — read-scoped aggregation (approvals, notifications, tasks, events, automations, mail) + Home panel | crates/api/src/brief.rs; crates/api/tests/brief.rs (1 test green); apps/web/src/workspace.tsx BriefPanel |
+
+## Roadmap (not built — named, not claimed)
+
+| Item | Status | Missing prerequisite |
+|---|---|---|
+| Gmail/Graph OAuth connectors | UNAVAILABLE | Owner Google/Microsoft OAuth client credentials |
+| CalDAV poller + ICS feed | UNAVAILABLE | CalDAV poller implementation (no calendar poller in crates/email/src/) |
+| Android Kotlin node app | UNAVAILABLE | Kotlin app + emulator-tested APK (CI scope job only) |
+| iPhone companion app | UNAVAILABLE | Xcode + Apple Developer account (source + CI config only) |
+| Signed self-update + rollback | UNAVAILABLE | Release-signing pipeline + rollback path |
+| Per-source / per-agent budgets | UNAVAILABLE | Budget tables + enforcement in gateway |
+| Semantic search over embedder | PARTIAL | Embedder installed via installer; query path still lexical (`POST /memory/search`) |
+| Automation templates | UNAVAILABLE | Template catalog + UI |
+| Notification routing rules | UNAVAILABLE | Routing-rule tables + UI |
+| Export-everything / delete-everything | PARTIAL | Backup/restore ship; wipe path is retention-only per-kind delete |
+| "Why did this happen" timeline | PARTIAL | Audit + activity exist; no linked timeline UI |
 
 ## Reference-hardware guide (guidance-not-tested)
 
@@ -38,6 +55,6 @@ Orbit ships software only. These tiers are **recommendations, not tested configu
 
 ## Notes
 
-- API composes services, never policy: routes live in crates/api/src/lib.rs:77-89; admission/policy lives in crates/policy + crates/risk.
+- API composes services, never policy: routes live in crates/api/src/lib.rs; admission/policy lives in crates/policy + crates/risk.
 - owner_id on all rows: enforced per-migration (e.g. migrations/0004_gateway.sql:4-6, migrations/0007_memory.sql scoping).
-- Honesty rule applied: only the IMAP/SMTP email path is LIVE-PROVEN (live fixture test); everything else code-complete is BUILT until a live test lands.
+- Honesty rule applied: only paths with a live in-repo test are LIVE-PROVEN; everything else code-complete is BUILT until a live test lands.
