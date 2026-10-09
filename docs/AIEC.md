@@ -78,3 +78,8 @@ cargo run --locked -p orbit-aiec-runtime --example live_smoke
 
 Key contents are never logged. Never run the sibling Firecracker dogfood
 infrastructure script as an Orbit check.
+
+## Worker status (2026-10-09)
+
+- Firecracker worker: PARTIAL — no schedulable worker on this machine as of 2026-10-09.
+- Docker worker: proven live — create → exec (NET:BLOCKED) → destroy.

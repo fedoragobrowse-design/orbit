@@ -588,4 +588,19 @@ mod tests {
         assert_eq!(parsed.get_version(), Some(uuid::Version::Random));
         assert_eq!(header.len(), 36);
     }
+    /// Fail-closed: an unroutable AIec origin never succeeds and never touches host exec. `readiness` surfaces `Error::Unavailable` (the api `wait_reason` mapping turns it into `WAITING_FOR_RESOURCE` + `AIEC_UNAVAILABLE: …`); `create` must also err, never yield a handle.
+    #[tokio::test]
+    async fn unreachable_aiec_fails_closed_never_host_exec() {
+        let config = ConnectionConfig { origin: "http://127.0.0.1:9".into(), admitted_addresses: vec!["127.0.0.1".parse().unwrap()], ca_pem: None, secret_id: Uuid::new_v4(), image: "admitted-image".into(), disk_mb: 1024, lifetime_seconds: 1680 };
+        let runtime = AIecRuntime::connect(config, Zeroizing::new(b"test-tenant-key".to_vec())).await.expect("client builds without network");
+        let err = runtime.readiness().await.expect_err("unreachable AIec must fail readiness, never succeed");
+        assert!(matches!(&err, Error::Unavailable(_)), "unreachable AIec must fail closed with Unavailable, got {err:?}");
+        if let Error::Unavailable(message) = &err { assert!(message.contains("AIec"), "error must carry AIec identity for the AIEC_UNAVAILABLE mapping, got {message:?}"); }
+        let reason = format!("AIEC_UNAVAILABLE: {err}");
+        assert!(reason.starts_with("AIEC_UNAVAILABLE: ") && reason.contains("AIec"), "mapped reason must keep the exact prefix, got {reason:?}");
+        let spec = RuntimeSpec { run_id: Uuid::new_v4(), image: "admitted-image".into(), cpu: 1, memory_mb: 512, disk_mb: 1024, lifetime_seconds: 1680, network_enabled: false, inputs: Vec::new() };
+        let created = runtime.create(spec).await;
+        assert!(created.is_err(), "unreachable AIec must never yield a runtime handle (no host exec fallback)");
+        assert!(matches!(&created, Err(Error::OutcomeUnknown) | Err(Error::Unavailable(_)) | Err(Error::Timeout)), "transport failure must stay fail-closed, got {created:?}");
+    }
 }

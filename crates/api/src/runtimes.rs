@@ -1064,3 +1064,22 @@ async fn persist_artifact(
         .bind(json!([{"kind":"RUNTIME_OUTPUT","runtime_id":handle.id(),"provenance":artifact.provenance}])).bind(&storage_key).execute(pool).await?;
     Ok(json!({"id": artifact.id, "name": name, "sha256": artifact.sha256, "size": artifact.size}))
 }
+
+#[cfg(test)]
+mod fail_closed_tests {
+    use super::{map_unreachable, wait_reason};
+    use orbit_core::Error;
+    /// Unreachable AIec parks in WAITING_FOR_RESOURCE with the exact AIEC_UNAVAILABLE prefix; dropping the prefix or falling back to host exec breaks this test.
+    #[test]
+    fn unreachable_maps_to_waiting_with_exact_prefix() {
+        let (state, reason) = wait_reason(&Error::Unavailable("AIec authenticated route unreachable".into()));
+        assert_eq!(state, "WAITING_FOR_RESOURCE");
+        assert_eq!(reason, "AIEC_UNAVAILABLE: AIec authenticated route unreachable");
+        let (state, reason) = wait_reason(&Error::Timeout);
+        assert_eq!(state, "WAITING_FOR_RESOURCE");
+        assert!(reason.starts_with("AIEC_UNAVAILABLE: "), "timeout must keep AIEC_UNAVAILABLE prefix, got {reason:?}");
+        let mapped = map_unreachable(&Error::Unavailable("AIec status unavailable".into()));
+        assert!(matches!(&mapped, Error::Unavailable(message) if message.starts_with("AIEC_UNAVAILABLE: ")), "adapter mapping must keep AIEC_UNAVAILABLE prefix, got {mapped:?}");
+        assert_eq!(wait_reason(&mapped).0, "WAITING_FOR_RESOURCE");
+    }
+}
