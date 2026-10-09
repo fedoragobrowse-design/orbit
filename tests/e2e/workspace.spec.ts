@@ -201,6 +201,19 @@ test("connections: runtime and email tabs render against real endpoints", async 
     page.getByRole("heading", { name: "Runtimes", exact: true }),
   ).toBeVisible();
   await expect(page.getByText("Not available in this build")).toHaveCount(0);
+  await test.step("PWA: manifest serves 200 with icons, service worker registers", async () => {
+    const manifest = await page.request.get("/manifest.webmanifest");
+    expect(manifest.ok(), "manifest fetch 200").toBeTruthy();
+    const body = await manifest.json();
+    expect(body.name, "manifest has name").toBeTruthy();
+    expect(Array.isArray(body.icons) && body.icons.length > 0, "manifest lists icons").toBeTruthy();
+    for (const icon of body.icons) {
+      const res = await page.request.get(icon.src);
+      expect(res.ok(), `icon ${icon.src} serves 200`).toBeTruthy();
+    }
+    const registered = await page.evaluate(async () => "serviceWorker" in navigator && (await navigator.serviceWorker.getRegistration("/")) !== null);
+    expect(registered, "service worker registered").toBeTruthy();
+  });
   await page
     .locator('nav[aria-label="Connection categories"]')
     .getByRole("link", { name: "Email" })

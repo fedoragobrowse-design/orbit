@@ -65,3 +65,25 @@ retry), offline (stream disconnect), denied (401/403 → login), version
 `#F4F2F7` ground, `#FFF` surface, `#30263F` plum, `#176B58` evergreen,
 `#946200` pending, `#A43256` destructive, `#655E70` secondary,
 `#DDD7E5` separators.
+
+## PWA + push
+
+Installable: `/manifest.webmanifest` (name, theme-color `#30263F`, generated
+192/512px icons in `apps/web/public/`) linked from `index.html`; `/sw.js`
+caches the app shell cache-first (never `/api/`), shows push events as
+notifications deep-linking to `/approvals/{id}`, and focuses or opens the
+approval on click. `App.tsx` registers the worker in the authenticated
+effect next to SSE and re-syncs the subscription. Settings has a Push
+notifications panel (enable + test-push).
+
+Backend: `POST/DELETE /api/v1/push/subscribe`, `GET /api/v1/push/vapid-key`,
+`POST /api/v1/push/test` (`crates/api/src/push.rs`, owner-scoped
+`push_subscriptions` + `push_vapid_keys` in `migrations/0012_push.sql`).
+VAPID P-256 keys mint server-side on first use; the private scalar lives in
+the encrypted secret store (`push-vapid-private` purpose), the table keeps
+only the secret link + public key. Sending is RFC 8291 `aes128gcm`
+(hand-rolled over `p256`/`aes-gcm`/`hmac`; vectors pinned to Appendix A in
+`push::tests::rfc8291_appendix_a_vectors`). Every approval commit
+(`agents.rs` gateway path, `computers.rs` file-mutation path) enqueues a
+best-effort fanout after the transaction — push failure never rolls back
+the approval row; 410/404 endpoints are pruned.

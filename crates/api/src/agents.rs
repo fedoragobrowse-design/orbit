@@ -38,14 +38,11 @@ pub struct AgentDispatcher {
     pub pool: sqlx::PgPool,
     pub key_dir: PathBuf,
     pub artifact_dir: PathBuf,
+    pub origin: String,
 }
 impl AgentDispatcher {
     pub fn new(state: &ApiState) -> Self {
-        Self {
-            pool: state.pool.clone(),
-            key_dir: state.key_dir.clone(),
-            artifact_dir: state.artifact_dir.clone(),
-        }
+        Self { pool: state.pool.clone(), key_dir: state.key_dir.clone(), artifact_dir: state.artifact_dir.clone(), origin: state.origin.clone() }
     }
     async fn descriptors_for(
         &self,
@@ -311,9 +308,9 @@ impl orbit_agent_runtime::Dispatcher for AgentDispatcher {
             sqlx::query("INSERT INTO approvals(id,owner_id,task_id,call_id,snapshot,action_hash,risk,reasons,preview,policy_decision,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
     .bind(approval).bind(scope.owner_id).bind(task).bind(call).bind(&snapshot_value).bind(&hash).bind(&risk_value).bind(json!([risk_value.get("reasons")])).bind(&preview).bind(&decision_value).bind(expires_at).execute(&mut *tx).await?;
             tx.commit().await?;
-            return Ok(
-                json!({"call_id":call,"state":state,"proposal_digest":hash,"approval_id":approval}),
-            );
+            let push_state = crate::ApiState { pool: self.pool.clone(), origin: self.origin.clone(), key_dir: self.key_dir.clone(), artifact_dir: self.artifact_dir.clone(), nodes: crate::computers::NodeHub::default() };
+            crate::push::enqueue_approval_push(&push_state, scope, approval, &preview).await;
+            return Ok(json!({"call_id":call,"state":state,"proposal_digest":hash,"approval_id":approval}));
         }
         sqlx::query("INSERT INTO tool_calls(id,owner_id,task_id,agent_id,proposal_key,proposal_digest,snapshot,action_hash,descriptor,descriptor_digest,risk,policy_decision,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)")
    .bind(call).bind(scope.owner_id).bind(task).bind(agent).bind(&key).bind(&hash).bind(&snapshot_value).bind(&hash).bind(&descriptor_value).bind(&digest).bind(&risk_value).bind(&decision_value).bind(state).execute(&self.pool).await?;

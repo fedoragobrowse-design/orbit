@@ -28,6 +28,7 @@ import {
   timestamp,
   type RecordData,
 } from "./api";
+import { enablePush } from "./push";
 import { useDraft } from "./App";
 const TERMINAL_TASK_STATES: Record<string, true> = {
   COMPLETED: true,
@@ -683,6 +684,36 @@ type SettingsData = {
   allow_private_cloud: boolean;
   revision: number;
 };
+function PushToggle() {
+  const [status, setStatus] = useState("Push alerts for approvals are off in this browser.");
+  const [busy, setBusy] = useState(false);
+  async function enable() {
+    setBusy(true);
+    try {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window)) { setStatus("This browser does not support push notifications."); return; }
+      const reg = await navigator.serviceWorker.ready;
+      setStatus((await enablePush(reg)) ? "Push alerts are on in this browser." : "Push permission was not granted.");
+    } finally { setBusy(false); }
+  }
+  async function test() {
+    setBusy(true);
+    try { await post("/push/test", {}); setStatus("Test push sent — check for a notification."); }
+    catch (e) { setStatus(e instanceof Error ? e.message : "Test push failed."); }
+    finally { setBusy(false); }
+  }
+  return (
+    <section className="panel form">
+      <h2>Push notifications</h2>
+      <p className="muted">Get a push alert on this device when an approval needs your decision. In-app approvals stay authoritative.</p>
+      <p role="status">{status}</p>
+      <div className="row-buttons">
+        <button disabled={busy} onClick={enable}>Enable push alerts</button>
+        <button disabled={busy} onClick={test}>Send test push</button>
+      </div>
+    </section>
+  );
+}
+
 export function Settings() {
   const q = useQuery({
     queryKey: ["settings"],
@@ -768,7 +799,7 @@ export function Settings() {
           <button disabled={save.isPending}>Save privacy and autonomy</button>
         </form>
       )}
-      <RetentionSettings />
+      <PushToggle />
       <section className="panel form">
         <h2>Policies and budgets</h2>
         <p className="muted">

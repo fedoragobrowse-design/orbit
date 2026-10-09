@@ -9,6 +9,7 @@ pub mod marketplace;
 pub mod mcp;
 pub mod memory;
 pub mod models;
+pub mod push;
 pub mod runtimes;
 use axum::{
     Json, Router,
@@ -85,6 +86,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(marketplace::router())
         .merge(computers::router())
         .merge(agents::router())
+        .merge(push::router())
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
 }

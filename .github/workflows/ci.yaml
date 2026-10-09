@@ -1,0 +1,85 @@
+# CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+name: ci
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-${{ matrix.target }}
+          workspaces: . -> target/ci
+      # Protocol crate is portable: check+test on every OS. The node binary is
+      # Linux-gated (native port + Unix control socket pending), so its legs
+      # run check-only off Linux and full tests on Linux until the port lands.
+      - run: cargo check --locked -p orbit-computer-node-protocol --target ${{ matrix.target }}
+      - run: cargo test --locked -p orbit-computer-node-protocol --target ${{ matrix.target }}
+      - run: cargo check --locked -p orbit-computer-node --target ${{ matrix.target }}
+      - if: startsWith(matrix.runner, 'ubuntu-')
+        run: cargo test --locked -p orbit-computer-node --target ${{ matrix.target }}
+  # Workspace-wide check+test needs live Postgres (127.0.0.1:55432 per
+  # crates/api/tests/*.rs; GreenMail-dependent tests self-skip without
+  # fixtures), so it runs on Linux with the disposable service. macOS/Windows
+  # run the node legs above.
+  workspace-linux:
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/ci
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: orbit_test
+          POSTGRES_PASSWORD: orbit_test
+          POSTGRES_DB: orbit_test
+        ports:
+          - 55432:5432
+        options: --health-cmd "pg_isready -U orbit_test -d orbit_test" --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-workspace
+          workspaces: . -> target/ci
+      - run: cargo check --locked --workspace
+      - run: cargo test --locked --workspace
+  native-security:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f deploy/examples/compose.test.yaml --profile native-security run --rm --build node-security
+  # Android APK: no Gradle/Kotlin app exists in this repo (apps/ holds only
+  # computer-node, server, web), so there is nothing to build yet. Kept as an
+  # explicit UNAVAILABLE-until-prereqs gate instead of a faked build.
+  android-apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo 'UNAVAILABLE: no Android app scope checked in' >> "$GITHUB_STEP_SUMMARY"
+  # iOS: same — no Xcode project exists, and signed/IPA distribution needs
+  # Apple-team credentials that CI must never fake. Explicit scope note.
+  ios-scope:
+    runs-on: macos-15
+    steps:
+      - run: echo 'UNAVAILABLE: no iOS target in repo; iPhone path is companion-only via the PWA fast path' >> "$GITHUB_STEP_SUMMARY"

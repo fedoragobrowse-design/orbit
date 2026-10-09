@@ -1915,9 +1915,9 @@ async fn propose(
     )
     .await?;
     tx.commit().await?;
-    Ok(
-        json!({ "approval_id": approval, "call_id": call, "task_id": task, "state": "WAITING_FOR_APPROVAL", "tool": tool, "preview": orbit_approvals::preview(&snapshot) }),
-    )
+    let preview = orbit_approvals::preview(&snapshot);
+    crate::push::enqueue_approval_push(state, scope, approval, &preview).await;
+    Ok(json!({ "approval_id": approval, "call_id": call, "task_id": task, "state": "WAITING_FOR_APPROVAL", "tool": tool, "preview": preview }))
 }
 
 #[utoipa::path(post, path = "/api/v1/files/write", request_body = ProposalWrite, responses((status = 200, body = Value)))]

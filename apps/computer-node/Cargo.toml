@@ -39,4 +39,7 @@ notify = "8"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_IO", "Win32_System_SystemInformation", "Wdk_Storage_FileSystem", "Wdk_Foundation"] }
 
 [dev-dependencies]
+base64 = "0.22"
+chrono = { workspace = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 tempfile = "3"

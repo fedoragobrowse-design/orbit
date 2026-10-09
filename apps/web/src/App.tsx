@@ -25,6 +25,7 @@ import {
   Users,
 } from "lucide-react";
 import { api, post, queryClient, setSession, type Session } from "./api";
+import { syncPushSubscription } from "./push";
 import { ErrorNotice, Input } from "./ui";
 import { Home, Tasks, TaskDetail, Activity, Settings } from "./workspace";
 import { Chat, Agents } from "./chat";
@@ -105,11 +106,10 @@ export function App() {
   useEffect(() => {
     if (!session.data) return;
     const stream = new EventSource("/api/v1/stream");
-    stream.onmessage = () =>
-      queryClient.invalidateQueries({
-        predicate: (q) => q.queryKey[0] !== "session",
-      });
-    return () => stream.close();
+    stream.onmessage = () => queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] !== "session" });
+    let cancelled = false;
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").then((reg) => { if (!cancelled) void syncPushSubscription(reg); }).catch(() => {});
+    return () => { cancelled = true; stream.close(); };
   }, [session.data?.user.id]);
   if (session.isPending)
     return (
