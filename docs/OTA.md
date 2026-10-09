@@ -3,6 +3,8 @@
 Signed release channel plus owner-gated rollout for nodes and the PWA. Nothing
 self-updates on its own: every path below needs an explicit owner decision.
 
+Status: LIVE-PROVEN — signed `stable` channel: `crates/api/tests/updates.rs` (6 tests) + node `apps/computer-node/src/update.rs` tests (3 tests). Rollback beyond the node `.bak` is PARTIAL (release-signing pipeline missing). See docs/PARITY.md.
+
 ## Channel policy
 
 - `stable` is the only channel the API publishes or serves. One pinned channel

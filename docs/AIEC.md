@@ -83,3 +83,5 @@ infrastructure script as an Orbit check.
 
 - Firecracker worker: PARTIAL — no schedulable worker on this machine as of 2026-10-09.
 - Docker worker: proven live — create → exec (NET:BLOCKED) → destroy.
+
+Status: PARTIAL per docs/PARITY.md (Docker worker proven live; Firecracker worker unschedulable here). Semantic search over the embedder is likewise PARTIAL — embedder installs via `docs/INSTALL.md:38-43`, query path stays lexical (`POST /memory/search`).

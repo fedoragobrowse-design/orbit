@@ -13,3 +13,5 @@ Per-platform state of the computer node (`apps/computer-node`, wire protocol `cr
 - Default-deny: READ roots advertise no mutation ops; foreign-owner snapshots and stale scope revisions fail closed.
 - No `SQLX_OFFLINE` in CI: the repo has no `.sqlx/` cache and uses only runtime `sqlx::query`/`migrate!` (no compile-time `query!` macros), so offline mode is not applicable.
 - Linux leg proven locally; see the CI run for macOS/Windows results.
+
+Roadmap: Android Kotlin node app (UNAVAILABLE — Kotlin app + emulator-tested APK; CI `android-apk` scope job only), iPhone companion app (UNAVAILABLE — Xcode + Apple Developer account; PWA is the fast path). See docs/PARITY.md roadmap.

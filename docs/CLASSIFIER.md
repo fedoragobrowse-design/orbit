@@ -19,3 +19,7 @@ Advisors can only escalate, never lower: `classify_action_with_advisor` takes th
 
 ## JEV note
 A hosted-model (JEV-style) advisor would be a remote API: the adapter belongs in `model-router` (which owns transports, credentials, retries), not in `orbit-risk`. It would implement `RiskAdvisor` via `model-router`, return `Some` only on a confident high-risk verdict, and return `None` on any error — preserving advisory-only max semantics. Not required for this slice.
+
+## Status
+
+Core advisory path: BUILT with unit proof in-crate (deterministic floor + advisory-max merge; see `crates/risk/src/lib.rs` tests). Not LIVE-PROVEN at the HTTP layer — no e2e path exercises classification end-to-end; roadmap per docs/PARITY.md. The J10 injection story is proven at the gateway layer instead (`crates/api/tests/injection.rs`, 6 tests; kill-switch guard in `crates/api/tests/ops.rs`).

@@ -4,6 +4,8 @@ One-command install from pinned tagged releases. Scripts refuse to run
 unpinned: pass `--version vX.Y.Z` (or set `GITHUB_REF` / `ORBIT_VERSION`
 to a tag). No `latest`, no branch installs.
 
+Status: BUILT — `install.sh` + node installers with signed dry-run transcripts (`docs/INSTALL.md:92-230`); no tagged release exists yet so step 2+ is unexecuted by design. See docs/PARITY.md.
+
 ## Quick start (server)
 
 ```sh

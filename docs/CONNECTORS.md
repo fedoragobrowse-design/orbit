@@ -22,4 +22,6 @@ All MIME/body parsing of untrusted mail happens before trust elevation: `transpo
 | Gmail-OAuth | `mail-gmail-oauth` | UNAVAILABLE | owner OAuth client credentials |
 | Google Calendar | `cal-gcal-oauth` | UNAVAILABLE | owner OAuth client credentials |
 | Microsoft Graph | `mail-graph-oauth` | UNAVAILABLE | owner OAuth client credentials |
-| CalDAV | `cal-caldav` | UNAVAILABLE | owner OAuth client credentials |
+| CalDAV | `cal-caldav` | UNAVAILABLE | CalDAV poller implementation (no calendar poller in `crates/email/src/`) |
+
+Roadmap: Gmail/Graph OAuth (UNAVAILABLE — owner OAuth client credentials), CalDAV poller + ICS feed (UNAVAILABLE — no poller in `crates/email/src/`). CalDAV's missing prerequisite is the poller implementation, not OAuth creds. See docs/PARITY.md roadmap.

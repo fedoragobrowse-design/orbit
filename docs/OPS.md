@@ -7,6 +7,8 @@ lives next to the automations router contract in the same file. One web page:
 `apps/web/src/ops.tsx` (`/ops`), plus a `GlobalSearch` box mounted on every
 page. Health script: `scripts/doctor.sh` (no CLI crate exists in this repo).
 
+Status: LIVE-PROVEN — kill switch (`crates/api/tests/ops.rs::kill_switch_freezes_mutations_reads_stay_open`), automation dry-run (`::automation_dry_run_has_zero_side_effects`), encrypted backup/restore (`::encrypted_backup_round_trips_one_row`); doctor script (`scripts/doctor.sh` PASS/FAIL/SKIP). See docs/PARITY.md.
+
 ## Kill switch
 
 - `POST /api/v1/ops/kill` engages per-owner read-only mode; `POST
