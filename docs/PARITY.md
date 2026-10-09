@@ -51,6 +51,7 @@ Orbit ships software only. These tiers are **recommendations, not tested configu
 
 | Tier | Guidance (not tested) | Rationale |
 |---|---|---|
+| Raspberry Pi 5 (8GB) | Pi 5 8GB, 128GB+ USB3 SSD or NVMe HAT (no SD-card Postgres), 64-bit Raspberry Pi OS / Ubuntu 24.04-arm, Docker `linux/arm64` images (pgvector:pg17, greenmail:2.1.14, ollama:0.34.0 all ship arm64), `install.sh --version vX.Y.Z` (detects `aarch64`→`arm64`), Ollama runs CPU-only with small models (embeddings `nomic-embed-text` fine; chat models slow — prefer hybrid routing to a bigger box or cloud) | Cheapest always-on tier: aarch64 Rust leg passes in CI (`ubuntu-24.04-arm`), release tarballs name `${OS}-arm64`, node binary + systemd path work unchanged; Postgres on SD card will corrupt — SSD required |
 | Mini-PC starter | Modern 8-core x86-64 mini-PC, 32GB RAM, 1TB NVMe, iGPU | Runs server + Postgres + Ollama embeddings for light use |
 | GPU mid | + 16GB VRAM discrete GPU (e.g. RTX 4070-class) | Local chat models at usable speed; Ollama profile per docs/deploy.md:38 |
 | Ghost-class | RTX PRO 4000 24GB / Ryzen 5 7600 / 64GB / 1TB (Ghost Core spec, ghost.ai/core) | Reference point for full local inference parity |
