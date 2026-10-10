@@ -88,12 +88,15 @@ case "$ARCH" in x86_64|amd64) ARCH_ID=amd64;; aarch64|arm64) ARCH_ID=arm64;; *) 
 TARBALL="orbit-${VERSION}.tar.gz"
 BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 log "orbit installer ${VERSION} (${OS_ID}/${ARCH_ID})"
-log "repo: ${REPO}"
+case "$ENV_FILE" in /*) ;; *) ENV_FILE="$(pwd)/$ENV_FILE";; esac
+case "$CRED_IMPORT" in /*) ;; *) CRED_IMPORT="$(pwd)/$CRED_IMPORT";; esac
 if [ "$UNINSTALL" -eq 1 ]; then
-  log "plan: stop compose project (volumes, ${ENV_FILE} and ${CRED_IMPORT} kept)"
-  if [ "$DRY_RUN" -eq 1 ]; then log "[dry-run] docker compose down (volumes kept)"; exit 0; fi
+  RELEASE_DIR="./orbit-${VERSION}"
+  [ -d "$RELEASE_DIR" ] || die "no staged release tree $RELEASE_DIR (nothing to uninstall from this directory)"
+  log "plan: stop compose project (volumes, .env and ${CRED_IMPORT} kept)"
+  if [ "$DRY_RUN" -eq 1 ]; then log "[dry-run] (cd $RELEASE_DIR && docker compose down) (volumes kept)"; exit 0; fi
   confirm "Stop Orbit containers?" || exit 1
-  need docker; docker compose down; log "uninstalled (volumes kept; 'docker volume rm' to purge)"; exit 0
+  need docker; ( cd "$RELEASE_DIR" && docker compose --env-file "$ENV_FILE" down ) || die "compose down failed"; log "uninstalled (volumes kept; 'docker volume rm' to purge)"; exit 0
 fi
 log "detect: os=${OS_ID} arch=${ARCH_ID} docker=$(command -v docker >/dev/null && echo yes || echo no) ollama=$(command -v ollama >/dev/null && echo yes || echo no)"
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -137,8 +140,6 @@ elif curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o 
   fi
 fi
 [ "$SIG_OK" -eq 1 ] || die "signature check failed closed: release signature key (deploy/keys/release.pub or deploy/keys/cosign.pub) and a verifier (minisign/cosign) are required"
-case "$ENV_FILE" in /*) ;; *) ENV_FILE="$(pwd)/$ENV_FILE";; esac
-case "$CRED_IMPORT" in /*) ;; *) CRED_IMPORT="$(pwd)/$CRED_IMPORT";; esac
 need tar
 RELEASE_PARENT="$(pwd)"
 RELEASE_DIR="${RELEASE_PARENT}/orbit-${VERSION}"
@@ -159,9 +160,9 @@ if [ -f "$ENV_FILE" ] && [ "$UPGRADE" -eq 0 ]; then log "keeping existing ${ENV_
   fi
 fi
 collect_keys; collect_oauth; write_import
-if [ "$UPGRADE" -eq 1 ]; then docker compose -f "$COMPOSE_FILE" pull || die "compose pull failed"; fi
+if [ "$UPGRADE" -eq 1 ]; then docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull || die "compose pull failed"; fi
 # shellcheck disable=SC2086
-docker compose -f "$COMPOSE_FILE" up -d --build || die "compose up failed"
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build || die "compose up failed"
 maybe_install_ollama
 if command -v ollama >/dev/null 2>&1; then
   if ollama list >/dev/null 2>&1; then
