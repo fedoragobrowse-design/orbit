@@ -26,6 +26,9 @@ verifies both fail-closed; generates `.env` (`0600`, passwords never echoed);
 runs `docker compose up -d --build`; pulls the embedding model (`ollama pull`,
 offline-safe with notice); waits for `/ready`, then prints the URL + bootstrap
 step. Flags: `--dry-run` (plan only), `--yes`, `--upgrade`, `--uninstall`.
+ARM64 included: `install.sh` maps `aarch64→arm64` (`install.sh:49-50`) —
+Raspberry Pi 5 (8GB, USB SSD, 64-bit OS) is a documented reference tier
+(`docs/PARITY.md`).
 
 Computer node (Linux/macOS):
 
