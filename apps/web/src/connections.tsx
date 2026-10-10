@@ -437,21 +437,8 @@ export function Connections() {
         />
         <Route path="mcp" element={<McpConnections />} />
         <Route path="calendars" element={<Calendars />} />
-        <Route
-          path="github"
-          element={gated(
-            "GitHub",
-            "Native GitHub connections (OAuth) are not served by this backend.",
-            <OAuthConnectors />,
-          )}
-        />
-        <Route
-          path="home-assistant"
-          element={gated(
-            "Home Assistant",
-            "Native Home Assistant connections are not served by this backend.",
-          )}
-        />
+        <Route path="github" element={<GithubConnections />} />
+        <Route path="home-assistant" element={<HaConnections />} />
         <Route
           path="api"
           element={gated(
@@ -638,6 +625,124 @@ function NewCalendarSource({ onDone }: { onDone: () => void }) {
       <Input label="Password (CalDAV only)" value={form.password} onChange={update("password")} maxLength={512} />
       {create.error && (<ErrorNotice error={create.error} retry={() => create.reset()} />)}
       <div className="actions"><button type="submit" disabled={create.isPending}>Add calendar</button><button type="button" className="secondary" onClick={onDone}>Cancel</button></div>
+    </form>
+  );
+}
+function HaConnections() {
+  const client = useQueryClient();
+  const [adding, setAdding] = useState(false);
+  const conns = useQuery({ queryKey: ["ha-connections"], queryFn: () => api<{ items: RecordData[] }>("/ha/connections") });
+  const states = useQuery({ queryKey: ["ha-states"], queryFn: () => api<{ items: RecordData[] }>("/ha/states") });
+  const invalidate = () => { client.invalidateQueries({ queryKey: ["ha-connections"] }); client.invalidateQueries({ queryKey: ["ha-states"] }); };
+  const sync = useMutation({ mutationFn: (id: string) => post<RecordData>(`/ha/connections/${id}/sync`), onSuccess: invalidate });
+  const removeConn = useMutation({ mutationFn: (id: string) => post(`/ha/connections/${id}/remove`), onSuccess: invalidate });
+  if (conns.isPending) return (<div className="panel"><p role="status">Loading Home Assistant…</p></div>);
+  if (conns.error) return (<div className="panel"><ErrorNotice error={conns.error} retry={() => conns.refetch()} /></div>);
+  const items = conns.data?.items ?? [];
+  const rows = states.data?.items ?? [];
+  return (
+    <div className="panel">
+      <h2>Home Assistant</h2>
+      <p><small>Orbit polls the states endpoint with a token you paste. The token is stored sealed and never shown again.</small></p>
+      {!items.length ? (<Empty title="No Home Assistant yet">Add your Home Assistant address and a long-lived token.</Empty>) : (
+        <table>
+          <thead><tr><th scope="col">Name</th><th scope="col">Address</th><th scope="col">Last sync</th><th scope="col">Actions</th></tr></thead>
+          <tbody>
+            {items.map((row) => (
+              <tr key={String(row.id)}>
+                <th scope="row">{text(row.name)}</th>
+                <td>{text(row.base_url)}</td>
+                <td>{timestamp(row.last_sync)}</td>
+                <td>
+                  <div className="actions">
+                    <button className="secondary" disabled={sync.isPending} onClick={() => sync.mutate(String(row.id))}>Sync</button>
+                    <button className="danger" disabled={removeConn.isPending} onClick={() => removeConn.mutate(String(row.id))}>Remove</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {(sync.error ?? removeConn.error) && (<ErrorNotice error={(sync.error ?? removeConn.error) as Error} retry={() => { sync.reset(); removeConn.reset(); }} />)}
+      {adding ? (<NewHaConnection onDone={() => setAdding(false)} />) : (<button className="secondary" onClick={() => setAdding(true)}>Add Home Assistant</button>)}
+      <h3>Latest states</h3>
+      {!rows.length ? (<Empty title="No states yet">Sync to pull the current states.</Empty>) : (
+        <table>
+          <thead><tr><th scope="col">Entity</th><th scope="col">State</th><th scope="col">Seen</th></tr></thead>
+          <tbody>
+            {rows.slice(0, 20).map((row) => (<tr key={String(row.id)}><th scope="row">{text(row.entity_id)}</th><td>{text(row.state)}</td><td>{timestamp(row.observed_at)}</td></tr>))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+function NewHaConnection({ onDone }: { onDone: () => void }) {
+  const client = useQueryClient();
+  const [form, setForm] = useState({ name: "", base_url: "", token: "" });
+  const create = useMutation({ mutationFn: () => post<RecordData>("/ha/connections", form), onSuccess: async () => { await client.invalidateQueries({ queryKey: ["ha-connections"] }); onDone(); } });
+  const update = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  return (
+    <form aria-label="Add Home Assistant" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
+      <Input label="Name" value={form.name} onChange={update("name")} required maxLength={64} />
+      <Input label="Address" value={form.base_url} onChange={update("base_url")} required maxLength={512} placeholder="http://homeassistant.local:8123" />
+      <Input label="Long-lived token" value={form.token} onChange={update("token")} required maxLength={8192} />
+      {create.error && (<ErrorNotice error={create.error} retry={() => create.reset()} />)}
+      <div className="actions"><button type="submit" disabled={create.isPending}>Add Home Assistant</button><button type="button" className="secondary" onClick={onDone}>Cancel</button></div>
+    </form>
+  );
+}
+function GithubConnections() {
+  const client = useQueryClient();
+  const [adding, setAdding] = useState(false);
+  const conns = useQuery({ queryKey: ["github-connections"], queryFn: () => api<{ items: RecordData[] }>("/github/connections") });
+  const invalidate = () => client.invalidateQueries({ queryKey: ["github-connections"] });
+  const sync = useMutation({ mutationFn: (id: string) => post<RecordData>(`/github/connections/${id}/sync`), onSuccess: invalidate });
+  const removeConn = useMutation({ mutationFn: (id: string) => post(`/github/connections/${id}/remove`), onSuccess: invalidate });
+  if (conns.isPending) return (<div className="panel"><p role="status">Loading GitHub…</p></div>);
+  if (conns.error) return (<div className="panel"><ErrorNotice error={conns.error} retry={() => conns.refetch()} /></div>);
+  const items = conns.data?.items ?? [];
+  return (
+    <div className="panel">
+      <h2>GitHub</h2>
+      <p><small>Paste a personal token to read your notifications. The token is stored sealed and never shown again. OAuth sign-in stays unavailable in this build.</small></p>
+      <OAuthClientSection connector="github" title="GitHub OAuth client (stored only)" />
+      {!items.length ? (<Empty title="No GitHub token yet">Add a personal token to sync notifications.</Empty>) : (
+        <table>
+          <thead><tr><th scope="col">Name</th><th scope="col">Last sync</th><th scope="col">Actions</th></tr></thead>
+          <tbody>
+            {items.map((row) => (
+              <tr key={String(row.id)}>
+                <th scope="row">{text(row.name)}</th>
+                <td>{timestamp(row.last_sync)}</td>
+                <td>
+                  <div className="actions">
+                    <button className="secondary" disabled={sync.isPending} onClick={() => sync.mutate(String(row.id))}>Sync</button>
+                    <button className="danger" disabled={removeConn.isPending} onClick={() => removeConn.mutate(String(row.id))}>Remove</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {(sync.error ?? removeConn.error) && (<ErrorNotice error={(sync.error ?? removeConn.error) as Error} retry={() => { sync.reset(); removeConn.reset(); }} />)}
+      {adding ? (<NewGithubConnection onDone={() => setAdding(false)} />) : (<button className="secondary" onClick={() => setAdding(true)}>Add GitHub token</button>)}
+    </div>
+  );
+}
+function NewGithubConnection({ onDone }: { onDone: () => void }) {
+  const client = useQueryClient();
+  const [form, setForm] = useState({ name: "", token: "" });
+  const create = useMutation({ mutationFn: () => post<RecordData>("/github/connections", form), onSuccess: async () => { await client.invalidateQueries({ queryKey: ["github-connections"] }); onDone(); } });
+  const update = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  return (
+    <form aria-label="Add GitHub token" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
+      <Input label="Name" value={form.name} onChange={update("name")} required maxLength={64} />
+      <Input label="Personal token" value={form.token} onChange={update("token")} required maxLength={8192} />
+      {create.error && (<ErrorNotice error={create.error} retry={() => create.reset()} />)}
+      <div className="actions"><button type="submit" disabled={create.isPending}>Add GitHub token</button><button type="button" className="secondary" onClick={onDone}>Cancel</button></div>
     </form>
   );
 }
