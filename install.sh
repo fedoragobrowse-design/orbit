@@ -11,6 +11,8 @@ READY_TIMEOUT="${ORBIT_READY_TIMEOUT:-180}"
 COMPOSE_FILE="${ORBIT_COMPOSE_FILE:-compose.yaml}"
 ENV_FILE="${ORBIT_ENV_FILE:-.env}"
 CRED_IMPORT="${ORBIT_CREDENTIALS_IMPORT:-credentials.import}"
+RELEASE_PUB="untrusted comment: orbit release signing key
+RWSfEHcclwu2/0hJvpXqQghaPhmtnaQ2/bCUYG1F0Io7OHc7NSzFYuCu"
 usage() { cat <<'USAGE'
 Usage: install.sh (--version vX.Y.Z | --latest) [--yes] [--dry-run] [--upgrade] [--uninstall] [--with-keys] [--with-oauth google[,outlook][,github]]
   --version vX.Y.Z   pinned release tag (or set GITHUB_REF / ORBIT_VERSION).
@@ -40,9 +42,8 @@ read_secret() { if [ ! -t 0 ] && [ ! -c /dev/tty ] 2>/dev/null; then log "notice
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\r\n'; }
 add_provider() { P_ESC="$(json_escape "$4")"; P_ENTRY="{\"name\":\"$1\",\"kind\":\"$2\",\"origin\":\"$3\",\"credential\":\"$P_ESC\"}"; if [ -z "$PROV_JSON" ]; then PROV_JSON="$P_ENTRY"; else PROV_JSON="${PROV_JSON},${P_ENTRY}"; fi; STAGED=1; log "staged provider credential: $1 (value hidden)"; }
 add_oauth() { OI_ESC="$(json_escape "$2")"; OS_ESC="$(json_escape "$3")"; O_ENTRY="{\"connector\":\"$1\",\"client_id\":\"$OI_ESC\",\"client_secret\":\"$OS_ESC\"}"; if [ -z "$OAUTH_JSON" ]; then OAUTH_JSON="$O_ENTRY"; else OAUTH_JSON="${OAUTH_JSON},${O_ENTRY}"; fi; STAGED=1; log "staged oauth client: $1 (values hidden)"; }
-# shellcheck disable=SC2086
+collect_keys() { if [ "$WITH_KEYS" -eq 0 ]; then return 0; fi; for spec in "OpenAI:openai:OPENAI_COMPATIBLE:https://api.openai.com/v1" "Anthropic:anthropic:ANTHROPIC:https://api.anthropic.com" "Gemini:gemini:GEMINI:https://generativelanguage.googleapis.com"; do DN="${spec%%:*}"; rest="${spec#*:}"; NM="${rest%%:*}"; rest="${rest#*:}"; KD="${rest%%:*}"; ORG="${rest#*:}"; confirm "Add ${DN} API key?" || continue; if read_secret "${DN} API key" KEY_VAL; then add_provider "$NM" "$KD" "$ORG" "$KEY_VAL"; else log "notice: skipped ${DN} key"; fi; KEY_VAL=""; done; }
 validate_oauth() { if [ -z "$WITH_OAUTH" ]; then return 0; fi; OAUTH_WORDS="$(printf '%s' "$WITH_OAUTH" | tr '[:upper:]' '[:lower:]' | tr ' ,' ',,')"; OLD_IFS="$IFS"; IFS=','; for conn in $OAUTH_WORDS; do case "$conn" in "") continue;; google|outlook|github) ;; *) die "unknown --with-oauth connector: '$conn' (expected google, outlook and/or github)";; esac; done; IFS="$OLD_IFS"; }
-collect_keys() { if [ "$WITH_KEYS" -eq 0 ]; then return 0; fi; for spec in "OpenAI:openai:OPENAI_COMPATIBLE:https://api.openai.com" "Anthropic:anthropic:ANTHROPIC:https://api.anthropic.com" "Gemini:gemini:GEMINI:https://generativelanguage.googleapis.com"; do DN="${spec%%:*}"; rest="${spec#*:}"; NM="${rest%%:*}"; rest="${rest#*:}"; KD="${rest%%:*}"; ORG="${rest#*:}"; confirm "Add ${DN} API key?" || continue; if read_secret "${DN} API key" KEY_VAL; then add_provider "$NM" "$KD" "$ORG" "$KEY_VAL"; else log "notice: skipped ${DN} key"; fi; KEY_VAL=""; done; }
 # shellcheck disable=SC2086
 collect_oauth() { if [ -z "$WITH_OAUTH" ]; then return 0; fi; OAUTH_WORDS="$(printf '%s' "$WITH_OAUTH" | tr '[:upper:]' '[:lower:]' | tr ' ,' ',,')"; OLD_IFS="$IFS"; IFS=','; for conn in $OAUTH_WORDS; do case "$conn" in "") continue;; google|outlook|github) ;; *) die "unknown --with-oauth connector: '$conn' (expected google, outlook and/or github)";; esac; if read_secret "${conn} OAuth client-id" OAUTH_ID && read_secret "${conn} OAuth client-secret" OAUTH_SEC; then add_oauth "$conn" "$OAUTH_ID" "$OAUTH_SEC"; else log "notice: skipped oauth connector ${conn}"; fi; OAUTH_ID=""; OAUTH_SEC=""; done; IFS="$OLD_IFS"; }
 write_import() { if [ "$STAGED" -eq 0 ]; then return 0; fi; umask 077; printf '{"provider_credentials": [%s], "oauth_clients": [%s]}\n' "$PROV_JSON" "$OAUTH_JSON" > "$CRED_IMPORT"; chmod 600 "$CRED_IMPORT"; log "wrote ${CRED_IMPORT} (0600, values hidden); import it post-setup, then delete it"; }
@@ -122,8 +123,11 @@ curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o "$TMP
 ( cd "$TMPD" && { sha256sum -c pkg.tar.gz.sha256 2>/dev/null || shasum -a 256 -c pkg.tar.gz.sha256; } ) || die "SHA-256 mismatch; refusing install"
 SIG_OK=0
 if curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o "$TMPD/pkg.tar.gz.minisig" "${BASE_URL}/${TARBALL}.minisig" 2>/dev/null; then
+  printf '%s\n' "$RELEASE_PUB" > "$TMPD/release.pub"
   if [ -f deploy/keys/release.pub ] && command -v minisign >/dev/null 2>&1; then
     minisign -Vm "$TMPD/pkg.tar.gz" -p deploy/keys/release.pub -x "$TMPD/pkg.tar.gz.minisig" || die "minisign signature invalid; refusing install"; SIG_OK=1
+  elif command -v minisign >/dev/null 2>&1; then
+    minisign -Vm "$TMPD/pkg.tar.gz" -p "$TMPD/release.pub" -x "$TMPD/pkg.tar.gz.minisig" || die "minisign signature invalid; refusing install"; SIG_OK=1
   elif command -v cosign >/dev/null 2>&1 && [ -f deploy/keys/cosign.pub ]; then
     cosign verify-blob --key deploy/keys/cosign.pub --signature "$TMPD/pkg.tar.gz.minisig" "$TMPD/pkg.tar.gz" || die "cosign signature invalid; refusing install"; SIG_OK=1
   fi
@@ -133,6 +137,14 @@ elif curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o 
   fi
 fi
 [ "$SIG_OK" -eq 1 ] || die "signature check failed closed: release signature key (deploy/keys/release.pub or deploy/keys/cosign.pub) and a verifier (minisign/cosign) are required"
+case "$ENV_FILE" in /*) ;; *) ENV_FILE="$(pwd)/$ENV_FILE";; esac
+case "$CRED_IMPORT" in /*) ;; *) CRED_IMPORT="$(pwd)/$CRED_IMPORT";; esac
+need tar
+mkdir -p "$TMPD/tree"; tar -xzf "$TMPD/pkg.tar.gz" -C "$TMPD/tree" || die "release tarball extract failed"
+RELEASE_DIR="$TMPD/tree/orbit-${VERSION}"
+[ -f "$RELEASE_DIR/$COMPOSE_FILE" ] || die "release tarball missing $COMPOSE_FILE (unexpected layout)"
+cd "$RELEASE_DIR" || die "cannot enter release tree"
+log "extracted pinned release ${VERSION} (running compose from release tree)"
 if [ -f "$ENV_FILE" ] && [ "$UPGRADE" -eq 0 ]; then log "keeping existing ${ENV_FILE} (idempotent; --upgrade to refresh images)"; else
   need openssl
   if [ ! -f "$ENV_FILE" ] || confirm "Overwrite ${ENV_FILE} with fresh secrets?"; then
