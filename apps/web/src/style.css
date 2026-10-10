@@ -70,6 +70,13 @@ button.secondary {
   color: var(--ink);
   border-color: var(--line);
 }
+button.mini {
+  min-height: 0;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
 button.quiet {
   background: transparent;
   color: var(--action);

@@ -97,7 +97,7 @@ export function Home() {
   };
   const show = (id: string, title: string) => (
     <p>
-      <button className="secondary" onClick={() => toggle(id)}>
+      <button className="secondary mini" onClick={() => toggle(id)}>
         Show {title}
       </button>
     </p>
@@ -109,7 +109,7 @@ export function Home() {
         description="Review changes, continue your work, or ask Orbit."
       >
         {!!hidden.length && (
-          <button className="secondary" onClick={() => toggle(hidden[0])}>
+          <button className="secondary mini" onClick={() => toggle(hidden[0])}>
             Restore hidden ({hidden.length})
           </button>
         )}
@@ -122,7 +122,7 @@ export function Home() {
             <section className="panel attention">
               <h2>
                 Needs your attention{" "}
-                <button className="secondary" onClick={() => toggle("attention")}>
+                <button className="secondary mini" onClick={() => toggle("attention")}>
                   Hide
                 </button>
               </h2>
@@ -168,7 +168,7 @@ export function Home() {
             <section className="panel">
               <h2>
                 Today{" "}
-                <button className="secondary" onClick={() => toggle("today")}>
+                <button className="secondary mini" onClick={() => toggle("today")}>
                   Hide
                 </button>
               </h2>
@@ -202,7 +202,7 @@ export function Home() {
             <section className="recent">
               <h2>
                 Recent activity{" "}
-                <button className="secondary" onClick={() => toggle("activity")}>
+                <button className="secondary mini" onClick={() => toggle("activity")}>
                   Hide
                 </button>
               </h2>
@@ -247,7 +247,7 @@ export function Home() {
             <section className="panel systems">
               <h2>
                 Connections and health{" "}
-                <button className="secondary" onClick={() => toggle("systems")}>
+                <button className="secondary mini" onClick={() => toggle("systems")}>
                   Hide
                 </button>
               </h2>
@@ -323,7 +323,7 @@ export function Home() {
             <section className="panel projects">
               <h2>
                 Your projects{" "}
-                <button className="secondary" onClick={() => toggle("projects")}>
+                <button className="secondary mini" onClick={() => toggle("projects")}>
                   Hide
                 </button>
               </h2>
