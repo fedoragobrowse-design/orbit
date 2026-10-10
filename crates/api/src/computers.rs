@@ -1303,7 +1303,7 @@ struct Dispatch {
     fence: i64,
 }
 
-/// SSRF screen for browser tool URLs (E19a): strict `Url` parse (userinfo and non-http(s) rejected), decimal-int (`2130706433`) and hex (`0x7f…`) host forms denied, literal IPs checked against the same deny set as `AdmittedEndpoint` (loopback/private/link-local/unspecified/multicast/broadcast/`0.x`), and hostnames resolved via `socket_addrs`-equivalent lookup with every address checked. Unresolvable hostnames pass the screen — DNS-pinning at fetch time is the backstop — so hermetic tests never depend on external DNS.
+/// SSRF screen for browser tool URLs (E19a): strict `Url` parse (userinfo and non-http(s) rejected), decimal-int (`2130706433`) and hex (`0x7f…`) host forms denied, literal IPs checked against the same deny set as `AdmittedEndpoint` (loopback/private/link-local/unspecified/multicast/broadcast/`0.x`), and hostnames resolved via `lookup_host` with every address checked. Fail-closed: unresolvable hostnames are denied (the node fetch has no backstop for names the server cannot see), so the hermetic test pins `nonexistent.invalid` (RFC 2606/6761, never resolves) and never depends on live DNS.
 pub async fn screen_browser_url(raw: &str) -> Result<(), Error> {
     if raw.is_empty() || raw.len() > 2048 || raw.chars().any(char::is_control) { return Err(Error::Validation("browser url must be http(s), ≤2048 chars, resolvable to a public address".into())); }
     let url = reqwest::Url::parse(raw).map_err(|_| Error::Validation("browser url must be http(s), ≤2048 chars, resolvable to a public address".into()))?;

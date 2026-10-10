@@ -100,7 +100,7 @@ async fn ssrf_browser_screen_rejects_bypass_forms() {
 }
 #[tokio::test]
 async fn ssrf_browser_screen_fails_closed_on_unresolvable() {
-    // Fail-closed: `nonexistent.invalid.` (RFC 2606/6761 reserved TLD) never
+    // Fail-closed: `nonexistent.invalid` (RFC 2606/6761 reserved TLD) never
     // resolves, so the screen denies even though the shape is http(s) — the
     // node fetch has no backstop for names the server cannot see.
     assert!(orbit_api::computers::screen_browser_url("http://nonexistent.invalid/").await.is_err(), "unresolvable host must fail closed");
