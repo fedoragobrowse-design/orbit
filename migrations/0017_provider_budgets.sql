@@ -1,0 +1,1 @@
+CREATE TABLE provider_budgets(owner_id uuid NOT NULL REFERENCES users(id),provider_id uuid NOT NULL,day_usd numeric NOT NULL DEFAULT 0,month_usd numeric NOT NULL DEFAULT 0,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(owner_id,provider_id));

@@ -1520,6 +1520,32 @@ pub async fn update_budgets(
     tx.commit().await?;
     Ok(Json(serde_json::to_value(&limits).map_err(Error::from)?))
 }
+/// Per-provider spend caps: same shape as the global budgets, scoped to one
+/// provider row. Zero means uncapped (default). The router enforces them in
+/// the reserve path with "provider model cost budget exhausted".
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderBudgetUpdate {
+    pub day_usd: f64,
+    pub month_usd: f64,
+}
+#[utoipa::path(get, path = "/api/v1/providers/{id}/budget", params(("id" = Uuid, Path)), responses((status = 200, body = Value)))]
+pub async fn get_provider_budget(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, false).await?;
+    let row: Option<(f64, f64)> = sqlx::query_as("SELECT day_usd::float8,month_usd::float8 FROM provider_budgets WHERE owner_id=$1 AND provider_id=$2").bind(a.scope.owner_id).bind(id).fetch_optional(&state.pool).await?;
+    let (day_usd, month_usd) = row.unwrap_or((0.0, 0.0));
+    Ok(Json(json!({"provider_id": id, "day_usd": day_usd, "month_usd": month_usd})))
+}
+#[utoipa::path(put, path = "/api/v1/providers/{id}/budget", params(("id" = Uuid, Path)), request_body = ProviderBudgetUpdate, responses((status = 200, body = Value)))]
+pub async fn update_provider_budget(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>, Json(input): Json<ProviderBudgetUpdate>) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, true).await?;
+    if !(0.0..=1_000_000.0).contains(&input.day_usd) || !(0.0..=1_000_000.0).contains(&input.month_usd) {
+        return Err(Error::Validation("provider caps must be 0..1000000 USD".into()).into());
+    }
+    sqlx::query("SELECT 1 FROM model_providers WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).fetch_optional(&state.pool).await?.ok_or(Error::NotFound)?;
+    sqlx::query("INSERT INTO provider_budgets(owner_id,provider_id,day_usd,month_usd) VALUES($1,$2,$3,$4) ON CONFLICT(owner_id,provider_id) DO UPDATE SET day_usd=EXCLUDED.day_usd,month_usd=EXCLUDED.month_usd,updated_at=now()").bind(a.scope.owner_id).bind(id).bind(input.day_usd).bind(input.month_usd).execute(&state.pool).await?;
+    Ok(Json(json!({"provider_id": id, "day_usd": input.day_usd, "month_usd": input.month_usd})))
+}
 
 // ---------------------------------------------------------------------------
 // Wiring
@@ -1545,7 +1571,9 @@ pub async fn update_budgets(
         delete_model,
         list_model_calls,
         get_budgets,
-        update_budgets
+        update_budgets,
+        get_provider_budget,
+        update_provider_budget
     ),
     components(schemas(
         ProviderCreate,
@@ -1554,7 +1582,8 @@ pub async fn update_budgets(
         OAuthClientUpsert,
         ModelCreate,
         ModelUpdate,
-        BudgetUpdate
+        BudgetUpdate,
+        ProviderBudgetUpdate
     ))
 )]
 pub struct ModelsApi;
@@ -1584,6 +1613,7 @@ pub fn router() -> Router<ApiState> {
             get(model_detail).patch(update_model).delete(delete_model),
         )
         .route("/api/v1/model-calls", get(list_model_calls))
+        .route("/api/v1/providers/{id}/budget", get(get_provider_budget).put(update_provider_budget))
         .route(
             "/api/v1/budgets",
             get(get_budgets).put(update_budgets),

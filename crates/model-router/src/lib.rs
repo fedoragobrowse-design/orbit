@@ -380,6 +380,17 @@ impl ModelRouter {
                 )));
             }
         }
+        let provider_caps: Option<(f64, f64)> = sqlx::query_as("SELECT day_usd::float8,month_usd::float8 FROM provider_budgets WHERE owner_id=$1 AND provider_id=$2").bind(scope.owner_id).bind(provider.id).fetch_optional(&mut *tx).await?;
+        if let Some((day_cap, month_cap)) = provider_caps {
+            let pday: i64 = sqlx::query_scalar("SELECT COALESCE(sum(COALESCE(actual_micro_usd,reserved_micro_usd)),0)::bigint FROM model_calls WHERE owner_id=$1 AND provider_id=$2 AND created_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'").bind(scope.owner_id).bind(provider.id).fetch_one(&mut *tx).await?;
+            let pmonth: i64 = sqlx::query_scalar("SELECT COALESCE(sum(COALESCE(actual_micro_usd,reserved_micro_usd)),0)::bigint FROM model_calls WHERE owner_id=$1 AND provider_id=$2 AND created_at>=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'").bind(scope.owner_id).bind(provider.id).fetch_one(&mut *tx).await?;
+            if day_cap > 0.0 && pday.saturating_add(reserve) > usd_cap_micro(day_cap)? {
+                return Err(Error::Unavailable("provider model cost budget exhausted".into()));
+            }
+            if month_cap > 0.0 && pmonth.saturating_add(reserve) > usd_cap_micro(month_cap)? {
+                return Err(Error::Unavailable("provider model cost budget exhausted".into()));
+            }
+        }
         if task_id.is_some()
             && totals.try_get::<i64, _>("calls")? >= i64::from(limits.max_model_calls)
             || totals

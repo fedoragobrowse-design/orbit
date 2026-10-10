@@ -198,6 +198,7 @@ function ProviderRow({ row }: { row: RecordData }) {
                 </button>
               </div>
             </form>
+            <ProviderBudget id={String(row.id)} name={text(row.name)} />
             {removeProvider.error && (
               <ErrorNotice error={removeProvider.error} retry={() => removeProvider.reset()} />
             )}
@@ -205,6 +206,37 @@ function ProviderRow({ row }: { row: RecordData }) {
         </tr>
       )}
     </>
+  );
+}
+/// Per-provider spend caps. Same dollars as the global budgets, scoped to the
+/// one endpoint; zero means uncapped. The router refuses with "provider model
+/// cost budget exhausted" once the day or month cap would be exceeded.
+function ProviderBudget({ id, name }: { id: string; name: string }) {
+  const budget = useQuery({ queryKey: ["provider-budget", id], queryFn: () => api<RecordData>(`/providers/${id}/budget`) });
+  const save = useMutation({
+    mutationFn: (body: RecordData) => put<RecordData>(`/providers/${id}/budget`, body),
+    onSuccess: () => budget.refetch(),
+  });
+  const [form, setForm] = useState<{ day: string; month: string } | null>(null);
+  if (budget.isPending) return (<p role="status"><small>Loading caps…</small></p>);
+  if (budget.error) return (<ErrorNotice error={budget.error} retry={() => budget.refetch()} />);
+  const values = form ?? { day: String(budget.data!.day_usd ?? 0), month: String(budget.data!.month_usd ?? 0) };
+  return (
+    <form
+      className="grid"
+      aria-label={`Spend caps for ${name}`}
+      onSubmit={(e) => {
+        e.preventDefault();
+        save.mutate({ day_usd: Number(values.day), month_usd: Number(values.month) } as unknown as RecordData);
+      }}
+    >
+      <Input label="Day cap USD (0 = none)" type="number" step="any" value={values.day} onChange={(e) => setForm({ ...values, day: e.target.value })} />
+      <Input label="Month cap USD (0 = none)" type="number" step="any" value={values.month} onChange={(e) => setForm({ ...values, month: e.target.value })} />
+      {save.error && (<ErrorNotice error={save.error} retry={() => save.reset()} />)}
+      <div className="actions">
+        <button className="secondary" type="submit" disabled={save.isPending}>{save.isPending ? "Saving…" : "Save caps"}</button>
+      </div>
+    </form>
   );
 }
 
