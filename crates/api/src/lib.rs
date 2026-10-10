@@ -2,6 +2,7 @@ pub mod agents;
 pub mod auth;
 pub mod automations;
 pub mod brief;
+pub mod calendar;
 pub mod computers;
 pub mod email;
 pub mod foundation;
@@ -87,8 +88,9 @@ pub fn router(state: ApiState) -> Router {
         .merge(push::router())
         .merge(ops::router())
         .merge(updates::router())
-        .merge(brief::router())
         .merge(search::router())
+        .merge(brief::router())
+        .merge(calendar::router())
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
 }

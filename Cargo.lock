@@ -2035,6 +2035,7 @@ dependencies = [
  "orbit-aiec-runtime",
  "orbit-approvals",
  "orbit-audit",
+ "orbit-calendar",
  "orbit-computer-node-protocol",
  "orbit-core",
  "orbit-email",
@@ -2083,6 +2084,21 @@ dependencies = [
  "orbit-core",
  "serde_json",
  "sqlx",
+ "uuid",
+]
+
+[[package]]
+name = "orbit-calendar"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "orbit-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
  "uuid",
 ]
 

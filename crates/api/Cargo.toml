@@ -45,4 +45,5 @@ orbit-computer-node-protocol = { path = "../computer-node-protocol" }
 orbit-memory = { path = "../memory" }
 orbit-scheduler = { path = "../scheduler" }
 orbit-email = { path = "../email" }
+orbit-calendar = { path = "../calendar" }
 orbit-mcp = { path = "../mcp" }

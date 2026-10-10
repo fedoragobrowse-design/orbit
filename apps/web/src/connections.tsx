@@ -436,14 +436,7 @@ export function Connections() {
           }
         />
         <Route path="mcp" element={<McpConnections />} />
-        <Route
-          path="calendars"
-          element={gated(
-            "Calendars",
-            "Native calendar connections (OAuth calendar access) are not served by this backend.",
-            <OAuthConnectors />,
-          )}
-        />
+        <Route path="calendars" element={<Calendars />} />
         <Route
           path="github"
           element={gated(
@@ -580,6 +573,74 @@ function McpConnections() {
   );
 }
 
+function Calendars() {
+  const client = useQueryClient();
+  const [adding, setAdding] = useState(false);
+  const sources = useQuery({ queryKey: ["calendar-sources"], queryFn: () => api<{ items: RecordData[] }>("/calendar/sources") });
+  const today = useQuery({ queryKey: ["calendar-today"], queryFn: () => api<{ items: RecordData[] }>("/calendar/today") });
+  const invalidate = () => { client.invalidateQueries({ queryKey: ["calendar-sources"] }); client.invalidateQueries({ queryKey: ["calendar-today"] }); };
+  const sync = useMutation({ mutationFn: (id: string) => post<RecordData>(`/calendar/sources/${id}/sync`), onSuccess: invalidate });
+  const removeSource = useMutation({ mutationFn: (id: string) => remove(`/calendar/sources/${id}`), onSuccess: invalidate });
+  if (sources.isPending) return (<div className="panel"><p role="status">Loading calendars…</p></div>);
+  if (sources.error) return (<div className="panel"><ErrorNotice error={sources.error} retry={() => sources.refetch()} /></div>);
+  const items = sources.data?.items ?? [];
+  const upcoming = today.data?.items ?? [];
+  return (
+    <div className="panel">
+      <h2>Calendars</h2>
+      <p><small>Orbit polls public calendar feeds (ICS) and calendar servers you name (CalDAV). Events are read-only — Orbit never writes back.</small></p>
+      {!items.length ? (<Empty title="No calendars yet">Add a calendar feed to see what is on today.</Empty>) : (
+        <table>
+          <thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Enabled</th><th scope="col">Last sync</th><th scope="col">Actions</th></tr></thead>
+          <tbody>
+            {items.map((row) => (
+              <tr key={String(row.id)}>
+                <th scope="row">{text(row.name)}</th>
+                <td>{text((row.configuration as RecordData | undefined)?.kind)}</td>
+                <td><Status value={row.enabled} /></td>
+                <td>{timestamp(row.last_sync_at)}</td>
+                <td>
+                  <div className="actions">
+                    <button className="secondary" disabled={sync.isPending} onClick={() => sync.mutate(String(row.id))}>Sync</button>
+                    <button className="danger" disabled={removeSource.isPending} onClick={() => removeSource.mutate(String(row.id))}>Remove</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {(sync.error ?? removeSource.error) && (<ErrorNotice error={(sync.error ?? removeSource.error) as Error} retry={() => { sync.reset(); removeSource.reset(); }} />)}
+      {adding ? (<NewCalendarSource onDone={() => setAdding(false)} />) : (<button className="secondary" onClick={() => setAdding(true)}>Add calendar</button>)}
+      <h3>Today</h3>
+      {!upcoming.length ? (<Empty title="Nothing on today">Sync a calendar to see upcoming events here.</Empty>) : (
+        <table>
+          <thead><tr><th scope="col">When</th><th scope="col">What</th></tr></thead>
+          <tbody>
+            {upcoming.map((row) => (<tr key={String(row.id)}><td>{timestamp(row.starts_at)} – {timestamp(row.ends_at)}</td><th scope="row">{text(row.title)}</th></tr>))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+function NewCalendarSource({ onDone }: { onDone: () => void }) {
+  const client = useQueryClient();
+  const [form, setForm] = useState({ name: "", kind: "ics", url: "", username: "", password: "" });
+  const create = useMutation({ mutationFn: () => post<RecordData>("/calendar/sources", { name: form.name, kind: form.kind, url: form.url, username: form.username || undefined, password: form.password || undefined }), onSuccess: async () => { await client.invalidateQueries({ queryKey: ["calendar-sources"] }); onDone(); } });
+  const update = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  return (
+    <form aria-label="Add calendar" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
+      <Input label="Name" value={form.name} onChange={update("name")} required maxLength={64} />
+      <label>Kind<select value={form.kind} onChange={update("kind")}><option value="ics">Public feed (ICS)</option><option value="caldav">Calendar server (CalDAV)</option></select></label>
+      <Input label="Feed or server URL" value={form.url} onChange={update("url")} required maxLength={512} placeholder="https://example.invalid/calendar.ics" />
+      <Input label="Username (CalDAV only)" value={form.username} onChange={update("username")} maxLength={512} />
+      <Input label="Password (CalDAV only)" value={form.password} onChange={update("password")} maxLength={512} />
+      {create.error && (<ErrorNotice error={create.error} retry={() => create.reset()} />)}
+      <div className="actions"><button type="submit" disabled={create.isPending}>Add calendar</button><button type="button" className="secondary" onClick={onDone}>Cancel</button></div>
+    </form>
+  );
+}
 function NewMcpConnection({ onDone }: { onDone: () => void }) {
   const client = useQueryClient();
   const [form, setForm] = useState({ name: "", origin: "" });
