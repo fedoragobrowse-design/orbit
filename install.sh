@@ -12,7 +12,7 @@ COMPOSE_FILE="${ORBIT_COMPOSE_FILE:-compose.yaml}"
 ENV_FILE="${ORBIT_ENV_FILE:-.env}"
 CRED_IMPORT="${ORBIT_CREDENTIALS_IMPORT:-credentials.import}"
 RELEASE_PUB="untrusted comment: orbit release signing key
-RWSfEHcclwu2/0hJvpXqQghaPhmtnaQ2/bCUYG1F0Io7OHc7NSzFYuCu"
+RWRbX/orbCAdDXCoz8nH2+cEkQo0FUMTaBkOCPHu3+0UyF2wEJwcperQ"
 usage() { cat <<'USAGE'
 Usage: install.sh (--version vX.Y.Z | --latest) [--yes] [--dry-run] [--upgrade] [--uninstall] [--with-keys] [--with-oauth google[,outlook][,github]]
   --version vX.Y.Z   pinned release tag (or set GITHUB_REF / ORBIT_VERSION).
@@ -140,11 +140,16 @@ fi
 case "$ENV_FILE" in /*) ;; *) ENV_FILE="$(pwd)/$ENV_FILE";; esac
 case "$CRED_IMPORT" in /*) ;; *) CRED_IMPORT="$(pwd)/$CRED_IMPORT";; esac
 need tar
-mkdir -p "$TMPD/tree"; tar -xzf "$TMPD/pkg.tar.gz" -C "$TMPD/tree" || die "release tarball extract failed"
-RELEASE_DIR="$TMPD/tree/orbit-${VERSION}"
+RELEASE_PARENT="$(pwd)"
+RELEASE_DIR="${RELEASE_PARENT}/orbit-${VERSION}"
+if [ -d "$RELEASE_DIR" ] && [ "$UPGRADE" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then log "reusing extracted release tree ${RELEASE_DIR}"; else
+  rm -rf "$RELEASE_DIR"
+  mkdir -p "$TMPD/tree"; tar -xzf "$TMPD/pkg.tar.gz" -C "$TMPD/tree" || die "release tarball extract failed"
+  mv "$TMPD/tree/orbit-${VERSION}" "$RELEASE_DIR" || die "cannot stage release tree"
+fi
 [ -f "$RELEASE_DIR/$COMPOSE_FILE" ] || die "release tarball missing $COMPOSE_FILE (unexpected layout)"
 cd "$RELEASE_DIR" || die "cannot enter release tree"
-log "extracted pinned release ${VERSION} (running compose from release tree)"
+log "pinned release ${VERSION} staged at ${RELEASE_DIR} (compose runs here; kept for ps/logs/upgrade/uninstall)"
 if [ -f "$ENV_FILE" ] && [ "$UPGRADE" -eq 0 ]; then log "keeping existing ${ENV_FILE} (idempotent; --upgrade to refresh images)"; else
   need openssl
   if [ ! -f "$ENV_FILE" ] || confirm "Overwrite ${ENV_FILE} with fresh secrets?"; then
