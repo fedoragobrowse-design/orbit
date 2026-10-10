@@ -96,6 +96,12 @@ impl NodeHub {
             links.remove(&node);
         }
     }
+    /// Drop a node's live link regardless of connection id. Revocation (single
+    /// or bulk) sets `connection_id=NULL` in SQL first, so no reconnect can
+    /// race this removal — unlike socket teardown, which must use `detach`.
+    pub async fn evict(&self, node: Uuid) {
+        self.links.lock().await.remove(&node);
+    }
 
     async fn link(&self, node: Uuid) -> Option<Link> {
         self.links.lock().await.get(&node).cloned()

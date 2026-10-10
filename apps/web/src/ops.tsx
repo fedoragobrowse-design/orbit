@@ -46,6 +46,13 @@ export function Ops() {
     </div>
    </section>
    <section className="panel">
+    <h2>Pause everything</h2>
+    <p>Engages the kill switch AND revokes every computer node and its roots. Reads stay open; the freeze lifts with “Resume writes” but revoked nodes stay revoked until you re-enroll them.</p>
+    <div className="actions">
+     <PauseEverything onFrozen={() => client.invalidateQueries({ queryKey: ["ops", "status"] })} />
+    </div>
+   </section>
+   <section className="panel">
     <h2>Automation dry-run</h2>
     <form onSubmit={(e) => { e.preventDefault();if (aid) preview.mutate(); }}>
      <Input label="Automation id" value={aid} onChange={(e) => setAid(e.target.value)} placeholder="automation id" />
@@ -64,6 +71,26 @@ export function Ops() {
    </section>
   </>}
  </>;
+}
+/// Pause everything: kill-switch freeze plus bulk node revocation in one
+/// red-button press. Reads stay open; revoked nodes need re-enrollment.
+function PauseEverything({ onFrozen }: { onFrozen: () => void }) {
+ const [confirm, setConfirm] = useState(false);
+ const [done, setDone] = useState<number | null>(null);
+ const pause = useMutation({
+  mutationFn: async () => {
+   await post<Status>("/ops/kill");
+   return post<{ revoked: number }>("/ops/revoke-nodes");
+  },
+  onSuccess: (r) => { setDone(r.revoked); setConfirm(false); onFrozen(); },
+ });
+ if (done !== null) return (<p role="status">Paused. {done} node(s) revoked; reads stay open.</p>);
+ if (!confirm) return (<button className="danger" onClick={() => setConfirm(true)}>Pause everything</button>);
+ return (<div className="actions">
+  <button className="danger" disabled={pause.isPending} onClick={() => pause.mutate()}>{pause.isPending ? "Pausing…" : "Yes — freeze and revoke nodes"}</button>
+  <button className="secondary" disabled={pause.isPending} onClick={() => setConfirm(false)}>Cancel</button>
+  {pause.error && <ErrorNotice error={pause.error} />}
+ </div>);
 }
 /// Global search box: one POST to /api/v1/search returns memory, tasks,
 /// events, notifications and mail; files search when the Files page has

@@ -9,7 +9,7 @@
 //! them. `install` only persists after the caller passes `approved_capabilities` that
 //! exactly match the manifest, plus `accept_trust_level`. Installed packages never
 //! execute in-process: they run ONLY via the sandbox path (`sandbox_only=true`).
-use crate::{ApiError, ApiState, auth::authenticate};
+use crate::{ApiError, ApiState, authenticate};
 use axum::{Json, Router, extract::{Path, Query, State}, http::HeaderMap, routing::{delete, get, post}};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};

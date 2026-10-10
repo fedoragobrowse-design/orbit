@@ -19,8 +19,8 @@ pub async fn is_frozen(state:&ApiState,owner:Uuid)->bool{tokio::fs::try_exists(f
 /// [`authenticate`] reject with 403 while the owner's kill switch is engaged.
 /// Ops kill/resume call `auth::authenticate` directly so resume can always lift
 /// the freeze; reads (`mutation=false`) never consult the flag, so the approvals
-/// inbox stays readable while frozen. Known gap: marketplace/mcp import
-/// `auth::authenticate` directly and bypass this guard (documented in docs/OPS.md).
+/// inbox stays readable while frozen. Every mutation router (marketplace, mcp
+/// included) goes through this guard — no documented bypass remains.
 pub async fn guard(state:&ApiState,headers:&HeaderMap,mutation:bool)->Result<crate::AuthSession,ApiError>{
  let session=auth::authenticate(state,headers,mutation).await?;
  if mutation&&is_frozen(state,session.scope.owner_id).await{return Err(Error::Forbidden.into())}
@@ -115,6 +115,25 @@ pub async fn dry_run(State(state):State<ApiState>,headers:HeaderMap,axum::extrac
  let consumer=if automation.notification_behavior=="IN_APP"&&automation.agent_id.is_none(){"foundation"}else{"agents"};
  Ok(Json(json!({"automation_id":id,"enabled":automation.enabled,"trigger":automation.trigger,"filters":automation.filters,"agent_id":automation.agent_id,"instructions":automation.instructions,"policy_scope":automation.policy_scope,"model_role":automation.model_role,"notification_behavior":automation.notification_behavior,"preview":preview,"would_dispatch":{"consumer":consumer,"task_title":format!("Automation {id}"),"checkpoint_phase":if consumer=="foundation"{"NOTIFICATION"}else{"CONTEXT"}}})))
 }
-#[derive(utoipa::OpenApi)] #[openapi(paths(kill,resume,status,backup,restore,dry_run),components(schemas(RestoreRequest)))]
+/// Pause everything, nodes included: kill-switch freeze (sentinel file) PLUS
+/// revoking every live computer node and its roots. Kill alone stops the hub
+/// from dispatching; this also drops node session credentials so a
+/// compromised node cannot keep pushing files or tool results until the owner
+/// re-enrolls it. Reads stay available; `resume` lifts the freeze but revoked
+/// nodes stay revoked until individually re-enrolled.
+#[utoipa::path(post,path="/api/v1/ops/revoke-nodes",responses((status=200,body=Value)))]
+pub async fn revoke_nodes(State(state):State<ApiState>,headers:HeaderMap)->Result<Json<Value>,ApiError>{
+ let a=auth::authenticate(&state,&headers,true).await?;
+ let mut tx=state.pool.begin().await?;
+ sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE").bind(a.scope.owner_id).fetch_one(&mut *tx).await?;
+ let nodes: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM computer_nodes WHERE owner_id=$1 AND revoked_at IS NULL").bind(a.scope.owner_id).fetch_all(&mut *tx).await?;
+ sqlx::query("UPDATE computer_nodes SET revoked_at=now(),revision=revision+1,connection_id=NULL WHERE owner_id=$1 AND revoked_at IS NULL").bind(a.scope.owner_id).execute(&mut *tx).await?;
+ sqlx::query("UPDATE computer_roots SET revoked=true,revision=revision+1 WHERE owner_id=$1 AND NOT revoked").bind(a.scope.owner_id).execute(&mut *tx).await?;
+ orbit_audit::append(&mut tx,&a.scope,Uuid::new_v4(),None,None,"OPS_NODES_REVOKED","owner revoked all computer nodes alongside kill switch",json!({"revoked": nodes.len()})).await?;
+ tx.commit().await?;
+ for id in &nodes { state.nodes.evict(*id).await; }
+ Ok(Json(json!({"revoked": nodes.len()})))
+}
+#[derive(utoipa::OpenApi)] #[openapi(paths(kill,resume,status,backup,restore,dry_run,revoke_nodes),components(schemas(RestoreRequest)))]
 pub struct OpsApi;
-pub fn router()->Router<ApiState>{Router::new().route("/api/v1/ops/kill",post(kill)).route("/api/v1/ops/resume",post(resume)).route("/api/v1/ops/status",get(status)).route("/api/v1/ops/backup",post(backup)).route("/api/v1/ops/restore",post(restore)).route("/api/v1/automations/{id}/dry-run",post(dry_run))}
+pub fn router()->Router<ApiState>{Router::new().route("/api/v1/ops/kill",post(kill)).route("/api/v1/ops/resume",post(resume)).route("/api/v1/ops/status",get(status)).route("/api/v1/ops/backup",post(backup)).route("/api/v1/ops/restore",post(restore)).route("/api/v1/ops/revoke-nodes",post(revoke_nodes)).route("/api/v1/automations/{id}/dry-run",post(dry_run))}

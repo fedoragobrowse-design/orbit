@@ -66,6 +66,8 @@ async fn kill_switch_freezes_mutations_reads_stay_open() {
  let err = publish(&c.state, &c.headers, "ops-kill-during").await.err().unwrap_or_else(|| panic!("publish while frozen must fail"));
  assert!(matches!(err, orbit_core::Error::Forbidden), "publish while frozen must 403");
  must_fail(orbit_api::automations::create_automation(State(c.state.clone()), c.headers.clone(), Json(orbit_api::automations::CreateAutomationRequest { trigger: json!({"kind":"timer","run_at":"2030-01-01T00:00:00Z"}), filters: Value::Null, agent_id: None, instructions: "ops".into(), policy_scope: Value::Null, model_role: "FAST".into(), notification_behavior: "IN_APP".into(), timezone: "UTC".into(), enabled: true })).await.map(|Json(v)| v), "automation create");
+ // Marketplace installs go through the same guard: frozen means 403 here too.
+ must_fail(orbit_api::marketplace::install(State(c.state.clone()), c.headers.clone(), Json(orbit_api::marketplace::InstallRequest { name: "orbit-test".into(), manifest: None, allow_unsigned: None, approved_capabilities: None, accept_trust_level: None })).await.map(|Json(v)| v), "marketplace install");
  // Reads stay open: approvals inbox + ops status + automation dry-run path (preview read).
  let _ = ok!(orbit_api::gateway::list_approvals(State(c.state.clone()), c.headers.clone(), axum::extract::Query(orbit_api::gateway::Page { cursor: None, limit: None })).await, "approvals readable while frozen");
  let Json(st) = ok!(ops::status(State(c.state.clone()), c.headers.clone()).await, "status");
@@ -76,6 +78,21 @@ async fn kill_switch_freezes_mutations_reads_stay_open() {
  let Json(resumed) = ok!(ops::resume(State(c.state.clone()), c.headers.clone()).await, "resume");
  assert_eq!(resumed["frozen"], json!(false));
  ok!(publish(&c.state, &c.headers, "ops-kill-after").await, "publish after resume");
+ let _ = std::fs::remove_dir_all(c.artifact_dir.parent().unwrap());
+ cleanup(&pool, &db, &key_dir).await;
+}
+#[tokio::test]
+async fn revoke_nodes_marks_all_live_revoked() {
+ let (pool, db, key_dir) = pool().await;let c = ctx(&pool, "revoke", &key_dir).await;
+ let node = Uuid::new_v4();let principal = Uuid::new_v4();
+ sqlx::query("INSERT INTO principals(id,owner_id,principal_type,auth_method,trust_level,source) VALUES($1,$2,'COMPUTER_NODE','node-key','OWNER_AUTHENTICATED','test')").bind(principal).bind(c.scope.owner_id).execute(&pool).await.unwrap();
+ sqlx::query("INSERT INTO computer_nodes(id,owner_id,principal_id,public_key,session_hash,session_expires_at,display_name) VALUES($1,$2,$3,'k','h'||$1::text,now()+interval '1 hour','n')").bind(node).bind(c.scope.owner_id).bind(principal).execute(&pool).await.unwrap();
+ let Json(out) = ok!(ops::revoke_nodes(State(c.state.clone()), c.headers.clone()).await, "revoke-nodes");
+ assert_eq!(out["revoked"], json!(1));
+ let revoked: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar("SELECT revoked_at FROM computer_nodes WHERE owner_id=$1 AND id=$2").bind(c.scope.owner_id).bind(node).fetch_one(&pool).await.unwrap();
+ assert!(revoked.is_some(), "node must carry revoked_at after bulk revoke");
+ let Json(out) = ok!(ops::revoke_nodes(State(c.state.clone()), c.headers.clone()).await, "revoke-nodes again");
+ assert_eq!(out["revoked"], json!(0), "second run revokes nothing");
  let _ = std::fs::remove_dir_all(c.artifact_dir.parent().unwrap());
  cleanup(&pool, &db, &key_dir).await;
 }

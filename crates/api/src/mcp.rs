@@ -5,7 +5,7 @@
 //! will touch it. Tool execution runs through the approvals pipeline
 //! (`call_once` takes the approval's `authorization_id`), so this module only
 //! handles connection lifecycle plus grant review — never direct tool calls.
-use crate::{ApiError, ApiState, auth::authenticate};
+use crate::{ApiError, ApiState, authenticate};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
