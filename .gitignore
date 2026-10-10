@@ -7,4 +7,5 @@ credentials.import
 *.local
 apps/web/test-results/
 tests/e2e/.runtime.lock
-.visual/
+.visual/tsconfig.tsbuildinfo
+apps/web/tsconfig.tsbuildinfo
