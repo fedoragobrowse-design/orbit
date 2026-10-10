@@ -25,7 +25,7 @@ USAGE
 log() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"; }
-confirm() { if [ "$ASSUME_YES" -eq 1 ] || [ "$DRY_RUN" -eq 1 ]; then return 0; fi; printf '%s [y/N] ' "$1"; read -r ans; [ "$ans" = "y" ] || [ "$ans" = "Y" ]; }
+confirm() { if [ "$ASSUME_YES" -eq 1 ] || [ "$DRY_RUN" -eq 1 ]; then return 0; fi; if [ ! -t 0 ] && [ ! -c /dev/tty ] 2>/dev/null; then die "needs an answer but nothing to ask on (stdin is a pipe): rerun with --yes to accept, or run from a terminal"; fi; printf '%s [y/N] ' "$1"; read -r ans </dev/tty 2>/dev/null || read -r ans; [ "$ans" = "y" ] || [ "$ans" = "Y" ]; }
 normalize_version() {
   case "$1" in refs/tags/*) printf '%s' "${1#refs/tags/}";; *) printf '%s' "$1";;
   esac

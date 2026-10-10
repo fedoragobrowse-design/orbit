@@ -236,6 +236,7 @@ function Auth({
     retry: false,
   });
   const needsSetup = status.data?.configured === false;
+  useEffect(() => { if (needsSetup) setSetup(true); }, [needsSetup]);
   const [values, setValues] = useState({
     setup_token: "",
     email: "",
