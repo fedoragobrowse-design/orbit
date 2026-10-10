@@ -27,6 +27,7 @@ import {
   text,
   timestamp,
   type RecordData,
+  type Session,
 } from "./api";
 import { enablePush } from "./push";
 import { useDraft } from "./App";
@@ -49,6 +50,10 @@ const RECENT_EVENT_TYPES: Record<string, true> = {
 export function Home() {
   const navigate = useNavigate();
   const [draft, setDraft] = useDraft("home");
+  const session = useQuery({
+    queryKey: ["session"],
+    queryFn: () => api<Session>("/auth/session"),
+  });
   const ready = useQuery({
     queryKey: ["ready"],
     queryFn: () => api<RecordData>("/ready"),
@@ -56,6 +61,14 @@ export function Home() {
   const health = useQuery({
     queryKey: ["health"],
     queryFn: () => api<RecordData>("/health"),
+  });
+  const [hidden, setHidden] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem("orbit.home.widgets");
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
   });
   const send = useMutation({
     mutationFn: () =>
@@ -72,116 +85,200 @@ export function Home() {
     },
   });
   const createdTaskId = send.data ? text(send.data.task_id) : "";
+  const name = session.data?.user.display_name || session.data?.user.email || "";
+  const toggle = (id: string) => {
+    const next = hidden.includes(id) ? hidden.filter((h) => h !== id) : [...hidden, id];
+    setHidden(next);
+    try {
+      localStorage.setItem("orbit.home.widgets", JSON.stringify(next));
+    } catch {
+      /* private mode: widget layout stays memory-only */
+    }
+  };
+  const show = (id: string, title: string) => (
+    <p>
+      <button className="secondary" onClick={() => toggle(id)}>
+        Show {title}
+      </button>
+    </p>
+  );
   return (
     <>
       <PageHeader
-        title="Your workspace"
+        title={name ? `Hello, ${name}` : "Your workspace"}
         description="Review changes, continue your work, or ask Orbit."
-      />
+      >
+        {!!hidden.length && (
+          <button className="secondary" onClick={() => toggle(hidden[0])}>
+            Restore hidden ({hidden.length})
+          </button>
+        )}
+      </PageHeader>
       <div className="home-grid">
         <div className="home-primary">
-          <section className="panel attention">
-            <h2>Needs your attention</h2>
-            <Resource
-              path="/notifications"
-              empty={
-                <p className="muted">
-                  Important changes stay here until acknowledged.
-                </p>
-              }
-            >
-              {(rows) =>
-                rows
-                  .filter((r) => !r.acknowledged_at && !r.dismissed_at)
-                  .slice(0, 8)
-                  .map((r) => <Notification key={r.id} row={r} />)
-              }
-            </Resource>
-            <Resource
-              path="/tasks"
-              empty={
-                <Empty title="No tasks in progress">
-                  Ask Orbit below to start one.
-                </Empty>
-              }
-            >
-              {(rows) =>
-                rows
-                  .filter((r) => !TERMINAL_TASK_STATES[text(r.state)])
-                  .slice(0, 5)
-                  .map((r) => <TaskRow key={r.id} row={r} />)
-              }
-            </Resource>
-            <Link className="safe-link" to="/tasks">
-              All tasks
-            </Link>
-          </section>
+          {hidden.includes("attention") ? (
+            show("attention", "attention")
+          ) : (
+            <section className="panel attention">
+              <h2>
+                Needs your attention{" "}
+                <button className="secondary" onClick={() => toggle("attention")}>
+                  Hide
+                </button>
+              </h2>
+              <Resource
+                path="/notifications"
+                empty={
+                  <p className="muted">
+                    Important changes stay here until acknowledged.
+                  </p>
+                }
+              >
+                {(rows) =>
+                  rows
+                    .filter((r) => !r.acknowledged_at && !r.dismissed_at)
+                    .slice(0, 8)
+                    .map((r) => <Notification key={r.id} row={r} />)
+                }
+              </Resource>
+              <Resource
+                path="/tasks"
+                empty={
+                  <Empty title="No tasks in progress">
+                    Ask Orbit below to start one.
+                  </Empty>
+                }
+              >
+                {(rows) =>
+                  rows
+                    .filter((r) => !TERMINAL_TASK_STATES[text(r.state)])
+                    .slice(0, 5)
+                    .map((r) => <TaskRow key={r.id} row={r} />)
+                }
+              </Resource>
+              <Link className="safe-link" to="/tasks">
+                All tasks
+              </Link>
+            </section>
+          )}
           <BriefPanel />
-          <section className="recent">
-            <h2>Recent activity</h2>
-            <Resource
-              path="/events"
-              empty={
-                <Empty title="Nothing recorded yet">
-                  Send a message below and it will appear here.
-                </Empty>
-              }
-            >
-              {(rows) =>
-                rows
-                  .filter((r) => RECENT_EVENT_TYPES[text(r.event_type)])
-                  .slice(0, 5)
-                  .map((r) => (
-                    <article className="row" key={r.id}>
+          {hidden.includes("today") ? (
+            show("today", "today")
+          ) : (
+            <section className="panel">
+              <h2>
+                Today{" "}
+                <button className="secondary" onClick={() => toggle("today")}>
+                  Hide
+                </button>
+              </h2>
+              <Resource
+                path="/calendar/today"
+                empty={
+                  <p className="muted">
+                    Nothing on the calendar.{" "}
+                    <Link to="/connections/calendars">Connect one</Link>.
+                  </p>
+                }
+              >
+                {(rows) =>
+                  rows.slice(0, 5).map((r) => (
+                    <article className="row" key={text(r.id)}>
                       <div className="row-main">
-                        <h3>
-                          <Link to="/activity">
-                            {label(r.event_type)}
-                          </Link>
-                        </h3>
+                        <h3>{text(r.title) || "Untitled event"}</h3>
                         <div className="row-meta">
-                          <span>{timestamp(r.created_at)}</span>
-                          <span>{label(r.privacy_class)}</span>
+                          <span>{timestamp(text(r.starts_at))}</span>
                         </div>
-                        <Evidence correlationId={text(r.correlation_id)} />
                       </div>
                     </article>
                   ))
-              }
-            </Resource>
-            <Link className="safe-link" to="/activity">
-              All activity
-            </Link>
-          </section>
-          <section className="panel systems">
-            <h2>Connections and health</h2>
-            {ready.isPending && <p role="status">Checking readiness…</p>}
-            {ready.error && (
-              <ErrorNotice error={ready.error} retry={() => ready.refetch()} />
-            )}
-            {ready.data && <Json value={ready.data} />}
-            {health.isPending && <p role="status">Checking health…</p>}
-            {health.error && (
-              <ErrorNotice
-                error={health.error}
-                retry={() => health.refetch()}
-              />
-            )}
-            {health.data && <Json value={health.data} />}
-            <p>
-              <Link to="/activity">Activity</Link> ·{" "}
-              <Link to="/settings">Settings</Link>
-            </p>
-            <p className="muted">
-              <Link to="/computers">Computers</Link> lists paired machines;
-              pairing codes live there.
-            </p>
-            <h3>Active routines</h3>
-            <p className="muted">
-              <Link to="/automations">Automations</Link> lists schedules and
-              event routines.
-            </p>
-          </section>
+                }
+              </Resource>
+            </section>
+          )}
+          {hidden.includes("activity") ? (
+            show("activity", "activity")
+          ) : (
+            <section className="recent">
+              <h2>
+                Recent activity{" "}
+                <button className="secondary" onClick={() => toggle("activity")}>
+                  Hide
+                </button>
+              </h2>
+              <Resource
+                path="/events"
+                empty={
+                  <Empty title="Nothing recorded yet">
+                    Send a message below and it will appear here.
+                  </Empty>
+                }
+              >
+                {(rows) =>
+                  rows
+                    .filter((r) => RECENT_EVENT_TYPES[text(r.event_type)])
+                    .slice(0, 5)
+                    .map((r) => (
+                      <article className="row" key={r.id}>
+                        <div className="row-main">
+                          <h3>
+                            <Link to="/activity">
+                              {label(r.event_type)}
+                            </Link>
+                          </h3>
+                          <div className="row-meta">
+                            <span>{timestamp(r.created_at)}</span>
+                            <span>{label(r.privacy_class)}</span>
+                          </div>
+                          <Evidence correlationId={text(r.correlation_id)} />
+                        </div>
+                      </article>
+                    ))
+                }
+              </Resource>
+              <Link className="safe-link" to="/activity">
+                All activity
+              </Link>
+            </section>
+          )}
+          {hidden.includes("systems") ? (
+            show("systems", "health")
+          ) : (
+            <section className="panel systems">
+              <h2>
+                Connections and health{" "}
+                <button className="secondary" onClick={() => toggle("systems")}>
+                  Hide
+                </button>
+              </h2>
+              {ready.isPending && <p role="status">Checking readiness…</p>}
+              {ready.error && (
+                <ErrorNotice error={ready.error} retry={() => ready.refetch()} />
+              )}
+              {ready.data && <Json value={ready.data} />}
+              {health.isPending && <p role="status">Checking health…</p>}
+              {health.error && (
+                <ErrorNotice
+                  error={health.error}
+                  retry={() => health.refetch()}
+                />
+              )}
+              {health.data && <Json value={health.data} />}
+              <p>
+                <Link to="/activity">Activity</Link> ·{" "}
+                <Link to="/settings">Settings</Link>
+              </p>
+              <p className="muted">
+                <Link to="/computers">Computers</Link> lists paired machines;
+                pairing codes live there.
+              </p>
+              <h3>Active routines</h3>
+              <p className="muted">
+                <Link to="/automations">Automations</Link> lists schedules and
+                event routines.
+              </p>
+            </section>
+          )}
         </div>
         <div className="home-secondary">
           <section className="composer ask">
@@ -220,14 +317,23 @@ export function Home() {
               runtime over your configured models.
             </p>
           </section>
-          <section className="panel projects">
-            <h2>Your projects</h2>
-            <p className="muted">
-              <Link to="/memory">Memory</Link> lists projects and what Orbit
-              remembers. Recent file and message events appear under{" "}
-              <Link to="/activity">Activity</Link> instead.
-            </p>
-          </section>
+          {hidden.includes("projects") ? (
+            show("projects", "projects")
+          ) : (
+            <section className="panel projects">
+              <h2>
+                Your projects{" "}
+                <button className="secondary" onClick={() => toggle("projects")}>
+                  Hide
+                </button>
+              </h2>
+              <p className="muted">
+                <Link to="/memory">Memory</Link> lists projects and what Orbit
+                remembers. Recent file and message events appear under{" "}
+                <Link to="/activity">Activity</Link> instead.
+              </p>
+            </section>
+          )}
         </div>
       </div>
     </>

@@ -5,13 +5,18 @@ import { Empty, ErrorNotice, Field, Input, PageHeader, Resource, Select, Status 
 
 type Settings = { installation_mode?: unknown };
 
-const PROVIDER_KINDS = [
-  "OLLAMA",
-  "OPENAI",
-  "ANTHROPIC",
-  "GEMINI",
-  "OPENAI_COMPATIBLE",
-  "AIEC",
+const PROVIDER_PRESETS: { kind: string; label: string; origin: string; local: boolean }[] = [
+  { kind: "OLLAMA", label: "Ollama (local)", origin: "http://ollama:11434", local: true },
+  { kind: "OPENAI_COMPATIBLE", label: "OpenAI", origin: "https://api.openai.com", local: false },
+  { kind: "ANTHROPIC", label: "Anthropic", origin: "https://api.anthropic.com", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "OpenRouter", origin: "https://openrouter.ai/api", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "Together", origin: "https://api.together.xyz", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "Groq", origin: "https://api.groq.com/openai", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "Mistral", origin: "https://api.mistral.ai", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "DeepSeek", origin: "https://api.deepseek.com", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "xAI", origin: "https://api.x.ai", local: false },
+  { kind: "GEMINI", label: "Gemini", origin: "https://generativelanguage.googleapis.com", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "Custom (OpenAI-compatible)", origin: "https://", local: false },
 ];
 
 export function Models() {
@@ -274,13 +279,19 @@ function LocalModels({ id, name }: { id: string; name: string }) {
 
 function NewProvider({ onDone }: { onDone: () => void }) {
   const client = useQueryClient();
+  const [preset, setPreset] = useState(0);
   const [form, setForm] = useState({
     name: "",
-    kind: "OLLAMA",
-    origin: "",
-    local: true,
+    kind: PROVIDER_PRESETS[0].kind,
+    origin: PROVIDER_PRESETS[0].origin,
+    local: PROVIDER_PRESETS[0].local,
     credential: "",
   });
+  const pick = (index: number) => {
+    const p = PROVIDER_PRESETS[index];
+    setPreset(index);
+    setForm((f) => ({ ...f, kind: p.kind, origin: p.origin, local: p.local }));
+  };
   const create = useMutation({
     mutationFn: () =>
       post<RecordData>("/providers", {
@@ -302,30 +313,34 @@ function NewProvider({ onDone }: { onDone: () => void }) {
         create.mutate();
       }}
     >
-      <Input
-        label="Name"
-        required
-        value={form.name}
-        onChange={(e) => setForm({ ...form, name: e.target.value })}
-      />
       <Select
-        label="Kind"
-        value={form.kind}
-        onChange={(e) => setForm({ ...form, kind: e.target.value })}
+        label="Provider"
+        value={String(preset)}
+        onChange={(e) => pick(Number(e.target.value))}
       >
-        {PROVIDER_KINDS.map((option) => (
-          <option key={option} value={option}>
-            {label(option)}
+        {PROVIDER_PRESETS.map((p, i) => (
+          <option key={p.label} value={String(i)}>
+            {p.label}
           </option>
         ))}
       </Select>
       <Input
+        label="Name"
+        required
+        placeholder={PROVIDER_PRESETS[preset].label}
+        value={form.name}
+        onChange={(e) => setForm({ ...form, name: e.target.value })}
+      />
+      <Input
         label="Origin"
         required
-        placeholder="http://ollama:11434"
+        placeholder={PROVIDER_PRESETS[preset].origin}
         value={form.origin}
         onChange={(e) => setForm({ ...form, origin: e.target.value })}
       />
+      <p className="muted">
+        Picking a provider fills in its address; edit it if you self-host.
+      </p>
       <Field label="Credential" hint="Write-only. Never returned by the API.">
         <input
           type="password"
