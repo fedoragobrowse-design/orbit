@@ -30,6 +30,20 @@ impl EventBus for PostgresEventBus {
  }
 }
 impl PostgresEventBus {
+/// Chat-vs-task heuristic. Task signals (imperative work verbs, schedules,
+/// short conversational text stay CHAT with a direct model reply, no task row.
+/// Deterministic floor only: never lowers risk, never grants permission.
+pub fn classify_message(text: &str) -> (&'static str, f64, &'static str) {
+ const TASK_SIGNALS: [&str; 24] = ["send","schedule","remind","book","order","buy","cancel","delete","create a","make a","write a","draft","summarize","summarise","email","calendar","file a","pay","transfer","subscribe","unsubscribe","deploy","merge","fix "];
+ let lower = text.to_lowercase();
+ let trimmed = lower.trim();
+ if trimmed.is_empty() { return ("CHAT", 1.0, "empty message stays conversational"); }
+ for signal in TASK_SIGNALS {
+  if trimmed.contains(signal) { return ("CREATE_TASK", 0.8, "task signal matched"); }
+ }
+ if trimmed.ends_with('?') || trimmed.len() < 140 { return ("CHAT", 0.7, "question or short chat"); }
+ ("CREATE_TASK", 0.5, "long statement defaults to task")
+}
  pub async fn process_foundation(&self)->Result<()> {
   let owners=sqlx::query("SELECT owner_id,id FROM principals WHERE principal_type='SYSTEM' AND source='orbit-worker'").fetch_all(&self.pool).await?;
   for owner in owners {
@@ -40,18 +54,26 @@ impl PostgresEventBus {
     if !valid {continue}
     let e=sqlx::query("SELECT correlation_id,event_type,payload FROM events WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(delivery.event_id).fetch_one(&mut *tx).await?;
     let correlation:Uuid=e.get("correlation_id");let kind:String=e.get("event_type");
-    let create=kind=="USER_MESSAGE";
-    let classification=json!({"kind":if create{"CREATE_TASK"}else{"STORE_ONLY"},"confidence":1.0,"reason":"foundation deterministic classifier"});
+    let payload_now:Value=e.get("payload");
+    let (kind_name, confidence, reason) = if kind=="USER_MESSAGE" {
+     let body = payload_now.get("text").and_then(Value::as_str).unwrap_or("");
+     Self::classify_message(body)
+    } else { ("STORE_ONLY", 1.0, "non-user event stored only") };
+    let create = kind_name=="CREATE_TASK";
+    let classification=json!({"kind":kind_name,"confidence":confidence,"reason":reason});
     sqlx::query("UPDATE events SET classification=$3 WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(delivery.event_id).bind(&classification).execute(&mut *tx).await?;
     orbit_audit::append(&mut tx,&scope,correlation,Some(delivery.event_id),None,"EVENT_CLASSIFIED","deterministic classification",classification).await?;
+    if kind_name=="CHAT" {
+     sqlx::query("INSERT INTO events(id,owner_id,event_type,source,principal_id,payload,trust_level,privacy_class,correlation_id,source_event_key) VALUES($1,$2,'AGENT_MESSAGE','foundation',$3,$4,'SYSTEM','PRIVATE',$5,$6) ON CONFLICT(owner_id,source,source_event_key) DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(scope.principal_id).bind(json!({"source_reference":delivery.event_id.to_string(),"reply_to":delivery.event_id,"status":"QUEUED_REPLY"})).bind(correlation).bind(format!("chat-reply:{}",delivery.event_id)).execute(&mut *tx).await?;
+    }
     if create {
-     let payload:Value=e.get("payload");let title=payload.get("title").and_then(Value::as_str).unwrap_or("Message received");
+     let title=payload_now.get("title").and_then(Value::as_str).unwrap_or("Message received");
      let task=Uuid::new_v4();
      let task:Uuid=sqlx::query_scalar("INSERT INTO tasks(id,owner_id,event_id,principal_id,correlation_id,title) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(owner_id,consumer,event_id) DO UPDATE SET event_id=EXCLUDED.event_id RETURNING id").bind(task).bind(scope.owner_id).bind(delivery.event_id).bind(scope.principal_id).bind(correlation).bind(title).fetch_one(&mut *tx).await?;
      orbit_audit::append(&mut tx,&scope,correlation,Some(delivery.event_id),Some(task),"TASK_QUEUED","event created notification task",json!({})).await?;
     }
     sqlx::query("UPDATE event_deliveries SET state='ACKNOWLEDGED',lease_until=NULL WHERE owner_id=$1 AND id=$2 AND fence=$3").bind(scope.owner_id).bind(delivery.id).bind(delivery.fence).execute(&mut *tx).await?;tx.commit().await?;
-   }
+  }
   }
   Ok(())
  }

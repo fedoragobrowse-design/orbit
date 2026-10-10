@@ -161,6 +161,9 @@ pub async fn worker(state: ApiState) {
         if let Err(error) = bus.process_foundation().await {
             tracing::error!(error=%error,"event processor failed")
         }
+        if let Err(error) = run_chat_replies(&state).await {
+            tracing::error!(error=%error,"chat replies failed")
+        }
         if let Err(error) = bus.run_notification_tasks(worker).await {
             tracing::error!(error=%error,"task processor failed")
         }
@@ -176,6 +179,49 @@ pub async fn worker(state: ApiState) {
             tracing::error!(error=%error,"agent worker failed")
         }
     }
+}
+/// Chat replies: AGENT_MESSAGE rows parked as QUEUED_REPLY get one FAST-role
+/// model call each, then store text. Failures park as FAILED_REPLY with the
+/// error, never a faked answer. No tools, no tasks, no permissions.
+async fn run_chat_replies(state: &ApiState) -> orbit_core::Result<()> {
+    use sqlx::Row;
+    let queued = sqlx::query("SELECT owner_id,id,principal_id,correlation_id,payload FROM events WHERE event_type='AGENT_MESSAGE' AND payload->>'status'='QUEUED_REPLY' ORDER BY timestamp LIMIT 5").fetch_all(&state.pool).await?;
+    for row in queued {
+        let scope = OwnerScope { owner_id: row.get("owner_id"), principal_id: row.get("principal_id") };
+        let id: uuid::Uuid = row.get("id");
+        let payload: serde_json::Value = row.get("payload");
+        let reply_to = payload.get("reply_to").and_then(serde_json::Value::as_str).unwrap_or("");
+        let user_text: String = sqlx::query_scalar("SELECT payload->>'text' FROM events WHERE owner_id=$1 AND id=$2::uuid").bind(scope.owner_id).bind(reply_to).fetch_optional(&state.pool).await?.flatten().unwrap_or_default();
+        if user_text.trim().is_empty() {
+            sqlx::query("UPDATE events SET payload=jsonb_set(payload,'{status}','\"FAILED_REPLY\"') WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(id).execute(&state.pool).await?;
+            continue;
+        }
+        let request = orbit_model_router::RoutedRequest {
+            role: orbit_core::ModelRole::Fast,
+            chat: orbit_model_router::ChatRequest { messages: vec![orbit_model_router::ChatMessage { role: "user".into(), content: user_text, tool_call_id: None, tool_calls: vec![], images: vec![] }], tools: vec![], output_schema: None, max_output_tokens: 1024, reasoning: false },
+            context: vec![],
+            privacy: orbit_core::PrivacyClass::Private,
+            task_id: None,
+            task_fence: None,
+            agent_id: None,
+            automatic: true,
+        };
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(120), orbit_model_router::ModelRouter::new(state.pool.clone(), state.key_dir.clone()).complete(&scope, request)).await;
+        match answer {
+            Ok(Ok(answer)) => {
+                let clipped = answer.response.text.chars().take(32768).collect::<String>();
+                sqlx::query("UPDATE events SET payload=payload||$3 WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(id).bind(serde_json::json!({"status":"REPLIED","text":clipped,"model":answer.route.model,"finish_reason":answer.response.finish_reason})).execute(&state.pool).await?;
+            }
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                sqlx::query("UPDATE events SET payload=payload||$3 WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(id).bind(serde_json::json!({"status":"FAILED_REPLY","error":msg})).execute(&state.pool).await?;
+            }
+            Err(_) => {
+                sqlx::query("UPDATE events SET payload=payload||$3 WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(id).bind(serde_json::json!({"status":"FAILED_REPLY","error":"reply timed out"})).execute(&state.pool).await?;
+            }
+        }
+    }
+    Ok(())
 }
 async fn run_scheduler_tick(state: &ApiState) -> orbit_core::Result<()> {
     let workers=sqlx::query("SELECT owner_id,id FROM principals WHERE principal_type='SYSTEM' AND source='orbit-worker'").fetch_all(&state.pool).await?;

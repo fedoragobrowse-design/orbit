@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -107,40 +107,79 @@ function ThreadReplies({
   correlationId: string;
 }) {
   return (
-    <Resource
-      path="/tasks"
-      empty={<p className="muted">Working on it — replies appear here.</p>}
-    >
-      {(rows) => {
-        const related = relatedTo(rows, eventId, correlationId);
-        if (!related.length)
-          return (
-            <p className="muted">Working on it — replies appear here.</p>
+    <>
+      <Resource
+        path="/events"
+        empty={<span className="muted">Thinking…</span>}
+      >
+        {(rows) => {
+          const replies = rows.filter(
+            (r) =>
+              text(r.event_type) === "AGENT_MESSAGE" &&
+              (text(payloadOf(r).reply_to) === eventId ||
+                (!!correlationId &&
+                  !!text(r.correlation_id) &&
+                  text(r.correlation_id) === correlationId)),
           );
-        return related.map((t) => {
-          const outcome = text(t.outcome);
-          const waiting = text(t.wait_reason);
-          return (
-            <article className="message assistant" key={t.id}>
-              <div>
-                {outcome ||
-                  (waiting
-                    ? `Waiting: ${label(waiting)} — approve under Approvals.`
-                    : `${text(t.title) || "Task"} (${label(t.state)})`)}
-              </div>
-              <span className="chat-time">
-                {timestamp(t.updated_at)}{" "}
-                <Link to={`/tasks/${t.id}`}>task</Link>
-              </span>
-              <Evidence
-                correlationId={text(t.correlation_id)}
-                evidence={t.evidence}
-              />
-            </article>
-          );
-        });
-      }}
-    </Resource>
+          if (!replies.length) return null;
+          return replies.map((r) => {
+            const payload = payloadOf(r);
+            const status = text(payload.status);
+            const body = text(payload.text);
+            return (
+              <article className="message assistant" key={r.id}>
+                {status === "REPLIED" && body ? (
+                  <div>{body}</div>
+                ) : status === "FAILED_REPLY" ? (
+                  <div className="assistant-failed">
+                    Couldn&apos;t get a reply: {text(payload.error) || "model unavailable"}. Check Models — a FAST model must be enabled.
+                  </div>
+                ) : (
+                  <div className="muted">Thinking…</div>
+                )}
+                <span className="chat-time">
+                  {timestamp(r.timestamp)}
+                  {!!text(payload.model) && (
+                    <span className="assistant-model"> · {text(payload.model)}</span>
+                  )}
+                </span>
+              </article>
+            );
+          });
+        }}
+      </Resource>
+      <Resource
+        path="/tasks"
+        empty={<span className="muted">Working on it — replies appear here.</span>}
+      >
+        {(rows) => {
+          const related = relatedTo(rows, eventId, correlationId);
+          if (!related.length) return null;
+          return related.map((t) => {
+            const outcome = text(t.outcome);
+            const waiting = text(t.wait_reason);
+            return (
+              <article className="message assistant" key={t.id}>
+                <div>
+                  {outcome ||
+                    (waiting
+                      ? `Waiting: ${label(waiting)} — approve under Approvals.`
+                      : `${text(t.title) || "Task"} (${label(t.state)})`)}
+                </div>
+                <span className="chat-time">
+                  {timestamp(t.updated_at)}{" "}
+                  <Link to={`/tasks/${t.id}`}>task</Link>
+                </span>
+                <Evidence
+                  correlationId={text(t.correlation_id)}
+                  evidence={t.evidence}
+                />
+              </article>
+            );
+          });
+        }}
+      </Resource>
+    </>
   );
 }
 export function Chat() {
@@ -171,6 +210,10 @@ export function Chat() {
 
   const correlationId = text(detail.data?.correlation_id);
   const payload = detail.data ? payloadOf(detail.data) : null;
+  const logRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [conversation, detail.data, correlationId]);
 
   return (
     <div className="chat-shell">
@@ -202,11 +245,12 @@ export function Chat() {
         </Resource>
       </aside>
       <section className="chat-main">
-        <div className="chat-log" aria-live="polite">
+        <div className="chat-log" aria-live="polite" ref={logRef}>
           {!conversation && (
-            <Empty title="What would you like to work on?">
-              Send a message below. Orbit records it and starts work — replies
-              and approvals appear here.
+            <Empty title="What can I do for you?">
+              Just talk — questions get answered straight away. When you ask
+              Orbit to do something (send, schedule, remind, write, fix), it
+              starts a task and reports back here.
             </Empty>
           )}
           {detail.isPending && conversation && (

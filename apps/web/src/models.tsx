@@ -32,6 +32,7 @@ export function Models() {
         title="Models"
         description="Choose which language model answers on your behalf."
       />
+      <DecisionModels />
       <Providers />
       <section className="section" aria-label="Models">
         <div className="panel">
@@ -49,6 +50,61 @@ export function Models() {
       </section>
       <InstallationMode />
     </>
+  );
+}
+/// Which model answers each kind of job. The router picks the enabled model
+/// with the lowest priority number carrying the role, so choosing here sets
+/// the winner to priority 0 and bumps the rest. FAST is the chat decider:
+/// it answers plain chat and classifies what needs a task.
+const DECISION_ROLES: { role: string; blurb: string }[] = [
+  { role: "FAST", blurb: "Chat replies and quick decisions" },
+  { role: "REASONING", blurb: "Hard thinking, plans, judgment calls" },
+  { role: "CODING", blurb: "Writing and changing code" },
+  { role: "PRIVATE", blurb: "Sensitive text that stays local" },
+  { role: "VISION", blurb: "Images and screenshots" },
+  { role: "EMBEDDING", blurb: "Memory search" },
+];
+function DecisionModels() {
+  const client = useQueryClient();
+  const save = useMutation({
+    mutationFn: async ({ role, winner }: { role: string; winner: RecordData }) => {
+      const all = await api<{ items: RecordData[] }>("/models?limit=100").then((p) => p.items);
+      const rivals = all.filter((m) => m.id !== winner.id && Array.isArray(m.roles) && (m.roles as unknown[]).map(label).includes(role));
+      const carried: string[] = Array.isArray(winner.roles) ? (winner.roles as unknown[]).map(label) : [];
+      const nextRoles = carried.includes(role) ? carried : [...carried, role];
+      await put(`/models/${winner.id}`, { roles: nextRoles, priority: 0, expected_revision: winner.revision });
+      for (const rival of rivals) {
+        await put(`/models/${rival.id}`, { priority: 100, expected_revision: rival.revision });
+      }
+    },
+    onSuccess: () => client.invalidateQueries({ queryKey: ["models"] }),
+  });
+  return (
+    <section className="section" aria-label="Which model does what">
+      <div className="panel">
+        <h2>Which model does what</h2>
+        <p className="muted">Pick the model that answers each kind of job. Chat and quick decisions use FAST.</p>
+        <Resource path="/models" empty={<Empty title="No models yet">Add a provider and a model first.</Empty>}>
+          {(items) => (
+            <div className="grid">
+              {DECISION_ROLES.map(({ role, blurb }) => {
+                const carriers = items.filter((m) => Array.isArray(m.roles) && (m.roles as unknown[]).map(label).includes(role));
+                const current = [...carriers].sort((a, b) => Number(a.priority ?? 100) - Number(b.priority ?? 100))[0];
+                return (
+                  <Select key={role} label={`${label(role)} — ${blurb}`} value={String(current?.id ?? "")} onChange={(e) => { const winner = items.find((m) => String(m.id) === e.target.value); if (winner) save.mutate({ role, winner }); }} disabled={save.isPending || !items.length}>
+                    {!current && <option value="">No model carries {label(role)} yet</option>}
+                    {items.map((m) => (
+                      <option key={m.id} value={String(m.id)}>{text(m.name)}{carriers.some((c) => c.id === m.id) ? "" : " (will gain this job)"}</option>
+                    ))}
+                  </Select>
+                );
+              })}
+            </div>
+          )}
+        </Resource>
+        {save.error && <ErrorNotice error={save.error} retry={() => save.reset()} />}
+      </div>
+    </section>
   );
 }
 

@@ -8,7 +8,7 @@ macro_rules! wire_enum { ($name:ident {$($variant:ident),* $(,)?}) => {#[derive(
 wire_enum!(PrivacyClass {Public,Personal,Private,HighlyPrivate,Secret});
 wire_enum!(TrustLevel {OwnerAuthenticated,System,UntrustedExternal});
 wire_enum!(PrincipalType {WebUser,MobileUser,ComputerNode,EmailSender,Automation,Webhook,Agent,System,McpServer});
-wire_enum!(EventType {EmailReceived,EmailReplied,CalendarChanged,FileCreated,FileModified,FileDeleted,FileShared,ComputerConnected,ComputerDisconnected,DeviceEvent,ScheduleTrigger,TimerTrigger,WebhookReceived,GithubEvent,HomeEvent,TaskCompleted,TaskFailed,UserMessage,ApprovalAccepted,ApprovalDenied});
+wire_enum!(EventType {EmailReceived,EmailReplied,CalendarChanged,FileCreated,FileModified,FileDeleted,FileShared,ComputerConnected,ComputerDisconnected,DeviceEvent,ScheduleTrigger,TimerTrigger,WebhookReceived,GithubEvent,HomeEvent,TaskCompleted,TaskFailed,UserMessage,AgentMessage,ApprovalAccepted,ApprovalDenied});
 wire_enum!(ClassificationKind {Ignore,StoreOnly,MemoryCandidate,Notify,CreateTask,Urgent});
 wire_enum!(TaskState {Queued,Running,WaitingForApproval,WaitingForResource,Completed,Failed,Cancelled,TimedOut});
 wire_enum!(RiskLevel {ReadOnly,Low,Medium,High,Critical,Forbidden});
