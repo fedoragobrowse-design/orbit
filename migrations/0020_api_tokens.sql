@@ -1,0 +1,1 @@
+CREATE TABLE api_tokens(id uuid NOT NULL,owner_id uuid NOT NULL REFERENCES users(id),name text NOT NULL,token_hash text NOT NULL,scopes jsonb NOT NULL DEFAULT '[]',last_used timestamptz,revoked boolean NOT NULL DEFAULT false,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(owner_id,id),UNIQUE(token_hash));

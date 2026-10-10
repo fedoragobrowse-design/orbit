@@ -5,7 +5,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Empty,
   ErrorNotice,
@@ -758,6 +758,42 @@ export function Settings() {
       </section>
       {save.error && <ErrorNotice error={save.error} />}{" "}
       {notice && <p role="status">{notice}</p>}
+      <ApiTokens />
     </>
+  );
+}
+function ApiTokens() {
+  const client = useQueryClient();
+  const [name, setName] = useState("");
+  const tokens = useQuery({ queryKey: ["api-tokens"], queryFn: () => api<{ items: RecordData[] }>("/tokens") });
+  const create = useMutation({ mutationFn: () => post<RecordData>("/tokens", { name }), onSuccess: () => { setName(""); client.invalidateQueries({ queryKey: ["api-tokens"] }); } });
+  const revoke = useMutation({ mutationFn: (id: string) => post(`/tokens/${id}/revoke`), onSuccess: () => client.invalidateQueries({ queryKey: ["api-tokens"] }) });
+  const items = tokens.data?.items ?? [];
+  const fresh = create.data;
+  return (
+    <section className="panel form">
+      <h2>API tokens</h2>
+      <p className="muted">Tokens for the CLI and scripts. Same access as your login. The secret shows once — copy it now.</p>
+      {tokens.error ? (<ErrorNotice error={tokens.error} retry={() => tokens.refetch()} />) : !items.length ? (<p className="muted">No tokens yet.</p>) : (
+        <table>
+          <thead><tr><th scope="col">Name</th><th scope="col">Last used</th><th scope="col">Actions</th></tr></thead>
+          <tbody>
+            {items.map((row) => (
+              <tr key={String(row.id)}>
+                <th scope="row">{text(row.name)}</th>
+                <td>{timestamp(row.last_used)}</td>
+                <td><div className="actions"><button className="danger" disabled={revoke.isPending} onClick={() => revoke.mutate(String(row.id))}>Revoke</button></div></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {(create.error ?? revoke.error) && (<ErrorNotice error={(create.error ?? revoke.error) as Error} retry={() => { create.reset(); revoke.reset(); }} />)}
+      {fresh && typeof (fresh as RecordData).token === "string" && (<p role="status"><code>{text((fresh as RecordData).token)}</code> — copy now, Orbit never shows it again.</p>)}
+      <form aria-label="Mint API token" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
+        <Input label="Token name" value={name} onChange={(e) => setName(e.target.value)} required maxLength={64} placeholder="laptop" />
+        <div className="actions"><button type="submit" disabled={!name.trim() || create.isPending}>Mint token</button></div>
+      </form>
+    </section>
   );
 }

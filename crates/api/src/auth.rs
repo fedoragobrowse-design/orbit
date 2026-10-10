@@ -12,7 +12,7 @@ use utoipa::ToSchema;
 use subtle::ConstantTimeEq;
 
 pub fn hash(value:&str)->String {hex::encode(Sha256::digest(value.as_bytes()))}
-fn random()->String {let mut bytes=[0u8;32];OsRng.fill_bytes(&mut bytes);hex::encode(bytes)}
+pub fn random()->String {let mut bytes=[0u8;32];OsRng.fill_bytes(&mut bytes);hex::encode(bytes)}
 pub fn origin(state:&ApiState,headers:&HeaderMap)->Result<(),ApiError>{if headers.get(header::ORIGIN).and_then(|h|h.to_str().ok())!=Some(state.origin.as_str()){return Err(Error::Forbidden.into())}Ok(())}
 pub async fn ensure_setup(state:&ApiState)->orbit_core::Result<()> {
  tokio::fs::create_dir_all(&state.key_dir).await.map_err(|_|Error::Unavailable("key directory unavailable".into()))?;
@@ -36,6 +36,14 @@ pub async fn bootstrap_token(state:&ApiState)->orbit_core::Result<String>{
  if row.get::<Option<String>,_>("setup_token_hash")!=Some(hash(&token)){return Err(Error::Unavailable("bootstrap token does not match installation".into()))}Ok(token)
 }
 pub async fn authenticate(state:&ApiState,headers:&HeaderMap,mutation:bool)->Result<AuthSession,ApiError>{
+ if let Some(raw)=crate::tokens::bearer(headers){
+  let full=format!("{}{raw}",crate::tokens::PREFIX);
+  let row=sqlx::query("SELECT id,owner_id FROM api_tokens WHERE token_hash=$1 AND revoked=false").bind(hash(&full)).fetch_optional(&state.pool).await?.ok_or(Error::Unauthorized)?;
+  let owner:Uuid=row.get("owner_id");
+  sqlx::query("UPDATE api_tokens SET last_used=now() WHERE id=$1").bind(row.get::<Uuid,_>("id")).execute(&state.pool).await?;
+  let principal=sqlx::query("SELECT id FROM principals WHERE owner_id=$1 AND principal_type='SYSTEM' LIMIT 1").bind(owner).fetch_optional(&state.pool).await?.map(|r|r.get("id")).unwrap_or(Uuid::nil());
+  return Ok(AuthSession{scope:OwnerScope{owner_id:owner,principal_id:principal},csrf_token:String::new(),session_id:Uuid::nil()});
+ }
  let token=headers.get(header::COOKIE).and_then(|v|v.to_str().ok()).and_then(|v|v.split(';').map(str::trim).find_map(|p|p.strip_prefix("orbit_session="))).ok_or(Error::Unauthorized)?;
  let row=sqlx::query("SELECT id,owner_id,principal_id,csrf_token FROM sessions WHERE token_hash=$1 AND expires_at>now()").bind(hash(token)).fetch_optional(&state.pool).await?.ok_or(Error::Unauthorized)?;
  let csrf:String=row.get("csrf_token");

@@ -2103,6 +2103,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "orbit-cli"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "orbit-computer-node"
 version = "0.1.0"
 dependencies = [

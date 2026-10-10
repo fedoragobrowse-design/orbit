@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/audit", "crates/event-bus", "crates/api", "apps/server", "crates/secrets", "crates/model-router", "crates/policy", "crates/risk", "crates/approvals", "crates/tools", "crates/agent-runtime", "crates/task-runtime", "crates/aiec-runtime", "crates/computer-node-protocol", "crates/memory", "crates/scheduler", "crates/email", "crates/calendar", "crates/mcp", "apps/computer-node", "tests/fixtures"]
+members = ["crates/core", "crates/audit", "crates/event-bus", "crates/api", "apps/server", "crates/secrets", "crates/model-router", "crates/policy", "crates/risk", "crates/approvals", "crates/tools", "crates/agent-runtime", "crates/task-runtime", "crates/aiec-runtime", "crates/computer-node-protocol", "crates/memory", "crates/scheduler", "crates/email", "crates/calendar", "crates/mcp", "apps/computer-node", "apps/cli", "tests/fixtures"]
 
 [workspace.package]
 version = "0.1.0"
