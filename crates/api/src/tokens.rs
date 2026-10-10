@@ -21,6 +21,8 @@ pub struct TokenCreate { pub name: String }
 #[utoipa::path(post, path = "/api/v1/tokens", request_body = TokenCreate, responses((status = 200, body = Value)))]
 pub async fn create_token(State(state): State<ApiState>, headers: HeaderMap, Json(input): Json<TokenCreate>) -> Result<Json<Value>, ApiError> {
     let a = authenticate(&state, &headers, true).await?;
+    // Session-cookie auth only: a stolen bearer must not mint persistence.
+    if a.session_id == Uuid::nil() { return Err(Error::Forbidden.into()); }
     let name = name_ok(&input.name).map_err(ApiError::from)?;
     let plain = mint();
     let id = Uuid::new_v4();
@@ -37,6 +39,8 @@ pub async fn list_tokens(State(state): State<ApiState>, headers: HeaderMap) -> R
 #[utoipa::path(post, path = "/api/v1/tokens/{id}/revoke", params(("id" = String, Path)), responses((status = 200, body = Value)))]
 pub async fn revoke_token(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>, ApiError> {
     let a = authenticate(&state, &headers, true).await?;
+    // Session-cookie auth only: revocation is a credential lifecycle change.
+    if a.session_id == Uuid::nil() { return Err(Error::Forbidden.into()); }
     let n = sqlx::query("UPDATE api_tokens SET revoked=true WHERE owner_id=$1 AND id=$2 AND revoked=false").bind(a.scope.owner_id).bind(id).execute(&state.pool).await?.rows_affected();
     if n == 0 { return Err(Error::NotFound.into()); }
     Ok(Json(json!({"revoked": id.to_string()})))

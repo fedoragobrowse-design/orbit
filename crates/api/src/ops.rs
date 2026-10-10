@@ -58,9 +58,9 @@ pub async fn status(State(state):State<ApiState>,headers:HeaderMap)->Result<Json
 /// registry table — the secrets store already scopes every row by owner.
 #[utoipa::path(post,path="/api/v1/ops/backup",responses((status=200,body=Value)))]
 pub async fn backup(State(state):State<ApiState>,headers:HeaderMap)->Result<Json<Value>,ApiError>{
- // Read-scoped auth: backup exports user data without mutating it, so operators
- // can snapshot a frozen installation.
- let a=auth::authenticate(&state,&headers,false).await?;
+ // Mutation-scoped guard: backup WRITES secrets (chunks+manifest), so a
+ // frozen installation blocks it like every other mutation.
+ let a=guard(&state,&headers,true).await?;
  let mut dump=serde_json::Map::new();let mut counts=serde_json::Map::new();
  for table in BACKUP_TABLES{
   let rows:Vec<Value>=sqlx::query_scalar(&format!("SELECT to_jsonb(t) FROM {table} t WHERE owner_id=$1 ORDER BY id")).bind(a.scope.owner_id).fetch_all(&state.pool).await?;
@@ -72,6 +72,9 @@ pub async fn backup(State(state):State<ApiState>,headers:HeaderMap)->Result<Json
  for chunk in bytes.chunks(BACKUP_CHUNK){chunk_ids.push(store.put(&a.scope,"ops-backup",chunk).await?)}
  let manifest=json!({"chunks":chunk_ids,"byte_size":bytes.len() as i64,"tables":counts});
  let artifact=store.put(&a.scope,"ops-backup-manifest",&serde_json::to_vec(&manifest).map_err(Error::from)?).await?;
+ let mut tx=state.pool.begin().await?;
+ orbit_audit::append(&mut tx,&a.scope,Uuid::new_v4(),None,None,"OPS_BACKUP","owner snapshotted encrypted backup",json!({"artifact_id":artifact})).await?;
+ tx.commit().await?;
  Ok(Json(json!({"artifact_id":artifact,"byte_size":bytes.len() as i64,"chunks":chunk_ids.len(),"tables":counts})))
 }
 #[derive(Deserialize,utoipa::ToSchema)] #[serde(deny_unknown_fields)]
@@ -92,12 +95,12 @@ pub async fn restore(State(state):State<ApiState>,headers:HeaderMap,Json(input):
  // Dependency order: events before tasks (tasks.event_id references events).
  for table in BACKUP_TABLES{
   let rows=dump.get(table).and_then(Value::as_array).cloned().unwrap_or_default();
-  let ids:Vec<Uuid>=rows.iter().filter_map(|r|r.get("id").and_then(Value::as_str)).filter_map(|s|Uuid::parse_str(s).ok()).collect();
-  if ids.is_empty(){continue}
-  sqlx::query(&format!("INSERT INTO {table} SELECT * FROM jsonb_populate_recordset(NULL::{table},$1) ON CONFLICT DO NOTHING")).bind(Value::Array(rows)).execute(&mut *tx).await?;
-  // Owner-scoped apply: every restored row belongs to the caller even if the
-  // artifact blob were swapped between owners.
-  sqlx::query(&format!("UPDATE {table} SET owner_id=$1 WHERE id=ANY($2)")).bind(a.scope.owner_id).bind(&ids).execute(&mut *tx).await?;
+  if rows.is_empty(){continue}
+  // Stamp owner pre-insert: rows keep their ids but always belong to the
+  // caller, so ON CONFLICT DO NOTHING skips rows owned by others instead of
+  // reassigning them.
+  let owned:Vec<Value>=rows.into_iter().map(|mut r|{if let Some(o)=r.as_object_mut(){o.insert("owner_id".into(),json!(a.scope.owner_id));}r}).collect();
+  sqlx::query(&format!("INSERT INTO {table} SELECT * FROM jsonb_populate_recordset(NULL::{table},$1) ON CONFLICT DO NOTHING")).bind(Value::Array(owned)).execute(&mut *tx).await?;
  }
  orbit_audit::append(&mut tx,&a.scope,Uuid::new_v4(),None,None,"OPS_RESTORED","owner restored encrypted backup",json!({"artifact_id":input.artifact_id})).await?;
  tx.commit().await?;Ok(Json(json!({"restored":input.artifact_id})))
@@ -108,8 +111,9 @@ pub async fn restore(State(state):State<ApiState>,headers:HeaderMap,Json(input):
 /// with the same rule as dispatch, never executed.
 #[utoipa::path(post,path="/api/v1/automations/{id}/dry-run",responses((status=200,body=Value)))]
 pub async fn dry_run(State(state):State<ApiState>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<Uuid>)->Result<Json<Value>,ApiError>{
- // Direct auth: dry-run changes nothing, so it stays available while frozen.
- let a=auth::authenticate(&state,&headers,true).await?;
+ // Read-scoped guard: the preview inserts nothing, so it stays available
+ // while frozen (freeze-transparent by design).
+ let a=guard(&state,&headers,false).await?;
  let automation=orbit_scheduler::get(&state.pool,&a.scope,id).await?;
  let preview=orbit_scheduler::preview(&state.pool,&a.scope,id).await?;
  let consumer=if automation.notification_behavior=="IN_APP"&&automation.agent_id.is_none(){"foundation"}else{"agents"};

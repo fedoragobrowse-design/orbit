@@ -74,7 +74,7 @@ pub async fn setup(State(state):State<ApiState>,headers:HeaderMap,Json(input):Js
  let mut tx=state.pool.begin().await?;
  let row=sqlx::query("SELECT owner_id,setup_token_hash FROM installation WHERE singleton FOR UPDATE").fetch_one(&mut *tx).await?;
  if row.get::<Option<Uuid>,_>("owner_id").is_some(){return Err(Error::Conflict("owner already configured".into()).into())}
- if row.get::<Option<String>,_>("setup_token_hash")!=Some(hash(&input.setup_token)){return Err(Error::Forbidden.into())}
+ if row.get::<Option<String>,_>("setup_token_hash").as_deref().map(|s|bool::from(s.as_bytes().ct_eq(hash(&input.setup_token).as_bytes()))).unwrap_or(false)!=true{return Err(Error::Forbidden.into())}
  let id=Uuid::new_v4();
  sqlx::query("INSERT INTO users(id,email,display_name,password_hash) VALUES($1,$2,$3,$4)").bind(id).bind(&email).bind(display).bind(encoded).execute(&mut *tx).await?;
  sqlx::query("INSERT INTO authorization_epochs(owner_id) VALUES($1)").bind(id).execute(&mut *tx).await?;
@@ -90,7 +90,10 @@ pub async fn login(State(state):State<ApiState>,headers:HeaderMap,Json(input):Js
  origin(&state,&headers)?;
  if input.email.len()>254||input.password.len()>1024{return Err(Error::Unauthorized.into())}
  let email=input.email.trim().to_lowercase();
- let attempts:i32=sqlx::query_scalar("INSERT INTO login_attempts(key_hash,attempts,window_start) VALUES($1,1,now()) ON CONFLICT(key_hash) DO UPDATE SET attempts=CASE WHEN login_attempts.window_start<now()-interval '15 minutes' THEN 1 ELSE login_attempts.attempts+1 END,window_start=CASE WHEN login_attempts.window_start<now()-interval '15 minutes' THEN now() ELSE login_attempts.window_start END RETURNING attempts").bind(hash(&email)).fetch_one(&state.pool).await?;
+ let ipf=headers.get("x-forwarded-for").and_then(|v|v.to_str().ok()).unwrap_or("").split(',').next().unwrap_or("").trim();
+ // Per-IP+email composite bucket: one attacker's failures must not lock out
+ // the owner on another egress IP. Follow-up: axum ConnectInfo peer IP.
+ let attempts:i32=sqlx::query_scalar("INSERT INTO login_attempts(key_hash,attempts,window_start) VALUES($1,1,now()) ON CONFLICT(key_hash) DO UPDATE SET attempts=CASE WHEN login_attempts.window_start<now()-interval '15 minutes' THEN 1 ELSE login_attempts.attempts+1 END,window_start=CASE WHEN login_attempts.window_start<now()-interval '15 minutes' THEN now() ELSE login_attempts.window_start END RETURNING attempts").bind(hash(&format!("{ipf}:{email}"))).fetch_one(&state.pool).await?;
  if attempts>10{return Ok((axum::http::StatusCode::TOO_MANY_REQUESTS,Json(json!({"error":{"code":"RATE_LIMITED","message":"Try again later","request_id":Uuid::new_v4()}}))).into_response())}
  let row=sqlx::query("SELECT id,email,display_name,password_hash FROM users WHERE email=$1").bind(&email).fetch_optional(&state.pool).await?;
  let encoded=row.as_ref().map(|r|r.get::<String,_>("password_hash")).unwrap_or_else(||"$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());

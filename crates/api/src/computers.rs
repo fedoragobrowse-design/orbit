@@ -1582,11 +1582,13 @@ async fn node_read(
     let message = message_for(tool)?;
     let node: Uuid = serde_json::from_value(arguments["node_id"].clone())
         .map_err(|_| Error::Validation("node_id must be a uuid".into()))?;
+    // Ownership first: submit() rejects foreign nodes before any socket
+    // teardown, so a guessed UUID cannot drop another owner's live link.
+    let dispatch = submit(state, scope, tool, arguments).await?;
     // A node whose last heartbeat is older than 60 seconds counts as
     // disconnected even if its socket has not torn down yet; per the plan an
     // offline node answers `NODE_OFFLINE`, never a stale read.
     mark_offline_stale(state, node).await;
-    let dispatch = submit(state, scope, tool, arguments).await?;
     let snapshot = serde_json::to_value(&dispatch.snapshot).map_err(Error::from)?;
     let request = ExecutionRequest {
         authorization_id: dispatch.authorization,
