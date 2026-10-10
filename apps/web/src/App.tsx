@@ -266,9 +266,9 @@ function Auth({
       <h1>{forgot ? "Reset your password" : setup ? "Create your workspace" : "Welcome back"}</h1>
       <p>
         {forgot
-          ? "Enter your email, the one-time recovery code, and a new password. The code works once."
+          ? "Reset with your one-time recovery code. It works once and expires 24 hours after it is made."
           : setup
-            ? "Use the one-use setup token from your server to create the owner. Optional models and connections can be added afterward."
+            ? "Create the owner account for this server. You only do this once."
             : "Sign in to your personal workspace."}
       </p>
       <div className="auth-tabs">
@@ -294,6 +294,12 @@ function Auth({
           <Input label="Email" type="email" required autoComplete="username" value={recoverValues.email} onChange={(e) => setRecoverValues({ ...recoverValues, email: e.target.value })} />
           <Input label="Recovery code" required autoComplete="off" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" value={recoverValues.recovery_code} onChange={(e) => setRecoverValues({ ...recoverValues, recovery_code: e.target.value })} />
           <Input label="New password (12+ characters)" type="password" required autoComplete="new-password" minLength={12} value={recoverValues.new_password} onChange={(e) => setRecoverValues({ ...recoverValues, new_password: e.target.value })} />
+          <ol className="muted">
+            <li>Find your code: if you saved one from Settings → Password and recovery, use that.</li>
+            <li>No saved code? On the server itself, run <code>docker exec orbit-server-1 orbit-server recovery-code</code> and use the code it prints. (Server access proves you are the owner — that is why this page never emails codes.)</li>
+            <li>Type it below exactly as shown, dashes included.</li>
+            <li>After reset, every session is signed out — sign in again with the new password, and make a fresh code in Settings.</li>
+          </ol>
           <button disabled={recover.isPending || recoverValues.new_password.length < 12}>{recover.isPending ? "Resetting…" : "Reset password"}</button>
           {recover.error && <ErrorNotice error={recover.error} />}
           <div className="actions"><button type="button" className="secondary" onClick={() => setForgot(false)}>Back to sign in</button></div>
@@ -305,6 +311,13 @@ function Auth({
           auth.mutate();
         }}
       >
+        {setup && (
+          <ol className="muted">
+            <li>On the server itself, run <code>docker exec orbit-server-1 orbit-server bootstrap-token</code> and copy the token it prints. (Only someone on the server can see it — that is what makes you the owner.)</li>
+            <li>Paste it into Setup token below, then pick your name, email, and a password of 12+ characters.</li>
+            <li>After this page, add models and connections from inside Orbit — this screen appears only once.</li>
+          </ol>
+        )}
         {setup && (
           <>
             <Input
