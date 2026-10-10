@@ -102,7 +102,7 @@ impl SecretStore {
         };
         // Verify existing ciphertext before allowing any new write under this key.
         if let Some(row) = sqlx::query(
-            "SELECT owner_id,id,key_version,purpose,nonce,ciphertext FROM secrets_metadata LIMIT 1",
+            "SELECT owner_id,id,key_version,purpose,nonce,ciphertext FROM secrets_metadata WHERE revoked_at IS NULL LIMIT 1",
         )
         .fetch_optional(&store.pool)
         .await?
