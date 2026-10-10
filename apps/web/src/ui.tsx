@@ -155,13 +155,14 @@ export function Evidence({
 }) {
   const [open, setOpen] = useState(false);
   const q = useQuery({
-    queryKey: ["activity", correlationId],
+    queryKey: ["why", correlationId],
     queryFn: () =>
-      api<Page>(
-        `/activity?correlation_id=${encodeURIComponent(correlationId!)}`,
+      api<{ correlation_id: string; events: RecordData[]; tasks: RecordData[]; activity: RecordData[]; notifications: RecordData[] }>(
+        `/why/${encodeURIComponent(correlationId!)}`,
       ),
     enabled: open && !!correlationId,
   });
+  const timeline = q.data;
   return (
     <details
       className="evidence"
@@ -173,8 +174,21 @@ export function Evidence({
       </p>
       {q.isPending && correlationId && <p role="status">Loading evidence…</p>}
       {q.error && <ErrorNotice error={q.error} retry={() => q.refetch()} />}
+      {timeline && (
+        <>
+          {timeline.tasks.map((row) => (
+            <p key={String(row.id)}><small>Task <Link to={`/tasks/${row.id}`}>{text(row.title)}</Link> · {label(row.state)}{row.wait_reason ? ` — ${text(row.wait_reason)}` : ""}</small></p>
+          ))}
+          {timeline.notifications.map((row) => (
+            <p key={String(row.id)}><small>Notice {text(row.title)} · {label(row.severity)}</small></p>
+          ))}
+          {timeline.events.map((row) => (
+            <p key={String(row.id)}><small>Trigger {text(row.event_type)} · {timestamp(row.timestamp)}</small></p>
+          ))}
+        </>
+      )}
       <ol>
-        {q.data?.items.map((row) => (
+        {(timeline?.activity ?? []).map((row) => (
           <li key={row.id}>
             <Link to={`/activity/${row.id}`}>{label(row.operation)}</Link>
             <span>{text(row.reason)}</span>
@@ -187,7 +201,7 @@ export function Evidence({
       {!correlationId && evidence === undefined && (
         <p>No supporting record was returned. Permission is not implied.</p>
       )}
-      {correlationId && q.data?.items.length === 0 && (
+      {correlationId && timeline && timeline.activity.length === 0 && timeline.tasks.length === 0 && timeline.events.length === 0 && timeline.notifications.length === 0 && (
         <p>No recorded evidence is available for this correlation.</p>
       )}
     </details>
