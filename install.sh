@@ -85,7 +85,7 @@ validate_oauth
 OS="$(uname -s)"; ARCH="$(uname -m)"
 case "$OS" in Linux) OS_ID=linux;; Darwin) OS_ID=darwin;; *) die "unsupported OS: $OS";; esac
 case "$ARCH" in x86_64|amd64) ARCH_ID=amd64;; aarch64|arm64) ARCH_ID=arm64;; *) die "unsupported arch: $ARCH";; esac
-TARBALL="orbit-${VERSION}-${OS_ID}-${ARCH_ID}.tar.gz"
+TARBALL="orbit-${VERSION}.tar.gz"
 BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 log "orbit installer ${VERSION} (${OS_ID}/${ARCH_ID})"
 log "repo: ${REPO}"
