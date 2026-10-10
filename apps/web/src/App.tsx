@@ -230,6 +230,12 @@ function Auth({
   onAuthenticated: (s: Session) => void;
 }) {
   const [setup, setSetup] = useState(false);
+  const status = useQuery({
+    queryKey: ["auth-status"],
+    queryFn: () => api<{ configured: boolean }>("/auth/status"),
+    retry: false,
+  });
+  const needsSetup = status.data?.configured === false;
   const [values, setValues] = useState({
     setup_token: "",
     email: "",
@@ -263,13 +269,15 @@ function Auth({
         >
           Sign in
         </button>
-        <button
-          className="secondary"
-          aria-pressed={setup}
-          onClick={() => setSetup(true)}
-        >
-          First-time setup
-        </button>
+        {needsSetup && (
+          <button
+            className="secondary"
+            aria-pressed={setup}
+            onClick={() => setSetup(true)}
+          >
+            First-time setup
+          </button>
+        )}
       </div>
       <form
         onSubmit={(e) => {

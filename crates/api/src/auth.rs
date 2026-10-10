@@ -4,7 +4,7 @@ use argon2::{Argon2,PasswordHasher,PasswordVerifier,password_hash::{SaltString,P
 use orbit_core::{Error,OwnerScope};
 use rand::{RngCore,rngs::OsRng};
 use serde::{Deserialize,Serialize};
-use serde_json::json;
+use serde_json::{Value,json};
 use sha2::{Digest,Sha256};
 use sqlx::{Row,Postgres,Transaction};
 use uuid::Uuid;
@@ -92,6 +92,9 @@ pub async fn login(State(state):State<ApiState>,headers:HeaderMap,Json(input):Js
 }
 #[utoipa::path(get,path="/api/v1/auth/session",responses((status=200,body=SessionResponse)))]
 pub async fn current(State(state):State<ApiState>,headers:HeaderMap)->Result<Json<SessionResponse>,ApiError>{let auth=authenticate(&state,&headers,false).await?;let row=sqlx::query("SELECT id,email,display_name FROM users WHERE id=$1").bind(auth.scope.owner_id).fetch_one(&state.pool).await?;Ok(Json(SessionResponse{user:User{id:row.get("id"),email:row.get("email"),display_name:row.get("display_name")},csrf_token:auth.csrf_token}))}
+#[utoipa::path(get,path="/api/v1/auth/status",responses((status=200,body=Value)))]
+pub async fn status(State(state):State<ApiState>)->Result<Json<Value>,ApiError>{let row=sqlx::query("SELECT owner_id IS NOT NULL AS configured FROM installation WHERE singleton").fetch_one(&state.pool).await?;Ok(Json(json!({"configured":row.get::<bool,_>("configured")})))}
 #[utoipa::path(post,path="/api/v1/auth/logout",responses((status=204,description="Revoked")))]
 pub async fn logout(State(state):State<ApiState>,headers:HeaderMap)->Result<Response,ApiError>{let auth=authenticate(&state,&headers,true).await?;sqlx::query("DELETE FROM sessions WHERE owner_id=$1 AND id=$2").bind(auth.scope.owner_id).bind(auth.session_id).execute(&state.pool).await?;Ok((axum::http::StatusCode::NO_CONTENT,[(header::SET_COOKIE,format!("orbit_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{}",if state.origin.starts_with("https://"){"; Secure"}else{""}))]).into_response())}
-pub fn router()->Router<ApiState>{Router::new().route("/api/v1/auth/setup",post(setup)).route("/api/v1/auth/login",post(login)).route("/api/v1/auth/logout",post(logout)).route("/api/v1/auth/session",get(current))}
+
+pub fn router()->Router<ApiState>{Router::new().route("/api/v1/auth/status",get(status)).route("/api/v1/auth/setup",post(setup)).route("/api/v1/auth/login",post(login)).route("/api/v1/auth/logout",post(logout)).route("/api/v1/auth/session",get(current))}
