@@ -574,6 +574,53 @@ dd {
   border-radius: 8px;
   font-size: 14px;
 }
+.chat-shell {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 24px;
+  align-items: start;
+}
+.chat-sidebar {
+  background: white;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+}
+.chat-new {
+  font-weight: 600;
+}
+.chat-active a {
+  font-weight: 700;
+  color: var(--ink);
+}
+.chat-main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.chat-main .chat-log {
+  margin-bottom: 0;
+  gap: 16px;
+}
+.message.assistant {
+  background: white;
+  border: 1px solid var(--line);
+  margin-right: auto;
+}
+.chat-time {
+  display: block;
+  font-size: 12px;
+  color: var(--secondary);
+  margin-top: 8px;
+}
+.chat-composer textarea {
+  min-height: 64px;
+}
 .progress {
   padding: 12px 0;
   color: var(--secondary);

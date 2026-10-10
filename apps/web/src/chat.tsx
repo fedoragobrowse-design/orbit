@@ -99,7 +99,50 @@ function RelatedTasks({
     </Resource>
   );
 }
-
+function ThreadReplies({
+  eventId,
+  correlationId,
+}: {
+  eventId: string;
+  correlationId: string;
+}) {
+  return (
+    <Resource
+      path="/tasks"
+      empty={<p className="muted">Working on it — replies appear here.</p>}
+    >
+      {(rows) => {
+        const related = relatedTo(rows, eventId, correlationId);
+        if (!related.length)
+          return (
+            <p className="muted">Working on it — replies appear here.</p>
+          );
+        return related.map((t) => {
+          const outcome = text(t.outcome);
+          const waiting = text(t.wait_reason);
+          return (
+            <article className="message assistant" key={t.id}>
+              <div>
+                {outcome ||
+                  (waiting
+                    ? `Waiting: ${label(waiting)} — approve under Approvals.`
+                    : `${text(t.title) || "Task"} (${label(t.state)})`)}
+              </div>
+              <span className="chat-time">
+                {timestamp(t.updated_at)}{" "}
+                <Link to={`/tasks/${t.id}`}>task</Link>
+              </span>
+              <Evidence
+                correlationId={text(t.correlation_id)}
+                evidence={t.evidence}
+              />
+            </article>
+          );
+        });
+      }}
+    </Resource>
+  );
+}
 export function Chat() {
   const [params, setParams] = useSearchParams();
   const conversation = params.get("conversation");
@@ -130,127 +173,91 @@ export function Chat() {
   const payload = detail.data ? payloadOf(detail.data) : null;
 
   return (
-    <>
-      <PageHeader
-        title={(detail.data && conversationTitle(detail.data)) || "Chat"}
-        description="An assistant that works within your permissions, with a task record for every request."
-      />
-      <div className="detail-grid">
-        <section>
-          <div className="chat-log" aria-live="polite">
-            {!conversation && (
-              <Empty title="What would you like to work on?">
-                Send a message to create a USER_MESSAGE event. The backend
-                queues a notification task for it, which you can inspect under
-                Tasks.
-              </Empty>
-            )}
-            {detail.isPending && conversation && (
-              <p role="status">Loading conversation…</p>
-            )}
-            {detail.error && (
-              <ErrorNotice
-                error={detail.error}
-                retry={() => detail.refetch()}
-              />
-            )}
-            {detail.data && payload && (
-              <article className="message user">
-                <header>
-                  <strong>You</strong>
-                  <span>{timestamp(detail.data.timestamp)}</span>
-                </header>
-                <div>{text(payload.text)}</div>
-                <Evidence
-                  correlationId={correlationId}
-                  evidence={detail.data.classification}
-                />
-              </article>
-            )}
-          </div>
-          {conversation && (
-            <section className="panel section">
-              <h2>Related tasks</h2>
-              <RelatedTasks
-                eventId={conversation}
-                correlationId={correlationId}
-              />
-            </section>
+    <div className="chat-shell">
+      <aside className="chat-sidebar">
+        <Link className="safe-link chat-new" to="/chat">
+          + New chat
+        </Link>
+        <Resource path="/events" empty={<p>No chats yet.</p>}>
+          {(rows) => {
+            const conversations = rows.filter(
+              (r) => text(r.event_type) === "USER_MESSAGE",
+            );
+            if (!conversations.length) return <p>No chats yet.</p>;
+            return conversations.slice(0, 30).map((r) => (
+              <div
+                className={
+                  r.id === conversation
+                    ? "summary-line chat-active"
+                    : "summary-line"
+                }
+                key={r.id}
+              >
+                <Link to={`/chat?conversation=${r.id}`}>
+                  {conversationTitle(r)}
+                </Link>
+              </div>
+            ));
+          }}
+        </Resource>
+      </aside>
+      <section className="chat-main">
+        <div className="chat-log" aria-live="polite">
+          {!conversation && (
+            <Empty title="What would you like to work on?">
+              Send a message below. Orbit records it and starts work — replies
+              and approvals appear here.
+            </Empty>
           )}
-          <form
-            className="composer"
-            onSubmit={(e) => {
-              e.preventDefault();
-              send.mutate();
-            }}
-          >
-            <p className="muted">General Assistant only in this build.</p>
-            <Textarea
-              label="Message Orbit"
-              required
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+          {detail.isPending && conversation && (
+            <p role="status">Loading conversation…</p>
+          )}
+          {detail.error && (
+            <ErrorNotice error={detail.error} retry={() => detail.refetch()} />
+          )}
+          {detail.data && payload && (
+            <article className="message user">
+              <div>{text(payload.text)}</div>
+              <span className="chat-time">
+                {timestamp(detail.data.timestamp)}
+              </span>
+            </article>
+          )}
+          {conversation && (
+            <ThreadReplies
+              eventId={conversation}
+              correlationId={correlationId}
             />
-            <div className="actions">
-              <button disabled={send.isPending || !draft.trim()}>
-                {send.isPending ? "Sending…" : "Send message"}
-              </button>
-              <Link className="safe-link" to="/tasks">
-                View tasks
-              </Link>
-            </div>
-            <p className="muted">
-              Each sent message creates a USER_MESSAGE event; the backend
-              queues a notification task and notification for it. File
-              attachments ride the agent run instead of a separate upload
-              API in this build.
-            </p>
-            {send.error && <ErrorNotice error={send.error} />}
-          </form>
-        </section>
-        <aside>
-          <section className="panel section">
-            <h2>Conversations</h2>
-            <Link className="safe-link" to="/chat">
-              New conversation
-            </Link>
-            <Resource
-              path="/events"
-              empty={<p>No conversations yet.</p>}
-            >
-              {(rows) => {
-                const conversations = rows.filter(
-                  (r) => text(r.event_type) === "USER_MESSAGE",
-                );
-                if (!conversations.length)
-                  return <p>No conversations yet.</p>;
-                return conversations.map((r) => (
-                  <div className="summary-line" key={r.id}>
-                    <Link to={`/chat?conversation=${r.id}`}>
-                      {conversationTitle(r)}
-                    </Link>
-                  </div>
-                ));
-              }}
-            </Resource>
-          </section>
-          <section className="panel">
-            <h2>Task trace</h2>
-            {conversation ? (
-              <RelatedTasks
-                eventId={conversation}
-                correlationId={correlationId}
-              />
-            ) : (
-              <p>
-                Each sent message creates a durable task. The trace for the
-                open conversation will appear here.
-              </p>
-            )}
-          </section>
-        </aside>
-      </div>
-    </>
+          )}
+        </div>
+        <form
+          className="composer chat-composer"
+          onSubmit={(e) => {
+            e.preventDefault();
+            send.mutate();
+          }}
+        >
+          <Textarea
+            label="Message Orbit"
+            required
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (draft.trim() && !send.isPending) send.mutate();
+              }
+            }}
+          />
+          <div className="actions">
+            <button disabled={send.isPending || !draft.trim()}>
+              {send.isPending ? "Sending…" : "Send"}
+            </button>
+          </div>
+          {send.error && <ErrorNotice error={send.error} />}
+        </form>
+      </section>
+    </div>
   );
 }
 
