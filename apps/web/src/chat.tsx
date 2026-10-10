@@ -308,8 +308,8 @@ export function Chat() {
   );
 }
 function ChatPickers({ chatModel, setChatModel, chatRole, setChatRole, modelFilter, setModelFilter }: { chatModel: string; setChatModel: (v: string) => void; chatRole: string; setChatRole: (v: string) => void; modelFilter: string; setModelFilter: (v: string) => void }) {
-  const models = useQuery({ queryKey: ["models"], queryFn: () => api<{ items: RecordData[] }>("/models").then((r) => r.items ?? []) });
-  const providers = useQuery({ queryKey: ["providers"], queryFn: () => api<{ items: RecordData[] }>("/providers").then((r) => r.items ?? []) });
+  const models = useQuery({ queryKey: ["models"], queryFn: () => api<{ items: RecordData[] }>("/models?limit=100").then((r) => r.items ?? []) });
+  const providers = useQuery({ queryKey: ["providers"], queryFn: () => api<{ items: RecordData[] }>("/providers?limit=100").then((r) => r.items ?? []) });
   const providerName = (id: string) => { const p = (providers.data ?? []).find((r) => r.id === id); return p ? String(p.name ?? p.id) : ""; };
   const items = (models.data ?? []).filter((m) => { const hay = `${String(m.name ?? "")} ${String(m.model ?? "")} ${providerName(String(m.provider_id ?? ""))}`.toLowerCase(); return hay.includes(modelFilter.toLowerCase()); });
   return (
