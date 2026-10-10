@@ -546,6 +546,11 @@ function NewAutomation({ onDone }: { onDone: () => void }) {
     notify: "NONE",
     instructions: "",
   });
+  const templates = [
+    { name: "Weekly review", kind: "cron", expression: "0 9 * * 1", notify: "IN_APP", instructions: "Weekly review: list what shipped, what is stuck, and what needs my decision. Read Home brief, open tasks and pending approvals." },
+    { name: "Bill reminders", kind: "event", eventType: "EMAIL_RECEIVED", notify: "PUSH", instructions: "When a bill arrives, queue a summary and remind me before it is due. Never pay or reply without my approval." },
+    { name: "File watcher", kind: "event", eventType: "EMAIL_RECEIVED", notify: "EMAIL_DIGEST", instructions: "Watch for shared-file notifications and add a digest entry summarizing what changed." },
+  ] as const;
   const create = useMutation({
     mutationFn: () => {
       const trigger =
@@ -577,6 +582,17 @@ function NewAutomation({ onDone }: { onDone: () => void }) {
         create.mutate();
       }}
     >
+      <Select
+        label="Start from a template (optional)"
+        value=""
+        onChange={(e) => {
+          const t = templates[Number(e.target.value)];
+          if (t) setForm({ ...form, kind: t.kind, expression: "expression" in t ? t.expression : "", eventType: "eventType" in t ? t.eventType : form.eventType, notify: t.notify, instructions: t.instructions });
+        }}
+      >
+        <option value="">Blank automation…</option>
+        {templates.map((t, i) => <option key={t.name} value={String(i)}>{t.name}</option>)}
+      </Select>
       <Select
         label="Trigger kind"
         value={form.kind}
