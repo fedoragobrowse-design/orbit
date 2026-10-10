@@ -864,6 +864,7 @@ export function Settings() {
       </section>
       {save.error && <ErrorNotice error={save.error} />}{" "}
       {notice && <p role="status">{notice}</p>}
+      <PasswordSecurity />
       <ApiTokens />
     </>
   );
@@ -900,6 +901,36 @@ function ApiTokens() {
         <Input label="Token name" value={name} onChange={(e) => setName(e.target.value)} required maxLength={64} placeholder="laptop" />
         <div className="actions"><button type="submit" disabled={!name.trim() || create.isPending}>Mint token</button></div>
       </form>
+    </section>
+  );
+}
+function PasswordSecurity() {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [code, setCode] = useState<string | null>(null);
+  const [done, setDone] = useState("");
+  const change = useMutation({
+    mutationFn: () => post<{ changed: boolean }>("/auth/change-password", { current_password: current, new_password: next }),
+    onSuccess: () => { setCurrent(""); setNext(""); setDone("Password changed. Other sessions signed out."); },
+  });
+  const mint = useMutation({
+    mutationFn: () => post<{ recovery_code: string; expires_at: string }>("/auth/recovery-code/mint"),
+    onSuccess: (d) => setCode(d.recovery_code),
+  });
+  return (
+    <section className="panel form">
+      <h2>Password and recovery</h2>
+      <p className="muted">Change your password here. Keep the one-time recovery code somewhere safe — it is the only way back in if you forget your password. It works once and expires in 24 hours.</p>
+      {done && <p role="status">{done}</p>}
+      {(change.error ?? mint.error) && <ErrorNotice error={(change.error ?? mint.error) as Error} retry={() => { change.reset(); mint.reset(); }} />}
+      <form aria-label="Change password" onSubmit={(e) => { e.preventDefault(); change.mutate(); }}>
+        <Input label="Current password" type="password" autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} />
+        <Input label="New password (12+ characters)" type="password" autoComplete="new-password" required minLength={12} value={next} onChange={(e) => setNext(e.target.value)} />
+        <div className="actions"><button type="submit" disabled={!current || next.length < 12 || change.isPending}>Change password</button></div>
+      </form>
+      <div className="actions"><button className="secondary" disabled={mint.isPending} onClick={() => mint.mutate()}>Show a new recovery code</button></div>
+      {code && <p role="status"><code>{code}</code> — copy it now, Orbit never shows it again.</p>}
+      <p className="muted">Locked out entirely? Run <code>orbit-server recovery-code</code> on the server, then use Forgot password on the sign-in page.</p>
     </section>
   );
 }

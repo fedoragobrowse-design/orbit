@@ -230,6 +230,7 @@ function Auth({
   onAuthenticated: (s: Session) => void;
 }) {
   const [setup, setSetup] = useState(false);
+  const [forgot, setForgot] = useState(false);
   const status = useQuery({
     queryKey: ["auth-status"],
     queryFn: () => api<{ configured: boolean }>("/auth/status"),
@@ -253,14 +254,22 @@ function Auth({
     },
     onSuccess: onAuthenticated,
   });
+  const [recoverValues, setRecoverValues] = useState({ email: "", recovery_code: "", new_password: "" });
+  const [recovered, setRecovered] = useState(false);
+  const recover = useMutation({
+    mutationFn: () => post("/auth/recover", { email: recoverValues.email, recovery_code: recoverValues.recovery_code, new_password: recoverValues.new_password }),
+    onSuccess: () => { setRecovered(true); setForgot(false); },
+  });
   return (
     <main className="auth panel">
       <span className="brand">Orbit</span>
-      <h1>{setup ? "Create your workspace" : "Welcome back"}</h1>
+      <h1>{forgot ? "Reset your password" : setup ? "Create your workspace" : "Welcome back"}</h1>
       <p>
-        {setup
-          ? "Use the one-use setup token from your server to create the owner. Optional models and connections can be added afterward."
-          : "Sign in to your personal workspace."}
+        {forgot
+          ? "Enter your email, the one-time recovery code, and a new password. The code works once."
+          : setup
+            ? "Use the one-use setup token from your server to create the owner. Optional models and connections can be added afterward."
+            : "Sign in to your personal workspace."}
       </p>
       <div className="auth-tabs">
         <button
@@ -280,6 +289,16 @@ function Auth({
           </button>
         )}
       </div>
+      {forgot ? (
+        <form aria-label="Recover password" onSubmit={(e) => { e.preventDefault(); recover.mutate(); }}>
+          <Input label="Email" type="email" required autoComplete="username" value={recoverValues.email} onChange={(e) => setRecoverValues({ ...recoverValues, email: e.target.value })} />
+          <Input label="Recovery code" required autoComplete="off" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" value={recoverValues.recovery_code} onChange={(e) => setRecoverValues({ ...recoverValues, recovery_code: e.target.value })} />
+          <Input label="New password (12+ characters)" type="password" required autoComplete="new-password" minLength={12} value={recoverValues.new_password} onChange={(e) => setRecoverValues({ ...recoverValues, new_password: e.target.value })} />
+          <button disabled={recover.isPending || recoverValues.new_password.length < 12}>{recover.isPending ? "Resetting…" : "Reset password"}</button>
+          {recover.error && <ErrorNotice error={recover.error} />}
+          <div className="actions"><button type="button" className="secondary" onClick={() => setForgot(false)}>Back to sign in</button></div>
+        </form>
+      ) : (
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -329,6 +348,11 @@ function Auth({
         </button>
         {auth.error && <ErrorNotice error={auth.error} />}
       </form>
+      )}
+      {!forgot && !setup && (
+        <div className="actions"><button type="button" className="secondary" onClick={() => setForgot(true)}>Forgot password?</button></div>
+      )}
+      {recovered && <p role="status">Password reset. Sign in with your new password.</p>}
       {error instanceof Error &&
         !("status" in error && error.status === 401) && (
           <ErrorNotice error={error} />

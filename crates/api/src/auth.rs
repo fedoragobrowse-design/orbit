@@ -54,6 +54,10 @@ pub async fn authenticate(state:&ApiState,headers:&HeaderMap,mutation:bool)->Res
 pub struct SetupRequest {pub setup_token:String,pub email:String,pub display_name:String,pub password:String}
 #[derive(Deserialize,ToSchema)] #[serde(deny_unknown_fields)]
 pub struct LoginRequest {pub email:String,pub password:String}
+#[derive(Deserialize,ToSchema)] #[serde(deny_unknown_fields)]
+pub struct ChangePasswordRequest {pub current_password:String,pub new_password:String}
+#[derive(Deserialize,ToSchema)] #[serde(deny_unknown_fields)]
+pub struct RecoverRequest {pub email:String,pub recovery_code:String,pub new_password:String}
 #[derive(Serialize,ToSchema)]
 pub struct User {pub id:Uuid,pub email:String,pub display_name:String}
 #[derive(Serialize,ToSchema)]
@@ -110,5 +114,55 @@ pub async fn current(State(state):State<ApiState>,headers:HeaderMap)->Result<Jso
 pub async fn status(State(state):State<ApiState>)->Result<Json<Value>,ApiError>{let row=sqlx::query("SELECT owner_id IS NOT NULL AS configured FROM installation WHERE singleton").fetch_one(&state.pool).await?;Ok(Json(json!({"configured":row.get::<bool,_>("configured")})))}
 #[utoipa::path(post,path="/api/v1/auth/logout",responses((status=204,description="Revoked")))]
 pub async fn logout(State(state):State<ApiState>,headers:HeaderMap)->Result<Response,ApiError>{let auth=authenticate(&state,&headers,true).await?;sqlx::query("DELETE FROM sessions WHERE owner_id=$1 AND id=$2").bind(auth.scope.owner_id).bind(auth.session_id).execute(&state.pool).await?;Ok((axum::http::StatusCode::NO_CONTENT,[(header::SET_COOKIE,format!("orbit_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{}",if state.origin.starts_with("https://"){"; Secure"}else{""}))]).into_response())}
+fn session_only(auth:&AuthSession)->Result<(),ApiError>{if auth.session_id==Uuid::nil(){return Err(Error::Forbidden.into())}Ok(())}
+fn recovery_code()->String{let raw=random();let h=raw[..20].to_uppercase();format!("{}-{}-{}-{}-{}",&h[0..4],&h[4..8],&h[8..12],&h[12..16],&h[16..20])}
+async fn argon2_hash(password:String)->Result<String,ApiError>{tokio::task::spawn_blocking(move||Argon2::default().hash_password(password.as_bytes(),&SaltString::generate(&mut OsRng)).map(|p|p.to_string())).await.map_err(|_|Error::Unavailable("password hashing unavailable".into()))?.map_err(|_|Error::Unavailable("password hashing failed".into()).into())}
+async fn argon2_verify(password:String,encoded:String)->Result<bool,ApiError>{tokio::task::spawn_blocking(move||PasswordHash::new(&encoded).map(|p|Argon2::default().verify_password(password.as_bytes(),&p).is_ok()).unwrap_or(false)).await.map_err(|_|Error::Unavailable("password verification unavailable".into()).into())}
+#[utoipa::path(post,path="/api/v1/auth/change-password",request_body=ChangePasswordRequest,responses((status=200,description="Changed"),(status=401,description="Current password wrong")))]
+pub async fn change_password(State(state):State<ApiState>,headers:HeaderMap,Json(input):Json<ChangePasswordRequest>)->Result<Json<Value>,ApiError>{
+ let auth=authenticate(&state,&headers,true).await?;session_only(&auth)?;
+ if input.new_password.len()<12||input.new_password.len()>1024{return Err(Error::Validation("new password must be 12–1024 characters".into()).into())}
+ let row=sqlx::query("SELECT password_hash FROM users WHERE id=$1").bind(auth.scope.owner_id).fetch_one(&state.pool).await?;
+ if !argon2_verify(input.current_password,row.get::<String,_>("password_hash")).await?{return Err(Error::Unauthorized.into())}
+ let encoded=argon2_hash(input.new_password).await?;
+ let mut tx=state.pool.begin().await?;
+ sqlx::query("UPDATE users SET password_hash=$1 WHERE id=$2").bind(encoded).bind(auth.scope.owner_id).execute(&mut *tx).await?;
+ sqlx::query("DELETE FROM sessions WHERE owner_id=$1 AND id!=$2").bind(auth.scope.owner_id).bind(auth.session_id).execute(&mut *tx).await?;
+ tx.commit().await?;Ok(Json(json!({"changed":true})))
+}
+pub async fn mint_recovery_code_inner(state:&ApiState)->orbit_core::Result<String>{
+ let code=recovery_code();
+ sqlx::query("UPDATE installation SET recovery_token_hash=$1,recovery_token_expires=now()+interval '24 hours' WHERE singleton").bind(hash(&code)).execute(&state.pool).await?;
+ Ok(code)
+}
+#[utoipa::path(post,path="/api/v1/auth/recovery-code/mint",responses((status=200,description="Code shown once")))]
+pub async fn mint_recovery_code(State(state):State<ApiState>,headers:HeaderMap)->Result<Json<Value>,ApiError>{
+ let auth=authenticate(&state,&headers,true).await?;session_only(&auth)?;
+ let code=mint_recovery_code_inner(&state).await?;
+ let row=sqlx::query("SELECT recovery_token_expires FROM installation WHERE singleton").fetch_one(&state.pool).await?;
+ Ok(Json(json!({"recovery_code":code,"expires_at":row.get::<chrono::DateTime<chrono::Utc>,_>("recovery_token_expires")})))
+}
+#[utoipa::path(post,path="/api/v1/auth/recover",request_body=RecoverRequest,responses((status=200,description="Recover")))]
+pub async fn recover(State(state):State<ApiState>,headers:HeaderMap,Json(input):Json<RecoverRequest>)->Result<Response,ApiError>{
+ origin(&state,&headers)?;
+ if input.new_password.len()<12||input.new_password.len()>1024{return Err(Error::Validation("new password must be 12–1024 characters".into()).into())}
+ let email=input.email.trim().to_lowercase();
+ let ipf=headers.get("x-forwarded-for").and_then(|v|v.to_str().ok()).unwrap_or("").split(',').next().unwrap_or("").trim();
+ let attempts:i32=sqlx::query_scalar("INSERT INTO login_attempts(key_hash,attempts,window_start) VALUES($1,1,now()) ON CONFLICT(key_hash) DO UPDATE SET attempts=CASE WHEN login_attempts.window_start<now()-interval '15 minutes' THEN 1 ELSE login_attempts.attempts+1 END,window_start=CASE WHEN login_attempts.window_start<now()-interval '15 minutes' THEN now() ELSE login_attempts.window_start END RETURNING attempts").bind(hash(&format!("recover:{ipf}:{email}"))).fetch_one(&state.pool).await?;
+ if attempts>10{return Ok((axum::http::StatusCode::TOO_MANY_REQUESTS,Json(json!({"error":{"code":"RATE_LIMITED","message":"Try again later","request_id":Uuid::new_v4()}}))).into_response())}
+ let row=sqlx::query("SELECT recovery_token_hash,recovery_token_expires FROM installation WHERE singleton").fetch_one(&state.pool).await?;
+ let stored=row.get::<Option<String>,_>("recovery_token_hash").unwrap_or_default();
+ let valid=bool::from(stored.as_bytes().ct_eq(hash(&input.recovery_code.trim().to_uppercase()).as_bytes()));
+ let fresh=row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("recovery_token_expires").is_some_and(|e|e>chrono::Utc::now());
+ let user=sqlx::query("SELECT id FROM users WHERE email=$1").bind(&email).fetch_optional(&state.pool).await?;
+ // No email/code oracle: identical 401 whether the email, the code, or the expiry is wrong.
+ if !valid||!fresh||user.is_none(){return Err(Error::Unauthorized.into())}
+ let owner:Uuid=user.unwrap().get("id");
+ let encoded=argon2_hash(input.new_password).await?;
+ let mut tx=state.pool.begin().await?;
+ sqlx::query("UPDATE users SET password_hash=$1 WHERE id=$2").bind(encoded).bind(owner).execute(&mut *tx).await?;
+ sqlx::query("UPDATE installation SET recovery_token_hash=NULL,recovery_token_expires=NULL WHERE singleton").execute(&mut *tx).await?;
+ sqlx::query("DELETE FROM sessions WHERE owner_id=$1").bind(owner).execute(&mut *tx).await?;
+ tx.commit().await?;Ok(Json(json!({"recovered":true})).into_response())}
 
-pub fn router()->Router<ApiState>{Router::new().route("/api/v1/auth/status",get(status)).route("/api/v1/auth/setup",post(setup)).route("/api/v1/auth/login",post(login)).route("/api/v1/auth/logout",post(logout)).route("/api/v1/auth/session",get(current))}
+pub fn router()->Router<ApiState>{Router::new().route("/api/v1/auth/status",get(status)).route("/api/v1/auth/setup",post(setup)).route("/api/v1/auth/login",post(login)).route("/api/v1/auth/logout",post(logout)).route("/api/v1/auth/session",get(current)).route("/api/v1/auth/change-password",post(change_password)).route("/api/v1/auth/recovery-code/mint",post(mint_recovery_code)).route("/api/v1/auth/recover",post(recover))}
