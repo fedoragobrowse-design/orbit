@@ -1547,10 +1547,74 @@ pub async fn update_provider_budget(State(state): State<ApiState>, headers: Head
     Ok(Json(json!({"provider_id": id, "day_usd": input.day_usd, "month_usd": input.month_usd})))
 }
 
+// Local model manager (growth D16): proxy the owner's OLLAMA daemon. No new
+// tables; installed list + pull status come straight from the daemon, and
+// benchmark reports server-measured latency only. Unreachable daemon is 503,
+// never a faked empty list.
+const MAX_OLLAMA_BYTES: usize = 1024 * 1024;
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LocalPull { pub name: String }
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LocalBenchmark { pub model: String }
+async fn ollama_origin(pool: &sqlx::PgPool, owner: Uuid, id: Uuid) -> Result<String, Error> {
+    let row = provider_row(pool, owner, id).await?;
+    let (config, _) = provider_from_row(&row)?;
+    if config.kind != ProviderKind::Ollama { return Err(Error::Validation("local model manager needs an OLLAMA provider".into())); }
+    if !config.enabled { return Err(Error::Validation("provider is disabled".into())); }
+    Ok(config.origin.trim_end_matches('/').to_owned())
+}
+fn clean_tag_name(raw: &str) -> Result<String, Error> {
+    let name = raw.trim();
+    if name.is_empty() || name.len() > 256 || name.chars().any(|c| c.is_control() || c == '\n' || c == '\r') { return Err(Error::Validation("model name must be 1-256 characters".into())); }
+    Ok(name.to_owned())
+}
+async fn ollama_get(origin: &str, path: &str) -> Result<Value, Error> {
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build().map_err(|e| Error::Unavailable(format!("local model client failed: {e}")))?;
+    let resp = client.get(format!("{origin}{path}")).send().await.map_err(|_| Error::Unavailable("local model daemon unreachable".into()))?;
+    if !resp.status().is_success() { return Err(Error::Unavailable(format!("local model daemon returned HTTP {}", resp.status()))); }
+    let bytes = resp.bytes().await.map_err(|_| Error::Unavailable("local model daemon response unreadable".into()))?;
+    if bytes.len() > MAX_OLLAMA_BYTES { return Err(Error::Unavailable("local model daemon response too large".into())); }
+    serde_json::from_slice::<Value>(&bytes).map_err(|_| Error::Unavailable("local model daemon returned invalid JSON".into()))
+}
+#[utoipa::path(get, path = "/api/v1/providers/{id}/local/models", params(("id" = Uuid, Path)), responses((status = 200, body = Value)))]
+pub async fn local_models(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, false).await?;
+    let origin = ollama_origin(&state.pool, a.scope.owner_id, id).await?;
+    let value = ollama_get(&origin, "/api/tags").await?;
+    let models = value.get("models").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+    let names: Vec<Value> = models.iter().filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(|n| json!({"name": n, "size": m.get("size"), "modified_at": m.get("modified_at")}))).collect();
+    Ok(Json(json!({"provider_id": id, "models": names})))
+}
+#[utoipa::path(post, path = "/api/v1/providers/{id}/local/pull", params(("id" = Uuid, Path)), request_body = LocalPull, responses((status = 200, body = Value)))]
+pub async fn local_pull(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>, Json(input): Json<LocalPull>) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, true).await?;
+    let origin = ollama_origin(&state.pool, a.scope.owner_id, id).await?;
+    let name = clean_tag_name(&input.name)?;
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().map_err(|e| Error::Unavailable(format!("local model client failed: {e}")))?;
+    let resp = client.post(format!("{origin}/api/pull")).json(&json!({"name": name, "stream": false})).send().await.map_err(|_| Error::Unavailable("local model daemon unreachable".into()))?;
+    if !resp.status().is_success() { return Err(Error::Unavailable(format!("local model daemon returned HTTP {}", resp.status())).into()); }
+    let body: Value = resp.json().await.map_err(|_| Error::Unavailable("local model daemon response unreadable".into()))?;
+    Ok(Json(json!({"provider_id": id, "name": name, "status": body.get("status").cloned().unwrap_or(Value::Null)})))
+}
+#[utoipa::path(post, path = "/api/v1/providers/{id}/local/benchmark", params(("id" = Uuid, Path)), request_body = LocalBenchmark, responses((status = 200, body = Value)))]
+pub async fn local_benchmark(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>, Json(input): Json<LocalBenchmark>) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, true).await?;
+    let origin = ollama_origin(&state.pool, a.scope.owner_id, id).await?;
+    let model = clean_tag_name(&input.model)?;
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().map_err(|e| Error::Unavailable(format!("local model client failed: {e}")))?;
+    let started = std::time::Instant::now();
+    let resp = client.post(format!("{origin}/api/generate")).json(&json!({"model": model, "prompt": "Reply with the word ok.", "stream": false, "options": {"num_predict": 1}})).send().await.map_err(|_| Error::Unavailable("local model daemon unreachable".into()))?;
+    if !resp.status().is_success() { return Err(Error::Unavailable(format!("local model daemon returned HTTP {}", resp.status())).into()); }
+    let body: Value = resp.json().await.map_err(|_| Error::Unavailable("local model daemon response unreadable".into()))?;
+    let elapsed_ms = started.elapsed().as_millis() as i64;
+    let daemon_ms = body.get("total_duration").and_then(|d| d.as_i64()).map(|ns| ns / 1_000_000);
+    Ok(Json(json!({"provider_id": id, "model": model, "elapsed_ms": elapsed_ms, "daemon_total_ms": daemon_ms, "done": body.get("done").cloned().unwrap_or(Value::Null)})))
+}
 // ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
-
 #[derive(utoipa::OpenApi)]
 #[openapi(
     paths(
@@ -1573,7 +1637,10 @@ pub async fn update_provider_budget(State(state): State<ApiState>, headers: Head
         get_budgets,
         update_budgets,
         get_provider_budget,
-        update_provider_budget
+        update_provider_budget,
+        local_models,
+        local_pull,
+        local_benchmark
     ),
     components(schemas(
         ProviderCreate,
@@ -1583,7 +1650,9 @@ pub async fn update_provider_budget(State(state): State<ApiState>, headers: Head
         ModelCreate,
         ModelUpdate,
         BudgetUpdate,
-        ProviderBudgetUpdate
+        ProviderBudgetUpdate,
+        LocalPull,
+        LocalBenchmark
     ))
 )]
 pub struct ModelsApi;
@@ -1614,6 +1683,9 @@ pub fn router() -> Router<ApiState> {
         )
         .route("/api/v1/model-calls", get(list_model_calls))
         .route("/api/v1/providers/{id}/budget", get(get_provider_budget).put(update_provider_budget))
+        .route("/api/v1/providers/{id}/local/models", get(local_models))
+        .route("/api/v1/providers/{id}/local/pull", post(local_pull))
+        .route("/api/v1/providers/{id}/local/benchmark", post(local_benchmark))
         .route(
             "/api/v1/budgets",
             get(get_budgets).put(update_budgets),

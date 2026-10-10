@@ -198,7 +198,7 @@ function ProviderRow({ row }: { row: RecordData }) {
                 </button>
               </div>
             </form>
-            <ProviderBudget id={String(row.id)} name={text(row.name)} />
+            {String(row.kind) === "OLLAMA" && (<LocalModels id={String(row.id)} name={text(row.name)} />)}
             {removeProvider.error && (
               <ErrorNotice error={removeProvider.error} retry={() => removeProvider.reset()} />
             )}
@@ -237,6 +237,38 @@ function ProviderBudget({ id, name }: { id: string; name: string }) {
         <button className="secondary" type="submit" disabled={save.isPending}>{save.isPending ? "Saving…" : "Save caps"}</button>
       </div>
     </form>
+  );
+}
+/// Local model manager (growth D16). Installed list + pull + benchmark for
+/// one OLLAMA provider. Unreachable daemon surfaces the server error, never
+/// a faked empty list.
+function LocalModels({ id, name }: { id: string; name: string }) {
+  const client = useQueryClient();
+  const installed = useQuery({ queryKey: ["local-models", id], queryFn: () => api<RecordData>(`/providers/${id}/local/models`) });
+  const [pullName, setPullName] = useState("");
+  const [benchName, setBenchName] = useState("");
+  const pull = useMutation({ mutationFn: () => post<RecordData>(`/providers/${id}/local/pull`, { name: pullName }), onSuccess: () => { setPullName(""); client.invalidateQueries({ queryKey: ["local-models", id] }); } });
+  const bench = useMutation({ mutationFn: () => post<RecordData>(`/providers/${id}/local/benchmark`, { model: benchName }) });
+  const rows = (installed.data?.models as RecordData[] | undefined) ?? [];
+  return (
+    <section aria-label={`Local models on ${name}`}>
+      <h3>Local models</h3>
+      {installed.isPending ? (<p role="status"><small>Reading daemon…</small></p>)
+        : installed.error ? (<ErrorNotice error={installed.error} retry={() => installed.refetch()} />)
+        : !rows.length ? (<p className="muted">Daemon reachable, nothing installed yet.</p>)
+        : (<ul>{rows.map((m) => (<li key={text(m.name)}>{text(m.name)}</li>))}</ul>)}
+      {(pull.error ?? bench.error) && (<ErrorNotice error={(pull.error ?? bench.error) as Error} retry={() => { pull.reset(); bench.reset(); }} />)}
+      {pull.data && (<p role="status">Pull: {text((pull.data as RecordData).status)}.</p>)}
+      {bench.data && (<p role="status">Benchmark {text((bench.data as RecordData).model)}: {text((bench.data as RecordData).elapsed_ms)} ms wall{typeof (bench.data as RecordData).daemon_total_ms === "number" ? `, ${text((bench.data as RecordData).daemon_total_ms)} ms daemon` : ""}.</p>)}
+      <form className="grid" aria-label={`Pull a model on ${name}`} onSubmit={(e) => { e.preventDefault(); pull.mutate(); }}>
+        <Input label="Pull model (e.g. gemma3:4b)" value={pullName} onChange={(e) => setPullName(e.target.value)} required maxLength={256} placeholder="gemma3:4b" />
+        <div className="actions"><button className="secondary" type="submit" disabled={!pullName.trim() || pull.isPending}>{pull.isPending ? "Pulling…" : "Pull"}</button></div>
+      </form>
+      <form className="grid" aria-label={`Benchmark a model on ${name}`} onSubmit={(e) => { e.preventDefault(); bench.mutate(); }}>
+        <Input label="Benchmark model" value={benchName} onChange={(e) => setBenchName(e.target.value)} required maxLength={256} placeholder="gemma3:4b" />
+        <div className="actions"><button className="secondary" type="submit" disabled={!benchName.trim() || bench.isPending}>{bench.isPending ? "Running…" : "Benchmark"}</button></div>
+      </form>
+    </section>
   );
 }
 
