@@ -490,7 +490,7 @@ function NewModel() {
     provider_id: "",
     name: "",
     model: "",
-    roles: "CHAT",
+    roles: "FAST",
     context_tokens: "128000",
   });
   const create = useMutation({
@@ -542,7 +542,7 @@ function NewModel() {
         value={form.model}
         onChange={(e) => setForm({ ...form, model: e.target.value })}
       />
-      <Field label="Roles" hint="Comma separated, for example CHAT,PLAN.">
+      <Field label="Roles" hint="Comma separated: FAST, REASONING, CODING, PRIVATE, VISION, EMBEDDING.">
         <input
           value={form.roles}
           onChange={(e) => setForm({ ...form, roles: e.target.value })}
