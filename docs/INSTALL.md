@@ -14,16 +14,24 @@ Status: BUILT — `install.sh` + node installers with signed dry-run transcripts
 
 What it does, in order:
 
-1. Detects OS/arch (`linux`/`darwin` x `amd64`/`arm64`) and Docker/Ollama.
+1. Detects OS/arch (`linux`/`darwin` x `amd64`/`arm64`); checks
+   docker/curl/openssl/sha256-tool and, for each missing one, asks via the
+   existing pipe-safe `confirm()` (skipped under `--yes`/`--dry-run`) then
+   auto-installs with apt-get/dnf/brew — unknown package manager fails
+   closed with the manual command. Honors `--dry-run` (changes nothing).
 2. Fetches `orbit-<version>-<os>-<arch>.tar.gz` plus `.sha256` and
    `.minisig`/`.sig` from `https://github.com/<repo>/releases/download/`.
 3. Verifies SHA-256 (fail closed if the checksum file is missing or
    mismatches), then verifies the minisign/cosign signature and fails
    closed when the key or verifier is missing.
 4. Generates `.env` (`0600`) with `ORBIT_DB_PASSWORD` and
-   `ORBIT_APP_DB_PASSWORD` via `openssl rand` (never echoed).
-5. Runs `docker compose up -d --build`, pulls the embedding-capable
-   Ollama model, waits for `/ready`, prints the URL + bootstrap step.
+   `ORBIT_APP_DB_PASSWORD` via `openssl rand` (never echoed). `.env` holds
+   only DB passwords + ORIGIN — provider credentials never go there.
+5. Runs `docker compose up -d --build`; if `ollama` is missing asks
+   `Install Ollama for local models?` (existing `confirm()`; Linux via
+   `https://ollama.com/install.sh`, macOS via brew, only on yes), then
+   pulls the embedding-capable Ollama model and waits for `/ready`, prints
+   the URL + bootstrap step.
 
 Signature keys (checked in, public parts only):
 
@@ -35,25 +43,31 @@ installer fails closed at step 3 by design. Do not work around this with
 an unverified tarball.
 
 Secrets: generated locally with mode `0600`, never printed. Do not commit
-`.env`.
+`.env` or `credentials.import`.
 
-Embedding model: default `nomic-embed-text` (`ORBIT_EMBED_MODEL` to
-override). The installer runs `ollama list` when ollama is present; if the
-model is missing it runs `ollama pull <model>`. Offline: the pull fails
-with a notice and memory embeddings stay unavailable until you run
-`ollama pull <model>` manually. If ollama is not installed at all, the
-installer notes it and continues.
+Optional API keys + OAuth (`--with-keys`, `--with-oauth`): prompted with
+hidden input (`stty -echo`; values never echoed or logged, only names),
+staged to one-shot `${ORBIT_CREDENTIALS_IMPORT:-credentials.import}`
+(`0600`, `.env`-adjacent, gitignored) — never to `.env`. Chosen design:
+installer stages the file and prints redacted `curl` import templates; the
+owner imports post-setup (credential write-only via the Models API) then
+deletes the file. No server auto-consume in this slice. Import JSON shape:
+`{"provider_credentials": [{"name","kind","origin","credential"}], "oauth_clients": [{"connector","client_id","client_secret"}]}`
+(`credential` matches `ProviderCreate.credential`;
+`PUT /oauth/clients/{connector}` takes `{"client_id","client_secret"}`).
+OAuth (google/outlook/github) stays UNAVAILABLE-awaiting-credentials until
+verified; the app shows "configured, pending verification" — never fake
+green.
 
-No sudo: the installer never calls sudo. It needs a docker-capable user
-(`docker info` must succeed); if it does not, re-run as one.
-
-Flags:
+Package installs: the installer never calls bare sudo; apt-get/dnf package installs use sudo only when not root and sudo exists (same elevation rule as the docker notice). Everything else runs as the invoking user.
 
 ```sh
 ./install.sh --version vX.Y.Z --dry-run    # print plan, change nothing
 ./install.sh --version vX.Y.Z --yes        # skip confirmations
 ./install.sh --version vX.Y.Z --upgrade    # re-pull pinned images, restart
 ./install.sh --version vX.Y.Z --uninstall  # stop containers (volumes + .env kept)
+./install.sh --version vX.Y.Z --with-keys  # also prompt for OpenAI/Anthropic/Gemini keys (hidden, staged 0600)
+./install.sh --version vX.Y.Z --with-oauth google,github  # also prompt for OAuth client-id/secret per connector
 ```
 
 Idempotent: re-running with the same `--version` keeps the existing `.env`

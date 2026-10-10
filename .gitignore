@@ -3,6 +3,7 @@ node_modules/
 apps/web/dist/
 *.log
 .env
+credentials.import
 *.local
 apps/web/test-results/
 tests/e2e/.runtime.lock
