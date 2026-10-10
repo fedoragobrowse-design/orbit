@@ -264,6 +264,7 @@ impl Node {
             MessageType::FileWrite | MessageType::FileMove | MessageType::FileCopy => {
                 self.mutate(envelope)
             }
+            MessageType::BrowserNavigate | MessageType::BrowserFillSubmit => Err(Error::Invalid("BROWSER_AGENT_UNAVAILABLE: sandboxed browser not yet implemented on this node".into())),
             MessageType::Revoke => self.revoke(&envelope.payload),
             other => Err(Error::Invalid(format!(
                 "unsupported message type {}",
@@ -574,6 +575,8 @@ fn label(message_type: MessageType) -> &'static str {
         MessageType::FileList => "FILE_LIST",
         MessageType::FileMove => "FILE_MOVE",
         MessageType::FileCopy => "FILE_COPY",
+        MessageType::BrowserNavigate => "BROWSER_NAVIGATE",
+        MessageType::BrowserFillSubmit => "BROWSER_FILL_SUBMIT",
         MessageType::EventPush => "EVENT_PUSH",
         MessageType::ApprovalRequest => "APPROVAL_REQUEST",
         MessageType::Response => "RESPONSE",

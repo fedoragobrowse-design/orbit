@@ -1243,10 +1243,32 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
                     "status": {"type": "string"},
                 },
             }),
-            effects: read_effects,
+            effects: read_effects.clone(),
             default_risk: RiskLevel::Low,
             permission_keys: vec!["computer.files.read".into()],
             sandbox_required: false,
+        },
+        ToolDescriptor {
+            id: Uuid::from_u128(0x5e6f_7081_92a3_b4c5_d6e7_f809_1a2b_3c4d),
+            name: "browser.navigate".into(),
+            version: "1".into(),
+            input_schema: json!({"type": "object", "required": ["node_id", "url"], "additionalProperties": false, "properties": {"node_id": {"type": "string", "format": "uuid"}, "url": {"type": "string", "minLength": 1, "maxLength": 2048}}}),
+            output_schema: json!({"type": "object", "required": ["status"], "additionalProperties": false, "properties": {"status": {"type": "string"}, "title": {"type": "string", "maxLength": 512}, "text_preview": {"type": "string", "maxLength": 8192}}}),
+            effects: ToolEffects { external: true, modifies_data: false, reversible: true, credential_access: false, affected_party: "third-party web page (untrusted)".into(), network: true },
+            default_risk: RiskLevel::High,
+            permission_keys: vec!["computer.browser".into()],
+            sandbox_required: true,
+        },
+        ToolDescriptor {
+            id: Uuid::from_u128(0x6f70_8192_a3b4_c5d6_e7f8_0901_2b3c_4d5e),
+            name: "browser.fill_submit".into(),
+            version: "1".into(),
+            input_schema: json!({"type": "object", "required": ["node_id", "url", "fields"], "additionalProperties": false, "properties": {"node_id": {"type": "string", "format": "uuid"}, "url": {"type": "string", "minLength": 1, "maxLength": 2048}, "fields": {"type": "object", "maxProperties": 32, "additionalProperties": {"type": "string", "maxLength": 4096}}, "submit_selector": {"type": ["string", "null"], "maxLength": 512}}}),
+            output_schema: json!({"type": "object", "required": ["status"], "additionalProperties": false, "properties": {"status": {"type": "string"}, "title": {"type": "string", "maxLength": 512}, "text_preview": {"type": "string", "maxLength": 8192}}}),
+            effects: ToolEffects { external: true, modifies_data: true, reversible: false, credential_access: false, affected_party: "third-party web page (untrusted)".into(), network: true },
+            default_risk: RiskLevel::High,
+            permission_keys: vec!["computer.browser".into()],
+            sandbox_required: true,
         },
     ]
 }
@@ -1267,6 +1289,8 @@ fn message_for(tool: &str) -> Result<MessageType> {
         // The plan's `files.watch` tool travels the same authorized-read path:
         // the node starts a recursive watch and returns its watch id.
         "files.watch" => MessageType::FileWatch,
+        "browser.navigate" => MessageType::BrowserNavigate,
+        "browser.fill_submit" => MessageType::BrowserFillSubmit,
         _ => return Err(Error::Forbidden),
     })
 }
@@ -1286,6 +1310,19 @@ async fn submit(
     arguments: Value,
 ) -> Result<Dispatch> {
     let descriptor = descriptor_for(tool)?;
+    // Browser tools never touch the host: http(s) URLs only, no file/loopback
+    // smuggling, and the page bytes return UNTRUSTED_EXTERNAL taint at the
+    // node boundary (risk classifier + settle path carry the mark).
+    if tool == "browser.navigate" || tool == "browser.fill_submit" {
+        let url = arguments.get("url").and_then(|u| u.as_str()).unwrap_or_default();
+        let lower = url.to_ascii_lowercase();
+        let ok_scheme = lower.starts_with("https://") || lower.starts_with("http://");
+        let host = lower.split("://").nth(1).unwrap_or_default().split(['/', '?', '#', ':']).next().unwrap_or_default();
+        let loopback = host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]" || host.ends_with(".localhost");
+        if !ok_scheme || url.len() > 2048 || host.is_empty() || loopback || url.chars().any(|c| c.is_control()) {
+            return Err(Error::Validation("browser url must be http(s), ≤2048 chars, no loopback".into()));
+        }
+    }
     orbit_tools::validate_value(&descriptor.input_schema, &arguments)?;
     let node: Uuid = serde_json::from_value(arguments["node_id"].clone())
         .map_err(|_| Error::Validation("node_id must be a uuid".into()))?;
@@ -2002,7 +2039,7 @@ pub async fn seed_tools(state: &ApiState) -> orbit_core::Result<()> {
     for descriptor in all {
         let body = serde_json::to_value(&descriptor)?;
         let digest = orbit_computer_node_protocol::sha256(&serde_json::to_vec(&descriptor)?);
-        sqlx::query("INSERT INTO tool_registry(id,owner_id,name,version,descriptor,descriptor_digest,provider_name) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(owner_id,name) DO UPDATE SET version=EXCLUDED.version,descriptor=EXCLUDED.descriptor,descriptor_digest=EXCLUDED.descriptor_digest")
+        sqlx::query("INSERT INTO tool_registry(id,owner_id,name,version,descriptor,descriptor_digest,provider_name,enabled) VALUES($1,$2,$3,$4,$5,$6,$7,CASE WHEN $3 LIKE 'browser.%' THEN false ELSE true END) ON CONFLICT(owner_id,name) DO UPDATE SET version=EXCLUDED.version,descriptor=EXCLUDED.descriptor,descriptor_digest=EXCLUDED.descriptor_digest,enabled=CASE WHEN tool_registry.name LIKE 'browser.%' THEN tool_registry.enabled ELSE true END")
             .bind(descriptor.id)
             .bind(owner)
             .bind(&descriptor.name)

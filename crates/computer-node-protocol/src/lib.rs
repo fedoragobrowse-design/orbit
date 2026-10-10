@@ -54,7 +54,7 @@ pub struct NodeConfig {
 pub struct EmbeddingConfig { pub origin: String, pub model: String, pub protocol: String }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum MessageType { Register, Authenticate, Heartbeat, Capabilities, FileSearch, FileRead, FileWrite, FileMetadata, FileWatch, FileList, FileMove, FileCopy, EventPush, ApprovalRequest, Response, Ack, Revoke, Challenge, Session }
+pub enum MessageType { Register, Authenticate, Heartbeat, Capabilities, FileSearch, FileRead, FileWrite, FileMetadata, FileWatch, FileList, FileMove, FileCopy, BrowserNavigate, BrowserFillSubmit, EventPush, ApprovalRequest, Response, Ack, Revoke, Challenge, Session }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope { pub version: u16, pub request_id: Uuid, pub node_id: Uuid, pub message_type: MessageType, pub payload: Value }
