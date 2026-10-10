@@ -310,7 +310,15 @@ export function Chat() {
 function ChatPickers({ chatModel, setChatModel, chatRole, setChatRole, modelFilter, setModelFilter }: { chatModel: string; setChatModel: (v: string) => void; chatRole: string; setChatRole: (v: string) => void; modelFilter: string; setModelFilter: (v: string) => void }) {
   const models = useQuery({ queryKey: ["models"], queryFn: () => api<{ items: RecordData[] }>("/models?limit=100").then((r) => r.items ?? []) });
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api<{ items: RecordData[] }>("/providers?limit=100").then((r) => r.items ?? []) });
-  const providerName = (id: string) => { const p = (providers.data ?? []).find((r) => r.id === id); return p ? String(p.name ?? p.id) : ""; };
+  const providerOf = (id: string) => (providers.data ?? []).find((r) => String(r.id) === id);
+  const keyBadge = (m: RecordData) => {
+    if (m.enabled === false) return "disabled";
+    const p = providerOf(String(m.provider_id ?? ""));
+    if (p && p.enabled === false) return "provider off";
+    if (p && p.local === true) return "local, no key needed";
+    return p && (p as RecordData).secret_set ? "key set" : "no key — add in Models";
+  };
+  const providerName = (id: string) => { const p = providerOf(id); return p ? String(p.name ?? p.id) : ""; };
   const items = (models.data ?? []).filter((m) => { const hay = `${String(m.name ?? "")} ${String(m.model ?? "")} ${providerName(String(m.provider_id ?? ""))}`.toLowerCase(); return hay.includes(modelFilter.toLowerCase()); });
   return (
     <div className="chat-pickers">
@@ -318,7 +326,7 @@ function ChatPickers({ chatModel, setChatModel, chatRole, setChatRole, modelFilt
       <Select label="Model (optional — auto when blank)" value={chatModel} onChange={(e) => setChatModel(e.target.value)}>
         <option value="">Auto (role default)</option>
         {items.slice(0, 100).map((m) => (
-          <option key={String(m.id)} value={String(m.id)}>{`${providerName(String(m.provider_id ?? ""))} — ${String(m.name ?? m.model ?? m.id)}`}</option>
+          <option key={String(m.id)} value={String(m.id)}>{`${providerName(String(m.provider_id ?? ""))} — ${String(m.name ?? m.model ?? m.id)} (${keyBadge(m)})`}</option>
         ))}
       </Select>
       <Select label="Function" value={chatRole} onChange={(e) => setChatRole(e.target.value)}>
