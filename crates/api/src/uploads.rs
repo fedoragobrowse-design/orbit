@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::{ApiError, ApiState, authenticate};
-const MAX_DOC_BYTES: usize = 50 * 1024 * 1024;
+const MAX_DOC_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TEXT_CHARS: usize = 200_000;
 /// Extract printable text runs from a PDF byte stream. This is a bounded
 /// intentionally-lossy preview (parenthesized literal strings + hex
@@ -59,8 +59,8 @@ pub struct UploadQuery { pub filename: String, pub content_type: Option<String> 
 #[utoipa::path(post, path = "/api/v1/uploads", responses((status = 200, body = Value)))]
 pub async fn upload_doc(State(state): State<ApiState>, headers: HeaderMap, Query(q): Query<UploadQuery>, body: Body) -> Result<Json<Value>, ApiError> {
     let a = authenticate(&state, &headers, true).await?;
-    let bytes = axum::body::to_bytes(body, MAX_DOC_BYTES + 1).await.map_err(|_| Error::Validation("upload body unreadable".into()))?;
-    if bytes.len() > MAX_DOC_BYTES { return Err(Error::Validation("document exceeds 50 MB".into()).into()); }
+    let bytes = axum::body::to_bytes(body, MAX_DOC_BYTES + 1).await.map_err(|e| if e.to_string().contains("length limit exceeded") { Error::Validation("document exceeds 10 MB".into()) } else { Error::Validation("upload body unreadable".into()) })?;
+    if bytes.len() > MAX_DOC_BYTES { return Err(Error::Validation("document exceeds 10 MB".into()).into()); }
     let name = q.filename.trim();
     if name.is_empty() || name.len() > 256 || name.contains(['\0', '\\']) || name.contains("..") || name.starts_with('/') || name.contains(':') {
         return Err(Error::Validation("upload name fails path-traversal screen".into()).into());

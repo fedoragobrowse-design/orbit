@@ -1,7 +1,7 @@
 #!/bin/sh
 # Orbit installer: pinned tagged releases only. POSIX sh.
 # Usage: ./install.sh --version vX.Y.Z [--yes] [--dry-run] [--upgrade] [--uninstall] [--with-keys] [--with-oauth LIST]
-set -eu
+set -euo pipefail
 VERSION="${ORBIT_VERSION:-${GITHUB_REF_NAME:-${GITHUB_REF:-}}}"
 DRY_RUN=0; ASSUME_YES=0; UPGRADE=0; UNINSTALL=0; WITH_KEYS=0; WITH_OAUTH=""; STAGED=0; PROV_JSON=""; OAUTH_JSON=""; KEY_VAL=""; OAUTH_ID=""; OAUTH_SEC=""
 REPO="${ORBIT_RELEASE_REPO:-fedoragobrowse-design/orbit}"
@@ -56,7 +56,8 @@ post-install credential import (values stay in ${CRED_IMPORT}; commands below ca
   rm "${CRED_IMPORT}"
 HELP
 }
-maybe_install_ollama() { if command -v ollama >/dev/null 2>&1; then return 0; fi; confirm "Install Ollama for local models?" || { log "notice: skipping Ollama install; memory embeddings stay unavailable until you install ollama and run 'ollama pull $EMBED_MODEL'"; return 0; }; case "$OS_ID" in linux) curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 https://ollama.com/install.sh | sh || die "ollama install script failed";; darwin) command -v brew >/dev/null 2>&1 || die "brew is required to install ollama on macOS; install brew (https://brew.sh) or ollama (https://ollama.com) manually"; brew install ollama || die "brew install ollama failed";; esac; }
+maybe_install_ollama() { if command -v ollama >/dev/null 2>&1; then return 0; fi; confirm "Install Ollama for local models?" || { log "notice: skipping Ollama install; memory embeddings stay unavailable until you install ollama and run 'ollama pull $EMBED_MODEL'"; return 0; }; case "$OS_ID" in linux) OTMP="$(mktemp /tmp/ollama-install.XXXXXX.sh)"; trap 'rm -f "$OTMP"; rm -rf "$TMPD"' EXIT INT TERM; curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o "$OTMP" https://ollama.com/install.sh || die "ollama install script download failed"; [ -s "$OTMP" ] || die "ollama install script empty; refusing to run"; sh "$OTMP" || die "ollama install script failed"; rm -f "$OTMP"; trap 'rm -rf "$TMPD"' EXIT INT TERM;; darwin) command -v brew >/dev/null 2>&1 || die "brew is required to install ollama on macOS; install brew (https://brew.sh) or ollama (https://ollama.com) manually"; brew install ollama || die "brew install ollama failed";; esac; }
+# note: ollama.com publishes no checksum/signature for install.sh, so the HTTPS-pinned tmpfile download + non-empty check above is the enforced bound (unlike release tarballs, which are checksum+minisign/cosign verified fail-closed)
 normalize_version() {
   case "$1" in refs/tags/*) printf '%s' "${1#refs/tags/}";; *) printf '%s' "$1";;
   esac
