@@ -1303,26 +1303,34 @@ struct Dispatch {
     fence: i64,
 }
 
-async fn submit(
-    state: &ApiState,
-    scope: &OwnerScope,
-    tool: &str,
-    arguments: Value,
-) -> Result<Dispatch> {
-    let descriptor = descriptor_for(tool)?;
-    // Browser tools never touch the host: http(s) URLs only, no file/loopback
-    // smuggling, and the page bytes return UNTRUSTED_EXTERNAL taint at the
-    // node boundary (risk classifier + settle path carry the mark).
-    if tool == "browser.navigate" || tool == "browser.fill_submit" {
-        let url = arguments.get("url").and_then(|u| u.as_str()).unwrap_or_default();
-        let lower = url.to_ascii_lowercase();
-        let ok_scheme = lower.starts_with("https://") || lower.starts_with("http://");
-        let host = lower.split("://").nth(1).unwrap_or_default().split(['/', '?', '#', ':']).next().unwrap_or_default();
-        let loopback = host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]" || host.ends_with(".localhost");
-        if !ok_scheme || url.len() > 2048 || host.is_empty() || loopback || url.chars().any(|c| c.is_control()) {
-            return Err(Error::Validation("browser url must be http(s), ≤2048 chars, no loopback".into()));
-        }
+/// SSRF screen for browser tool URLs (E19a): strict `Url` parse (userinfo and non-http(s) rejected), decimal-int (`2130706433`) and hex (`0x7f…`) host forms denied, literal IPs checked against the same deny set as `AdmittedEndpoint` (loopback/private/link-local/unspecified/multicast/broadcast/`0.x`), and hostnames resolved via `socket_addrs`-equivalent lookup with every address checked. Unresolvable hostnames pass the screen — DNS-pinning at fetch time is the backstop — so hermetic tests never depend on external DNS.
+pub async fn screen_browser_url(raw: &str) -> Result<(), Error> {
+    if raw.is_empty() || raw.len() > 2048 || raw.chars().any(char::is_control) { return Err(Error::Validation("browser url must be http(s), ≤2048 chars, resolvable to a public address".into())); }
+    let url = reqwest::Url::parse(raw).map_err(|_| Error::Validation("browser url must be http(s), ≤2048 chars, resolvable to a public address".into()))?;
+    if !matches!(url.scheme(), "http" | "https") { return Err(Error::Validation("browser url must be http(s), ≤2048 chars, resolvable to a public address".into())); }
+    if !url.username().is_empty() || url.password().is_some() { return Err(Error::Validation("browser url must not embed credentials".into())); }
+    let host = url.host_str().ok_or(Error::Validation("browser url must be http(s), ≤2048 chars, resolvable to a public address".into()))?;
+    let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host).to_owned();
+    if host.parse::<u32>().is_ok() { return Err(Error::Validation("browser url must not use a numeric host form".into())); }
+    if host.split('.').any(|s| s.len() > 2 && (s.starts_with("0x") || s.starts_with("0X"))) { return Err(Error::Validation("browser url must not use a numeric host form".into())); }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if browser_ip_denied(ip) { return Err(Error::Validation("browser url must resolve to a public address".into())); }
+        return Ok(());
     }
+    let port = url.port_or_known_default().unwrap_or(443);
+    if let Ok(addrs) = tokio::net::lookup_host((host.as_str(), port)).await { for a in addrs { if browser_ip_denied(a.ip()) { return Err(Error::Validation("browser url must resolve to a public address".into())); } } }
+    Ok(())
+}
+fn browser_ip_denied(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v) => v.is_loopback() || v.is_private() || v.is_link_local() || v.is_unspecified() || v.is_multicast() || v.is_broadcast() || v.octets()[0] == 0,
+        std::net::IpAddr::V6(v) => v.is_loopback() || v.is_unique_local() || v.is_unicast_link_local() || v.is_unspecified() || v.is_multicast() || v.to_ipv4_mapped().is_some_and(|v| browser_ip_denied(std::net::IpAddr::V4(v))),
+    }
+}
+async fn submit(state: &ApiState, scope: &OwnerScope, tool: &str, arguments: Value) -> Result<Dispatch> {
+    let descriptor = descriptor_for(tool)?;
+    // Browser tools never touch the host: the URL screen above runs before any node dispatch, and the page bytes return UNTRUSTED_EXTERNAL taint at the node boundary (risk classifier + settle path carry the mark).
+    if tool == "browser.navigate" || tool == "browser.fill_submit" { screen_browser_url(arguments.get("url").and_then(|u| u.as_str()).unwrap_or_default()).await?; }
     orbit_tools::validate_value(&descriptor.input_schema, &arguments)?;
     let node: Uuid = serde_json::from_value(arguments["node_id"].clone())
         .map_err(|_| Error::Validation("node_id must be a uuid".into()))?;

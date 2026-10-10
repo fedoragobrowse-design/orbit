@@ -30,6 +30,7 @@ pub async fn list_sources(State(state): State<ApiState>, headers: HeaderMap) -> 
 pub async fn create_source(State(state): State<ApiState>, headers: HeaderMap, Json(input): Json<SourceCreate>) -> Result<Json<Value>, ApiError> {
     let a = authenticate(&state, &headers, true).await?;
     let src = config_of(&input)?;
+    orbit_calendar::admitted_client(&src.url).await.map_err(ApiError::from)?;
     let id = Uuid::new_v4();
     let cfg = json!({"kind": src.kind, "url": src.url, "username": src.username, "password": src.password});
     sqlx::query("INSERT INTO calendar_sources(id,owner_id,name,configuration,enabled) VALUES($1,$2,$3,$4,$5)").bind(id).bind(a.scope.owner_id).bind(&input.name).bind(&cfg).bind(input.enabled).execute(&state.pool).await?;

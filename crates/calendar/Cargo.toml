@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 [dependencies]
 orbit-core = { path = "../core" }
+orbit-model-router = { path = "../model-router" }
 async-trait.workspace = true
 sqlx.workspace = true
 tokio.workspace = true

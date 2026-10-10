@@ -29,6 +29,10 @@ fn url_ok(v: &str) -> Result<String, Error> {
     if !lower.starts_with("http://") && !lower.starts_with("https://") { return Err(Error::Validation("base url must be http(s)".into())); }
     Ok(v.to_owned())
 }
+fn ha_endpoint(base: &str) -> Result<orbit_model_router::endpoint::AdmittedEndpoint, Error> {
+    let base = url_ok(base)?;
+    Ok(orbit_model_router::endpoint::AdmittedEndpoint { origin: base, local: false, admitted_addresses: vec![] })
+}
 fn token_ok(v: &str) -> Result<(), Error> {
     if v.is_empty() || v.len() > MAX_TOKEN_BYTES { return Err(Error::Validation("invalid token size".into())); }
     Ok(())
@@ -51,6 +55,7 @@ pub async fn create_ha(State(state): State<ApiState>, headers: HeaderMap, Json(i
     let a = authenticate(&state, &headers, true).await?;
     let name = name_ok(&input.name).map_err(ApiError::from)?;
     let base = url_ok(&input.base_url).map_err(ApiError::from)?;
+    ha_endpoint(&base).map_err(ApiError::from)?.client().await.map_err(ApiError::from)?;
     token_ok(&input.token).map_err(ApiError::from)?;
     let store = SecretStore::open(state.pool.clone(), &state.key_dir).await?;
     let fresh = store.put(&a.scope, "ha-token", input.token.as_bytes()).await?;
@@ -75,11 +80,13 @@ pub async fn sync_ha(State(state): State<ApiState>, headers: HeaderMap, Path(id)
     let Some(cred) = cred else { return Err(Error::Validation("connection has no stored token".into()).into()); };
     let store = SecretStore::open(state.pool.clone(), &state.key_dir).await?;
     let token = String::from_utf8(store.get(&a.scope, cred).await?.to_vec()).map_err(|_| Error::Validation("stored token unreadable".to_string()))?;
-    let url = format!("{}/api/states", base.trim_end_matches('/'));
-    let states: Vec<Value> = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build().map_err(|_| Error::Unavailable("http client unavailable".to_string()))?
-        .get(&url).bearer_auth(&token).send().await.map_err(|_| Error::Unavailable("home assistant unreachable".to_string()))?
-        .error_for_status().map_err(|_| Error::Unavailable("home assistant rejected the request".to_string()))?
-        .json().await.map_err(|_| Error::Validation("home assistant returned invalid states".to_string()))?;
+    let ep = ha_endpoint(&base).map_err(ApiError::from)?;
+    let url = ep.url("api/states").map_err(ApiError::from)?;
+    let req = ep.client().await.map_err(ApiError::from)?.get(url).bearer_auth(&token);
+    let sent = tokio::time::timeout(std::time::Duration::from_secs(20), req.send()).await.map_err(|_| Error::Unavailable("home assistant unreachable (timeout)".to_string()))?;
+    let resp = sent.map_err(|_| ApiError(Error::Unavailable("home assistant unreachable".to_string())))?;
+    if resp.status().is_redirection() { return Err(ApiError(Error::Unavailable("home assistant rejected the request (redirect refused)".to_string()))); }
+    let states: Vec<Value> = resp.error_for_status().map_err(|_| ApiError(Error::Unavailable("home assistant rejected the request".to_string())))?.json().await.map_err(|_| ApiError(Error::Validation("home assistant returned invalid states".to_string())))?;
     let mut stored = 0i64;
     for s in states.iter().take(MAX_ROWS as usize) {
         let entity = s.get("entity_id").and_then(Value::as_str).unwrap_or("");

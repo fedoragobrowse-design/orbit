@@ -68,30 +68,26 @@ fn src(url: &str) -> SourceCreate {
     serde_json::from_value(serde_json::json!({"name": "team", "kind": "ics", "url": url, "enabled": true})).unwrap()
 }
 #[tokio::test]
-async fn calendar_crud_scoped_and_sync_from_local_stub() {
+async fn calendar_crud_scoped_and_loopback_rejected() {
     let (pool, db, key_dir) = pool().await;
     let (state, read, write) = ctx(&pool).await;
-    let stub = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = stub.local_addr().unwrap().port();
-    let body = FIXTURE.to_owned();
-    tokio::spawn(async move {
-        if let Ok((mut s, _)) = stub.accept().await {
-            let mut buf = vec![0u8; 4096];
-            use tokio::io::AsyncReadExt;
-            let _ = s.read(&mut buf).await;
-            let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: text/calendar\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-            use tokio::io::AsyncWriteExt;
-            let _ = s.write_all(resp.as_bytes()).await;
-        }
-    });
-    let created = match calendar::create_source(State(state.clone()), write.clone(), axum::Json(src(&format!("http://127.0.0.1:{port}/feed.ics")))).await { Ok(v) => v, Err(_) => panic!("create source") };
-    let id: Uuid = created.0["id"].as_str().unwrap().parse().unwrap();
-    let out = match calendar::sync_source(State(state.clone()), write.clone(), Path(id)).await { Ok(v) => v, Err(_) => panic!("sync source") };
-    assert_eq!(out.0["stored"], serde_json::json!(3), "stub feed must store 3 events");
-    let listed = match calendar::list_events(State(state.clone()), read.clone(), Query(EventsQuery { from: None, to: None, limit: None })).await { Ok(v) => v, Err(_) => panic!("list events") };
-    assert_eq!(listed.0["items"].as_array().unwrap().len(), 3);
+    // E19a: loopback/plain-http/metadata feed URLs are rejected at create time (AdmittedEndpoint: remote requires HTTPS, loopback/link-local blocked).
+    assert!(calendar::create_source(State(state.clone()), write.clone(), axum::Json(src("http://127.0.0.1:9/feed.ics"))).await.is_err(), "loopback http feed must fail create");
+    assert!(calendar::create_source(State(state.clone()), write.clone(), axum::Json(src("http://169.254.169.254/x.ics"))).await.is_err(), "metadata feed must fail create");
     assert!(calendar::create_source(State(state.clone()), write.clone(), axum::Json(src("gopher://bad.invalid/x"))).await.is_err(), "non-http url must 422");
-    let removed = match calendar::remove_source(State(state.clone()), write.clone(), Path(id)).await { Ok(v) => v, Err(_) => panic!("remove source") };
-    assert_eq!(removed.0["removed"].as_str().unwrap(), id.to_string());
+    // CRUD success path stays local: rows inserted directly (bypassing the create screen), listed and removed via handlers.
+    let owner: Uuid = sqlx::query_scalar("SELECT id FROM users").fetch_one(&pool).await.unwrap();
+    let cfg = serde_json::json!({"kind": "ics", "url": "https://example.invalid/team.ics"});
+    let id1 = Uuid::new_v4();
+    let id2 = Uuid::new_v4();
+    for (id, name) in [(id1, "team"), (id2, "family")] {
+        sqlx::query("INSERT INTO calendar_sources(id,owner_id,name,configuration,enabled) VALUES($1,$2,$3,$4,true)").bind(id).bind(owner).bind(name).bind(cfg.clone()).execute(&pool).await.unwrap();
+    }
+    let listed = match calendar::list_sources(State(state.clone()), read.clone()).await { Ok(v) => v, Err(_) => panic!("list sources") };
+    assert_eq!(listed.0["items"].as_array().unwrap().len(), 2, "both sources listed");
+    let removed = match calendar::remove_source(State(state.clone()), write.clone(), Path(id1)).await { Ok(v) => v, Err(_) => panic!("remove source") };
+    assert_eq!(removed.0["removed"].as_str().unwrap(), id1.to_string());
+    let listed = match calendar::list_sources(State(state.clone()), read.clone()).await { Ok(v) => v, Err(_) => panic!("list sources") };
+    assert_eq!(listed.0["items"].as_array().unwrap().len(), 1, "one source remains");
     cleanup(&pool, &db, &key_dir).await;
 }

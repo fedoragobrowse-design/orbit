@@ -115,28 +115,33 @@ pub fn parse_ics(body: &str) -> Result<Vec<ParsedEvent>> {
     }
     Ok(events)
 }
-fn http() -> Result<reqwest::Client> {
-    reqwest::Client::builder().redirect(reqwest::redirect::Policy::limited(3)).no_proxy().timeout(std::time::Duration::from_secs(20)).build().map_err(|_| Error::Unavailable("calendar client unavailable".into()))
+/// SSRF screen shared by create-time validation and every fetch: the raw URL is parsed, userinfo rejected, the origin re-derived, then `AdmittedEndpoint::client()` pins DNS (`resolve_to_addrs`), disables redirects, and blocks link-local/metadata/private addresses. Remote origins must be https; there is no loopback carve-out for CalDAV basic-auth.
+pub async fn admitted_client(url: &str) -> Result<reqwest::Client> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| Error::Validation("invalid calendar url".into()))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() { return Err(Error::Validation("calendar url must not embed credentials".into())); }
+    let host = parsed.host_str().ok_or(Error::Validation("invalid calendar url".into()))?;
+    let host = if host.contains(':') { format!("[{host}]") } else { host.to_owned() };
+    let origin = match parsed.port() { Some(p) => format!("{}://{host}:{p}", parsed.scheme()), None => format!("{}://{host}", parsed.scheme()) };
+    orbit_model_router::endpoint::AdmittedEndpoint { origin, local: false, admitted_addresses: vec![] }.client().await
+}
+async fn get_body(req: reqwest::RequestBuilder, unreachable: &str, rejected: &str) -> Result<String> {
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(20), req.send()).await.map_err(|_| Error::Unavailable(format!("{unreachable} (timeout)")))?.map_err(|_| Error::Unavailable(format!("{unreachable} (connect)")))?;
+    if resp.status().is_redirection() { return Err(Error::Unavailable(format!("{rejected} (redirect refused)"))); }
+    resp.error_for_status().map_err(|_| Error::Unavailable(rejected.into()))?.text().await.map_err(|_| Error::Unavailable("calendar feed unreadable".into()))
 }
 pub async fn fetch_ics(url: &str) -> Result<String> {
-    let body = http()?.get(url).send().await.map_err(|_| Error::Unavailable("calendar feed unreachable".into()))?.error_for_status().map_err(|_| Error::Unavailable("calendar feed error".into()))?.text().await.map_err(|_| Error::Unavailable("calendar feed unreadable".into()))?;
-    if body.len() > 1024 * 1024 {
-        return Err(Error::Validation("ics feed exceeds 1 MiB bound".into()));
-    }
+    let body = get_body(admitted_client(url).await?.get(url), "calendar feed unreachable", "calendar feed error").await?;
+    if body.len() > 1024 * 1024 { return Err(Error::Validation("ics feed exceeds 1 MiB bound".into())); }
     Ok(body)
 }
 const PROPFIND: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><prop><resourcetype/><C:calendar-data/></prop></propfind>";
 /// CalDAV poll: PROPFIND for calendar objects, then parse any embedded
 /// VEVENT blocks from the multistatus body as ICS.
 pub async fn fetch_caldav(source: &CalendarSource) -> Result<String> {
-    let mut req = http()?.request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &source.url).header("Depth", "1").header("Content-Type", "application/xml").body(PROPFIND.to_owned());
-    if let (Some(u), Some(p)) = (source.username.as_deref(), source.password.as_deref()) {
-        req = req.basic_auth(u, Some(p));
-    }
-    let body = req.send().await.map_err(|_| Error::Unavailable("caldav unreachable".into()))?.error_for_status().map_err(|_| Error::Unavailable("caldav error".into()))?.text().await.map_err(|_| Error::Unavailable("caldav unreadable".into()))?;
-    if body.len() > 1024 * 1024 {
-        return Err(Error::Validation("caldav response exceeds 1 MiB bound".into()));
-    }
+    let mut req = admitted_client(&source.url).await?.request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &source.url).header("Depth", "1").header("Content-Type", "application/xml").body(PROPFIND.to_owned());
+    if let (Some(u), Some(p)) = (source.username.as_deref(), source.password.as_deref()) { req = req.basic_auth(u, Some(p)); }
+    let body = get_body(req, "caldav unreachable", "caldav error").await?;
+    if body.len() > 1024 * 1024 { return Err(Error::Validation("caldav response exceeds 1 MiB bound".into())); }
     Ok(body)
 }
 pub async fn store_events(pool: &PgPool, scope: &OwnerScope, source: &str, events: Vec<ParsedEvent>, raw: &str) -> Result<usize> {
