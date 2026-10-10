@@ -4,7 +4,6 @@ import { api, post, text } from "./api";
 import { Empty, ErrorNotice, Input, Json, PageHeader } from "./ui";
 type Status = { frozen: boolean };
 type Dry = { enabled: boolean; trigger: unknown; preview: { next_run: string | null; missed_would_coalesce: number }; would_dispatch: { consumer: string; task_title: string; checkpoint_phase: string } };
-type MemHit = { id: string; type: string; subject: string; value: unknown };
 type FileHit = { name: string; path: string; size: number };
 export function Ops() {
  const client = useQueryClient();
@@ -66,15 +65,18 @@ export function Ops() {
   </>}
  </>;
 }
-/// Global search box: lexical memory search always; files search when the Files
-/// page has recorded a browse context (node + root) in localStorage.
+/// Global search box: one POST to /api/v1/search returns memory, tasks,
+/// events, notifications and mail; files search when the Files page has
+/// recorded a browse context (node + root) in localStorage.
+type Row = Record<string, unknown>;
+type Envelope = { memory: Row[]; tasks: Row[]; events: Row[]; notifications: Row[]; mail: Row[]; files_note: string };
 export function GlobalSearch() {
- const [q, setQ] = useState("");const [mem, setMem] = useState<MemHit[] | null>(null);const [files, setFiles] = useState<FileHit[] | null>(null);const [hint, setHint] = useState("");
+ const [q, setQ] = useState("");const [hits, setHits] = useState<Envelope | null>(null);const [files, setFiles] = useState<FileHit[] | null>(null);const [hint, setHint] = useState("");
  async function run() {
   setHint("");setFiles(null);
-  try { const r = await api<{ results: MemHit[] }>("/memory/search", { method: "POST", body: JSON.stringify({ query: q, limit: 12 }) });setMem(r.results); } catch { setMem([]); }
+  try { setHits(await api<Envelope>("/search", { method: "POST", body: JSON.stringify({ query: q, limit: 12 }) })); } catch { setHits({ memory: [], tasks: [], events: [], notifications: [], mail: [], files_note: "" }); }
   const raw = localStorage.getItem("orbit.files.context");
-  if (!raw) { setHint("Open Files on a computer to also search files.");return; }
+  if (!raw) return;
   try {
    const c = JSON.parse(raw) as { node_id: string; root_id: string };
    const r = await api<{ results: FileHit[] }>(`/computers/${c.node_id}/files/search?root_ids=${encodeURIComponent(c.root_id)}&query=${encodeURIComponent(q)}&limit=12`);
@@ -83,10 +85,18 @@ export function GlobalSearch() {
  }
  return <div className="search">
   <form className="row" onSubmit={(e) => { e.preventDefault();if (q) run(); }}>
-   <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search memory and files…" aria-label="Global search" />
+   <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search memory, tasks, mail…" aria-label="Global search" />
    <button className="secondary" type="submit">Search</button>
   </form>
-  {mem && <div className="list">{mem.length === 0 ? <Empty title="No memory hits">Try different words.</Empty> : mem.map((m) => <div className="row" key={m.id}><span>{text(m.type)} · {text(m.subject)}</span><code>{text(m.value).slice(0, 80)}</code></div>)}</div>}
+  {hits && <>
+   {hits.memory.length > 0 && <div className="list"><p><small>Memory</small></p>{hits.memory.map((m, i) => <div className="row" key={text(m.id) || `m${i}`}><span>{text(m.type)} · {text(m.subject)}</span></div>)}</div>}
+   {hits.tasks.length > 0 && <div className="list"><p><small>Tasks</small></p>{hits.tasks.map((t, i) => <div className="row" key={text(t.id) || `t${i}`}><span>{text(t.title)}</span><code>{text(t.state)}</code></div>)}</div>}
+   {hits.mail.length > 0 && <div className="list"><p><small>Mail</small></p>{hits.mail.map((m, i) => <div className="row" key={text(m.id) || `e${i}`}><code>{text(m.metadata).slice(0, 80)}</code></div>)}</div>}
+   {hits.events.length > 0 && <div className="list"><p><small>Events</small></p>{hits.events.map((v, i) => <div className="row" key={text(v.id) || `v${i}`}><span>{text(v.event_type)}</span></div>)}</div>}
+   {hits.notifications.length > 0 && <div className="list"><p><small>Notifications</small></p>{hits.notifications.map((n, i) => <div className="row" key={text(n.id) || `n${i}`}><span>{text(n.title)}</span></div>)}</div>}
+   {hits.memory.length + hits.tasks.length + hits.mail.length + hits.events.length + hits.notifications.length === 0 && <Empty title="No hits">Try different words.</Empty>}
+   {hits.files_note && !localStorage.getItem("orbit.files.context") && <p><small>{hits.files_note}</small></p>}
+  </>}
   {files && <div className="list">{files.length === 0 ? <Empty title="No file hits">Try different words.</Empty> : files.map((f) => <div className="row" key={f.path}><span>{text(f.name)}</span><code>{text(f.path)}</code></div>)}</div>}
   {hint && <p><small>{hint}</small></p>}
  </div>;

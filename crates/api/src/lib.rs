@@ -13,6 +13,7 @@ pub mod models;
 pub mod ops;
 pub mod push;
 pub mod runtimes;
+pub mod search;
 pub mod updates;
 use axum::{
     Json, Router,
@@ -87,6 +88,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(ops::router())
         .merge(updates::router())
         .merge(brief::router())
+        .merge(search::router())
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
 }
