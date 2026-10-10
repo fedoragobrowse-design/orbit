@@ -295,6 +295,29 @@ async fn fanout(state: &ApiState, scope: &OwnerScope, payload: &Value) -> (i64, 
     }
     (subs.len() as i64, delivered)
 }
+/// Routed automation notification: PUSH best-efforts a browser push when a
+/// subscription exists; EMAIL_DIGEST appends the digest body to a
+/// `notification_digests` row the owner reads in the app. Advisory: errors
+/// are swallowed, the notifications table stays authoritative.
+pub async fn fanout_routed(state: &ApiState, scope: &OwnerScope, payload: &Value, sinks: &[String]) -> Value {
+    let mut routed = serde_json::Map::new();
+    for sink in sinks {
+        match sink.as_str() {
+            "PUSH" => {
+                let (subs, delivered) = fanout(state, scope, payload).await;
+                routed.insert("PUSH".into(), serde_json::json!({"subscriptions": subs, "delivered": delivered}));
+            }
+            "EMAIL_DIGEST" => {
+                let title = payload.get("title").and_then(Value::as_str).unwrap_or("Orbit digest");
+                let body = payload.get("body").and_then(Value::as_str).unwrap_or("");
+                let queued: i64 = sqlx::query("INSERT INTO notification_digests(id,owner_id,entries) VALUES($1,$2,jsonb_build_array(jsonb_build_object('title',$3::text,'body',$4::text,'at',now()))) ON CONFLICT(owner_id) DO UPDATE SET entries=notification_digests.entries||jsonb_build_object('title',$3::text,'body',$4::text,'at',now()),updated_at=now() RETURNING jsonb_array_length(entries)").bind(uuid::Uuid::new_v4()).bind(scope.owner_id).bind(title).bind(body).fetch_one(&state.pool).await.map(|r: sqlx::postgres::PgRow| r.get("queued")).unwrap_or(-1);
+                routed.insert("EMAIL_DIGEST".into(), serde_json::json!({"queued_entries": queued}));
+            }
+            _ => {}
+        }
+    }
+    Value::Object(routed)
+}
 
 /// Best-effort approval alert. Call only after the approval transaction
 /// commits; never propagates an error.

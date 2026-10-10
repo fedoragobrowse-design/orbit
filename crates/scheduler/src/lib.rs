@@ -768,7 +768,7 @@ pub async fn create(
     }
     serde_json::from_value::<orbit_core::ModelRole>(Value::String(automation.model_role.clone()))
         .map_err(|_| Error::Validation(format!("unknown model_role {}", automation.model_role)))?;
-    if !matches!(automation.notification_behavior.as_str(), "NONE" | "IN_APP") {
+    if !matches!(automation.notification_behavior.as_str(), "NONE" | "IN_APP" | "PUSH" | "EMAIL_DIGEST") {
         return Err(Error::Validation(format!(
             "unknown notification_behavior {}",
             automation.notification_behavior
@@ -901,7 +901,7 @@ pub async fn update(
         current.model_role = v.as_str().unwrap_or("").to_owned();
     }
     if let Some(v) = patch.get("notification_behavior") {
-        if !matches!(v.as_str(), Some("NONE" | "IN_APP")) {
+        if !matches!(v.as_str(), Some("NONE" | "IN_APP" | "PUSH" | "EMAIL_DIGEST")) {
             return Err(Error::Validation("unknown notification_behavior".into()));
         }
         current.notification_behavior = v.as_str().unwrap_or("NONE").to_owned();

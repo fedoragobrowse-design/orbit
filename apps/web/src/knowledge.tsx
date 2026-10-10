@@ -503,13 +503,37 @@ function AutomationManager() {
         {open ? (
           <NewAutomation onDone={() => setOpen(false)} />
         ) : (
-          <button className="secondary" onClick={() => setOpen(true)}>
-            Add automation
-          </button>
+          <div className="actions">
+            <button className="secondary" onClick={() => setOpen(true)}>
+              Add automation
+            </button>
+            <NewBriefShortcut />
+          </div>
         )}
       </div>
     </section>
   );
+}
+/// One click to schedule the daily brief: a 07:00 cron whose instructions say
+/// to read the brief page and nudge the owner. The scheduler fires it like any
+/// other cron; nothing new runs server-side.
+function NewBriefShortcut() {
+  const client = useQueryClient();
+  const create = useMutation({
+    mutationFn: () =>
+      post<RecordData>("/automations", {
+        trigger: { kind: "cron", expression: "0 7 * * *", timezone: "UTC" },
+        notification_behavior: "IN_APP",
+        instructions: "Morning brief: summarize pending approvals, unread notifications and open tasks from the Home brief panel.",
+      }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["/automations"] }),
+  });
+  return <>
+    <button className="secondary" disabled={create.isPending} onClick={() => create.mutate()}>
+      {create.isPending ? "Adding…" : "Add daily morning brief (07:00)"}
+    </button>
+    {create.error && <ErrorNotice error={create.error} retry={() => create.reset()} />}
+  </>;
 }
 
 function NewAutomation({ onDone }: { onDone: () => void }) {
@@ -519,6 +543,7 @@ function NewAutomation({ onDone }: { onDone: () => void }) {
     expression: "",
     runAt: "",
     eventType: "EMAIL_RECEIVED",
+    notify: "NONE",
     instructions: "",
   });
   const create = useMutation({
@@ -536,6 +561,7 @@ function NewAutomation({ onDone }: { onDone: () => void }) {
             : { kind: "event", event_type: form.eventType };
       return post<RecordData>("/automations", {
         trigger,
+        notification_behavior: form.notify,
         instructions: form.instructions,
       });
     },
@@ -588,6 +614,16 @@ function NewAutomation({ onDone }: { onDone: () => void }) {
           <option value="TASK_COMPLETED">Task completed</option>
         </Select>
       )}
+      <Select
+        label="Also tell me"
+        value={form.notify}
+        onChange={(e) => setForm({ ...form, notify: e.target.value })}
+      >
+        <option value="NONE">In the app only when I look</option>
+        <option value="IN_APP">Save a notification for me</option>
+        <option value="PUSH">Push to my devices too</option>
+        <option value="EMAIL_DIGEST">Add to my daily digest</option>
+      </Select>
       <Textarea
         label="Instructions"
         required
