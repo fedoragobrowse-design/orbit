@@ -7,6 +7,8 @@ use reqwest::{Client,Response};
 use serde_json::{Value,json};
 use std::collections::BTreeMap;
 use zeroize::Zeroizing;
+#[cfg(test)]
+use uuid::Uuid;
 
 const RESPONSE_LIMIT:usize=8*1024*1024;
 /// Credential bytes are private and are never included in Debug/error responses.
@@ -19,7 +21,10 @@ impl HttpProvider {
  fn request(&self,path:&str,body:Value,query:&[(&str,&str)])->Result<reqwest::RequestBuilder>{
   let url=if query.is_empty(){self.endpoint.url(path)?}else{self.endpoint.url_with_query(path,query)?};
   let mut request=self.client.post(url).json(&body);
-  if let Some(key)=&self.credential {let key=std::str::from_utf8(key).map_err(|_| Error::Validation("credential must be UTF-8".into()))?;request=match self.config.kind {ProviderKind::Anthropic=>request.header("x-api-key",key),ProviderKind::Gemini=>request.header("x-goog-api-key",key),_=>request.bearer_auth(key)};}
+  if let Some(key)=&self.credential {let key=std::str::from_utf8(key).map_err(|_| Error::Validation("credential must be UTF-8".into()))?;request=match self.config.kind {
+   // OAuth subscriber tokens ride as Bearer with the OAuth beta header, never x-api-key: the endpoint rejects a subscription token sent as an API key. Selection comes only from the explicit provider credential_kind; ambient environment is never consulted.
+   ProviderKind::Anthropic if self.config.credential_kind==CredentialKind::Oauth=>request.bearer_auth(key).header("anthropic-beta","oauth-2025-04-20"),
+   ProviderKind::Anthropic=>request.header("x-api-key",key),ProviderKind::Gemini=>request.header("x-goog-api-key",key),_=>request.bearer_auth(key)};}
   if self.config.kind==ProviderKind::Anthropic {request=request.header("anthropic-version","2023-06-01");}
   Ok(request)
  }
@@ -29,7 +34,8 @@ impl HttpProvider {
   match self.config.kind {
    ProviderKind::Ollama=>{
     let messages:Vec<Value>=request.messages.iter().map(|m| {let mut v=json!({"role":m.role,"content":m.content});if !m.images.is_empty(){v["images"]=json!(m.images.iter().map(|i| &i.data_base64).collect::<Vec<_>>());}if !m.tool_calls.is_empty(){v["tool_calls"]=json!(m.tool_calls.iter().map(|t|json!({"function":{"name":t.name,"arguments":t.arguments}})).collect::<Vec<_>>());}if let Some(id)=&m.tool_call_id {v["tool_name"]=json!(id);}v}).collect();
-    let mut body=json!({"model":model,"messages":messages,"stream":stream,"options":{"num_predict":request.max_output_tokens}});if !request.tools.is_empty(){body["tools"]=openai_tools(&request.tools);}if let Some(schema)=&request.output_schema{body["format"]=schema.clone();}if request.reasoning {body["think"]=json!(true);}Ok(("api/chat".into(),body))
+    // num_ctx follows the model config so long-context models size the KV cache once instead of paging; keep_alive is explicit per-model config only, never ambient env.
+    let mut body=json!({"model":model,"messages":messages,"stream":stream,"options":{"num_predict":request.max_output_tokens,"num_ctx":self.model.context_tokens.max(8192)}});if let Some(keep_alive)=self.model.keep_alive.as_deref(){body["keep_alive"]=json!(keep_alive);}if !request.tools.is_empty(){body["tools"]=openai_tools(&request.tools);}if let Some(schema)=&request.output_schema{body["format"]=schema.clone();}if request.reasoning {body["think"]=json!(true);}Ok(("api/chat".into(),body))
    },
    ProviderKind::OpenaiCompatible=>{
     let messages:Vec<Value>=request.messages.iter().map(|m|{let content=if m.images.is_empty(){json!(m.content)}else{let mut parts=vec![json!({"type":"text","text":m.content})];parts.extend(m.images.iter().map(|i|json!({"type":"image_url","image_url":{"url":format!("data:{};base64,{}",i.mime_type,i.data_base64)}})));json!(parts)};let mut v=json!({"role":m.role,"content":content});if let Some(id)=&m.tool_call_id{v["tool_call_id"]=json!(id);}if !m.tool_calls.is_empty(){v["tool_calls"]=json!(m.tool_calls.iter().map(|t|json!({"id":t.id,"type":"function","function":{"name":t.name,"arguments":t.arguments.to_string()}})).collect::<Vec<_>>());}v}).collect();
@@ -130,4 +136,80 @@ impl Accumulator {
  fn text(&mut self,text:&str,chunks:&mut Vec<ModelChunk>){if !text.is_empty(){self.out.text.push_str(text);chunks.push(ModelChunk::Text{text:text.into()});}}
  fn delta(&mut self,index:usize,id:Option<&str>,name:Option<&str>,arguments:&str,chunks:&mut Vec<ModelChunk>){let t=self.calls.entry(index).or_default();if let Some(id)=id{t.0.push_str(id);}if let Some(name)=name{t.1.push_str(name);}t.2.push_str(arguments);chunks.push(ModelChunk::ToolCallDelta{index,id:id.map(str::to_owned),name:name.map(str::to_owned),arguments:arguments.into()});}
  fn finish(mut self)->Result<ChatResponse>{for(index,(id,name,args))in self.calls{self.out.tool_calls.push(ToolCall{id:if id.is_empty(){format!("call_{index}")}else{id},name,arguments:if args.is_empty(){json!({})}else{serde_json::from_str(&args).map_err(|_|Error::Validation("invalid streamed tool arguments".into()))?}});}Ok(self.out)}
+}
+#[cfg(test)]
+mod tests {
+ use super::*;
+ fn configs(kind:ProviderKind,credential_kind:CredentialKind,context_tokens:u32,keep_alive:Option<&str>)->(ProviderConfig,ModelConfig){
+  let provider=ProviderConfig{id:Uuid::new_v4(),name:"p".into(),kind,origin:"https://example.com".into(),local:false,admitted_addresses:vec![],credential_id:None,credential_kind,rerank_path:None,enabled:true};
+  let model=ModelConfig{id:Uuid::new_v4(),provider_id:provider.id,model:"m".into(),name:"m".into(),roles:vec![],priority:100,context_tokens,capabilities:ProviderCapabilities{chat:true,tools:true,..Default::default()},input_usd_per_million:None,output_usd_per_million:None,keep_alive:keep_alive.map(str::to_owned),enabled:true};
+  (provider,model)
+ }
+ fn provider_with(provider:ProviderConfig,model:ModelConfig,credential:&str)->HttpProvider{
+  let client=Client::new();let endpoint=AdmittedEndpoint{origin:provider.origin.clone(),local:provider.local,admitted_addresses:provider.admitted_addresses.clone()};
+  HttpProvider{config:provider,model,endpoint,client,credential:Some(Zeroizing::new(credential.as_bytes().to_vec()))}
+ }
+ #[test]
+ fn anthropic_api_key_uses_x_api_key_without_beta(){
+  let(provider,model)=configs(ProviderKind::Anthropic,CredentialKind::ApiKey,8192,None);
+  let request=provider_with(provider,model,"sk-test").request("v1/messages",json!({}),&[]).unwrap().build().unwrap();
+  let headers=request.headers();
+  assert_eq!(headers.get("x-api-key").unwrap(),"sk-test");
+  assert!(headers.get(reqwest::header::AUTHORIZATION).is_none());
+  assert!(headers.get("anthropic-beta").is_none());
+  assert_eq!(headers.get("anthropic-version").unwrap(),"2023-06-01");
+ }
+ #[test]
+ fn anthropic_oauth_uses_bearer_with_beta_header(){
+  let(provider,model)=configs(ProviderKind::Anthropic,CredentialKind::Oauth,8192,None);
+  let request=provider_with(provider,model,"sub-token").request("v1/messages",json!({}),&[]).unwrap().build().unwrap();
+  let headers=request.headers();
+  assert!(headers.get("x-api-key").is_none());
+  assert_eq!(headers.get(reqwest::header::AUTHORIZATION).unwrap(),"Bearer sub-token");
+  assert_eq!(headers.get("anthropic-beta").unwrap(),"oauth-2025-04-20");
+ }
+ #[test]
+ fn anthropic_assistant_tool_use_echoes_for_second_turn_ids(){
+  // Port of the AIec round-trip invariant: assistant tool_calls must reappear as tool_use blocks carrying the same id, or the following tool_result turn dangles and Messages answers 400.
+  let(provider,model)=configs(ProviderKind::Anthropic,CredentialKind::ApiKey,8192,None);
+  let client=Client::new();let endpoint=AdmittedEndpoint{origin:provider.origin.clone(),local:false,admitted_addresses:vec![]};
+  let adapter=HttpProvider{config:provider,model,endpoint,client,credential:None};
+  let request=ChatRequest{messages:vec![
+   ChatMessage{role:"user".into(),content:"read a.rs".into(),..Default::default()},
+   ChatMessage{role:"assistant".into(),content:"reading now".into(),tool_calls:vec![ToolCall{id:"tu1".into(),name:"read".into(),arguments:json!({"path":"a.rs"})}],..Default::default()},
+   ChatMessage{role:"tool".into(),content:"contents".into(),tool_call_id:Some("tu1".into()),..Default::default()},
+  ],max_output_tokens:64,..Default::default()};
+  let(_,body)=adapter.chat_body(&request,false).unwrap();
+  let messages=body["messages"].as_array().unwrap();
+  assert_eq!(messages.len(),3);
+  let blocks=messages[1]["content"].as_array().unwrap();
+  assert_eq!(blocks.len(),2);
+  assert_eq!(blocks[0]["type"],"text");
+  assert_eq!(blocks[1]["type"],"tool_use");
+  assert_eq!(blocks[1]["id"],"tu1");
+  assert_eq!(blocks[1]["input"]["path"],"a.rs");
+  assert_eq!(messages[2]["content"][0]["tool_use_id"],"tu1");
+ }
+ #[test]
+ fn ollama_body_sizes_ctx_and_keeps_model_loaded(){
+  let(provider,model)=configs(ProviderKind::Ollama,CredentialKind::ApiKey,32768,Some("5m"));
+  let client=Client::new();let endpoint=AdmittedEndpoint{origin:"http://127.0.0.1:11434".into(),local:true,admitted_addresses:vec![]};
+  let adapter=HttpProvider{config:provider,model,endpoint,client,credential:None};
+  let request=ChatRequest{messages:vec![ChatMessage{role:"user".into(),content:"hi".into(),..Default::default()}],max_output_tokens:64,..Default::default()};
+  let(path,body)=adapter.chat_body(&request,true).unwrap();
+  assert_eq!(path,"api/chat");
+  assert_eq!(body["options"]["num_ctx"],32768);
+  assert_eq!(body["keep_alive"],"5m");
+  assert_eq!(body["stream"],true);
+ }
+ #[test]
+ fn ollama_body_floors_ctx_and_omits_keep_alive_when_unset(){
+  let(provider,model)=configs(ProviderKind::Ollama,CredentialKind::ApiKey,1024,None);
+  let client=Client::new();let endpoint=AdmittedEndpoint{origin:"http://127.0.0.1:11434".into(),local:true,admitted_addresses:vec![]};
+  let adapter=HttpProvider{config:provider,model,endpoint,client,credential:None};
+  let request=ChatRequest{messages:vec![ChatMessage{role:"user".into(),content:"hi".into(),..Default::default()}],max_output_tokens:64,..Default::default()};
+  let(_,body)=adapter.chat_body(&request,false).unwrap();
+  assert_eq!(body["options"]["num_ctx"],8192);
+  assert!(body.get("keep_alive").is_none());
+ }
 }

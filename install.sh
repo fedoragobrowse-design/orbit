@@ -6,6 +6,7 @@ VERSION="${ORBIT_VERSION:-${GITHUB_REF_NAME:-${GITHUB_REF:-}}}"
 DRY_RUN=0; ASSUME_YES=0; UPGRADE=0; UNINSTALL=0; WITH_KEYS=0; WITH_OAUTH=""; STAGED=0; PROV_JSON=""; OAUTH_JSON=""; KEY_VAL=""; OAUTH_ID=""; OAUTH_SEC=""
 REPO="${ORBIT_RELEASE_REPO:-fedoragobrowse-design/orbit}"
 EMBED_MODEL="${ORBIT_EMBED_MODEL:-nomic-embed-text}"
+OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-5m}"; export OLLAMA_KEEP_ALIVE
 READY_TIMEOUT="${ORBIT_READY_TIMEOUT:-180}"
 COMPOSE_FILE="${ORBIT_COMPOSE_FILE:-compose.yaml}"
 ENV_FILE="${ORBIT_ENV_FILE:-.env}"
@@ -101,6 +102,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
 [dry-run] generate ${ENV_FILE} (0600, ORBIT_DB_PASSWORD + ORBIT_APP_DB_PASSWORD via openssl rand, never echoed)
 [dry-run] docker compose -f ${COMPOSE_FILE} up -d --build
 [dry-run] offer optional Ollama install on confirm (https://ollama.com/install.sh on linux, brew on darwin); pull embedding model '${EMBED_MODEL}' via 'ollama pull', skip offline with notice
+[dry-run] local-model efficiency: OLLAMA_KEEP_ALIVE='${OLLAMA_KEEP_ALIVE}' keeps the ollama profile service warm across chat calls (override via OLLAMA_KEEP_ALIVE env)
 [dry-run] wait up to ${READY_TIMEOUT}s for http://127.0.0.1:8080/ready, then print URL + bootstrap-token steps
 DRY
   if [ "$WITH_KEYS" -eq 1 ]; then log "[dry-run] prompt for OpenAI/Anthropic/Gemini API keys (hidden input); stage names only to ${CRED_IMPORT} (0600, values never shown)"; fi

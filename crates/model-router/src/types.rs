@@ -9,6 +9,9 @@ use uuid::Uuid;
 #[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="SCREAMING_SNAKE_CASE")]
 pub enum ProviderKind { Ollama,OpenaiCompatible,Anthropic,Gemini }
+#[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq,Default)]
+#[serde(rename_all="SCREAMING_SNAKE_CASE")]
+pub enum CredentialKind { #[default] ApiKey,Oauth }
 #[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="SCREAMING_SNAKE_CASE")]
 pub enum InstallationMode {LocalOnly,Hybrid,CloudOnly}
@@ -16,9 +19,9 @@ pub enum InstallationMode {LocalOnly,Hybrid,CloudOnly}
 #[serde(default)]
 pub struct ProviderCapabilities {pub chat:bool,pub tools:bool,pub vision:bool,pub structured_output:bool,pub reasoning:bool,pub embeddings:bool,pub rerank:bool}
 #[derive(Debug,Clone,Serialize,Deserialize)]
-pub struct ProviderConfig {pub id:Uuid,pub name:String,pub kind:ProviderKind,pub origin:String,pub local:bool,pub admitted_addresses:Vec<std::net::IpAddr>,pub credential_id:Option<Uuid>,pub rerank_path:Option<String>,pub enabled:bool}
+pub struct ProviderConfig {pub id:Uuid,pub name:String,pub kind:ProviderKind,pub origin:String,pub local:bool,pub admitted_addresses:Vec<std::net::IpAddr>,pub credential_id:Option<Uuid>,#[serde(default)]pub credential_kind:CredentialKind,pub rerank_path:Option<String>,pub enabled:bool}
 #[derive(Debug,Clone,Serialize,Deserialize)]
-pub struct ModelConfig {pub id:Uuid,pub provider_id:Uuid,pub model:String,pub name:String,pub roles:Vec<ModelRole>,pub priority:i32,pub context_tokens:u32,pub capabilities:ProviderCapabilities,pub input_usd_per_million:Option<f64>,pub output_usd_per_million:Option<f64>,pub enabled:bool}
+pub struct ModelConfig {pub id:Uuid,pub provider_id:Uuid,pub model:String,pub name:String,pub roles:Vec<ModelRole>,pub priority:i32,pub context_tokens:u32,pub capabilities:ProviderCapabilities,pub input_usd_per_million:Option<f64>,pub output_usd_per_million:Option<f64>,#[serde(default)]pub keep_alive:Option<String>,pub enabled:bool}
 #[derive(Debug,Clone,Default,Serialize,Deserialize)]
 #[serde(default)]
 pub struct ChatRequest {pub messages:Vec<ChatMessage>,pub tools:Vec<ToolSchema>,pub output_schema:Option<Value>,pub max_output_tokens:u32,pub reasoning:bool}

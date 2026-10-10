@@ -154,6 +154,7 @@ async fn provider_credential_roundtrip_is_write_only() {
             origin: "https://models.example.invalid".into(),
             local: Some(false),
             admitted_addresses: None,
+            credential_kind: None,
             rerank_path: None,
             enabled: None,
             credential: Some(secret_a.into()),

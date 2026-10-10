@@ -9,7 +9,7 @@ use orbit_core::{Error, ModelRole, OwnerScope};
 use orbit_model_router::{
     endpoint::{local_address, AdmittedEndpoint},
     provider::HttpProvider,
-    BudgetLimits, ChatMessage, ChatRequest, ModelConfig, ModelProvider, ProviderCapabilities,
+    BudgetLimits, ChatMessage, ChatRequest, CredentialKind, ModelConfig, ModelProvider, ProviderCapabilities,
     ProviderConfig, ProviderKind,
 };
 use orbit_secrets::SecretStore;
@@ -33,6 +33,7 @@ pub struct ProviderCreate {
     pub origin: String,
     pub local: Option<bool>,
     pub admitted_addresses: Option<Vec<String>>,
+    pub credential_kind: Option<String>,
     pub rerank_path: Option<String>,
     pub enabled: Option<bool>,
     pub credential: Option<String>,
@@ -46,6 +47,7 @@ pub struct ProviderUpdate {
     pub origin: Option<String>,
     pub local: Option<bool>,
     pub admitted_addresses: Option<Vec<String>>,
+    pub credential_kind: Option<String>,
     pub rerank_path: Option<String>,
     pub enabled: Option<bool>,
     pub credential: Option<String>,
@@ -81,6 +83,7 @@ pub struct ModelCreate {
     pub capabilities: Value,
     pub input_usd_per_million: Option<f64>,
     pub output_usd_per_million: Option<f64>,
+    pub keep_alive: Option<String>,
     pub enabled: Option<bool>,
 }
 
@@ -96,6 +99,7 @@ pub struct ModelUpdate {
     pub capabilities: Option<Value>,
     pub input_usd_per_million: Option<Option<f64>>,
     pub output_usd_per_million: Option<Option<f64>>,
+    pub keep_alive: Option<Option<String>>,
     pub enabled: Option<bool>,
     pub expected_revision: i64,
 }
@@ -228,6 +232,27 @@ fn validate_credential(secret: &str) -> Result<(), Error> {
         return Err(Error::Validation("invalid credential size".into()));
     }
     Ok(())
+}
+/// Explicit provider credential selection only: API_KEY sends Anthropic as x-api-key, OAUTH sends Bearer + the OAuth beta header. Ambient environment is never consulted.
+fn parse_credential_kind(raw: Option<String>) -> Result<CredentialKind, Error> {
+    match raw.as_deref().map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("api_key") => Ok(CredentialKind::ApiKey),
+        Some("oauth") => Ok(CredentialKind::Oauth),
+        Some(_) => Err(Error::Validation("unknown credential kind; expected API_KEY or OAUTH".into())),
+    }
+}
+/// Ollama keep_alive is an explicit duration (e.g. 5m, 1h) or 0 to unload; anything else is rejected so a typo cannot pin VRAM.
+fn parse_keep_alive(raw: Option<String>) -> Result<Option<String>, Error> {
+    let Some(value) = raw else { return Ok(None) };
+    let value = value.trim();
+    if value == "0" || value == "-1" {
+        return Ok(Some(value.to_owned()));
+    }
+    let (number, unit) = value.split_at(value.len().saturating_sub(1));
+    if value.len() <= 1 || value.len() > 16 || !matches!(unit, "s" | "m" | "h") || number.parse::<f64>().is_err() {
+        return Err(Error::Validation("invalid keep_alive; use a duration like 5m or 0".into()));
+    }
+    Ok(Some(value.to_owned()))
 }
 
 /// Supported OAuth connector names. Only connectors with a real (planned)
@@ -423,8 +448,8 @@ fn provider_view(
         "origin": config.origin,
         "local": config.local,
         "admitted_addresses": config.admitted_addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+        "credential_kind": serde_json::to_value(&config.credential_kind).unwrap_or(Value::String("API_KEY".into())),
         "rerank_path": config.rerank_path,
-        "enabled": config.enabled,
         "secret_set": config.credential_id.is_some(),
         "revision": revision,
         "created_at": created_at,
@@ -449,6 +474,7 @@ fn model_view(
         "capabilities": serde_json::to_value(&config.capabilities).unwrap_or(Value::Null),
         "input_usd_per_million": config.input_usd_per_million,
         "output_usd_per_million": config.output_usd_per_million,
+        "keep_alive": config.keep_alive,
         "enabled": config.enabled,
         "revision": revision,
         "created_at": created_at,
@@ -520,6 +546,7 @@ pub async fn create_provider(
     let local = input.local.unwrap_or(false);
     let admitted = parse_admitted(input.admitted_addresses.unwrap_or_default())?;
     validate_origin(&input.origin, local, &admitted)?;
+    let credential_kind = parse_credential_kind(input.credential_kind)?;
     let rerank_path = validate_rerank_path(input.rerank_path)?;
     let enabled = input.enabled.unwrap_or(true);
     let credential_id = match input.credential {
@@ -542,6 +569,7 @@ pub async fn create_provider(
         local,
         admitted_addresses: admitted,
         credential_id,
+        credential_kind,
         rerank_path,
         enabled,
     };
@@ -627,6 +655,9 @@ pub async fn update_provider(
     }
     if let Some(local) = input.local {
         config.local = local;
+    }
+    if input.credential_kind.is_some() {
+        config.credential_kind = parse_credential_kind(input.credential_kind)?;
     }
     let admitted_changed = input.admitted_addresses.is_some();
     if let Some(admitted) = input.admitted_addresses {
@@ -1171,6 +1202,7 @@ pub async fn create_model(
     }
     let (input_price, output_price) =
         validate_prices(input.input_usd_per_million, input.output_usd_per_million)?;
+    let keep_alive = parse_keep_alive(input.keep_alive)?;
     let id = Uuid::new_v4();
     let config = ModelConfig {
         id,
@@ -1183,6 +1215,7 @@ pub async fn create_model(
         capabilities,
         input_usd_per_million: input_price,
         output_usd_per_million: output_price,
+        keep_alive,
         enabled: input.enabled.unwrap_or(true),
     };
     let stored: Value = serde_json::to_value(&config).map_err(Error::from)?;
@@ -1277,6 +1310,9 @@ pub async fn update_model(
         let (next_input, next_output) = validate_prices(next_input, next_output)?;
         config.input_usd_per_million = next_input;
         config.output_usd_per_million = next_output;
+    }
+    if let Some(keep_alive) = input.keep_alive {
+        config.keep_alive = parse_keep_alive(keep_alive)?;
     }
     if let Some(enabled) = input.enabled {
         config.enabled = enabled;
@@ -1552,4 +1588,37 @@ pub fn router() -> Router<ApiState> {
             "/api/v1/budgets",
             get(get_budgets).put(update_budgets),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn credential_kind_defaults_to_api_key_and_accepts_oauth() {
+        assert_eq!(parse_credential_kind(None).unwrap(), CredentialKind::ApiKey);
+        assert_eq!(parse_credential_kind(Some("API_KEY".into())).unwrap(), CredentialKind::ApiKey);
+        assert_eq!(parse_credential_kind(Some("oauth".into())).unwrap(), CredentialKind::Oauth);
+        assert!(parse_credential_kind(Some("bearer".into())).is_err());
+    }
+    #[test]
+    fn keep_alive_accepts_durations_and_zero_but_rejects_bare_numbers() {
+        assert_eq!(parse_keep_alive(None).unwrap(), None);
+        assert_eq!(parse_keep_alive(Some("5m".into())).unwrap(), Some("5m".into()));
+        assert_eq!(parse_keep_alive(Some("0".into())).unwrap(), Some("0".into()));
+        assert!(parse_keep_alive(Some("5".into())).is_err());
+        assert!(parse_keep_alive(Some("forever".into())).is_err());
+        assert!(parse_keep_alive(Some(String::new())).is_err());
+    }
+    #[test]
+    fn stored_configs_without_new_fields_still_parse() {
+        // Rows written before credential_kind/keep_alive existed must keep loading: serde defaults fill ApiKey/None.
+        let provider: ProviderConfig = serde_json::from_value(json!({"id": Uuid::new_v4(),"name": "p","kind": "ANTHROPIC","origin": "https://api.anthropic.com","local": false,"admitted_addresses": [],"credential_id": null,"rerank_path": null,"enabled": true})).unwrap();
+        assert_eq!(provider.credential_kind, CredentialKind::ApiKey);
+        let mut model_value = json!({"id": Uuid::new_v4(),"provider_id": provider.id,"model": "m","name": "m","roles": [],"priority": 100,"context_tokens": 8192,"capabilities": {"chat": true,"tools": false,"vision": false,"structured_output": false,"reasoning": false,"embeddings": false,"rerank": false},"input_usd_per_million": null,"output_usd_per_million": null,"enabled": true});
+        let model: ModelConfig = serde_json::from_value(model_value.clone()).unwrap();
+        assert_eq!(model.keep_alive, None);
+        model_value["keep_alive"] = json!("5m");
+        let model: ModelConfig = serde_json::from_value(model_value).unwrap();
+        assert_eq!(model.keep_alive.as_deref(), Some("5m"));
+    }
 }

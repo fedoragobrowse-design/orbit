@@ -45,6 +45,8 @@ services:
   ollama:
     image: ollama/ollama:0.34.0
     profiles: [ollama]
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
     volumes: ["models:/root/.ollama"]
     restart: unless-stopped
     networks: [orbit]
