@@ -12,7 +12,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::HeaderMap,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
 };
 use orbit_core::{ActionSnapshot, AuthorizedAction, Error};
 use orbit_email::{AccountConfig, Credential, DraftContent, EmailProvider, MailService};
@@ -39,6 +39,8 @@ pub fn router() -> Router<ApiState> {
         .route("/api/v1/email/accounts/{id}/purge", delete(purge_account))
         .route("/api/v1/email/accounts/{id}/test", post(test_account))
         .route("/api/v1/email/accounts/{id}/sync", post(sync_account))
+        .route("/api/v1/email/triage-rules", get(list_triage_rules).post(create_triage_rule))
+        .route("/api/v1/email/triage-rules/{id}", patch(update_triage_rule).delete(delete_triage_rule))
         .route("/api/v1/email/messages", get(list_messages))
         .route("/api/v1/email/messages/{id}", get(message_detail))
         .route("/api/v1/email/drafts", get(list_drafts).post(create_draft))
@@ -552,15 +554,130 @@ pub async fn list_checkpoints(State(state): State<ApiState>, headers: HeaderMap,
     .await?;
     Ok(Json(json!({"items": items, "next_cursor": null})))
 }
-
+/// Inbox triage rules: first matching enabled rule wins. Matchers are plain
+/// substring checks over the sender/subject the connector already stored —
+/// no regex, no glob, so a rule can never reach further than the message in
+/// front of it. Actions only label (via `email.label` semantics on the stored
+/// row) or queue a summary task; drafts stay DRAFT until the owner approves
+/// them through the normal `send_draft` gate. Nothing here sends mail.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TriageRuleCreate {
+    pub name: String,
+    pub matcher: Value,
+    pub action: Value,
+}
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TriageRuleUpdate {
+    pub expected_revision: Option<i64>,
+    pub name: Option<String>,
+    pub matcher: Option<Value>,
+    pub action: Option<Value>,
+    pub enabled: Option<bool>,
+}
+fn valid_triage_rule(name: &str, matcher: &Value, action: &Value) -> Result<(String, Value, Value), ApiError> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 120 {
+        return Err(Error::Validation("rule name must be 1..120 characters".into()).into());
+    }
+    let matcher = matcher.as_object().ok_or_else(|| Error::Validation("matcher must be an object".into()))?;
+    for key in matcher.keys() {
+        if !matches!(key.as_str(), "from_contains" | "subject_contains" | "topic") {
+            return Err(Error::Validation(format!("unknown matcher key {key}")).into());
+        }
+        let s = matcher[key].as_str().ok_or_else(|| Error::Validation("matcher values must be strings".into()))?;
+        if s.trim().is_empty() || s.len() > 256 {
+            return Err(Error::Validation("matcher values must be 1..256 characters".into()).into());
+        }
+    }
+    let action = action.as_object().ok_or_else(|| Error::Validation("action must be an object".into()))?;
+    for key in action.keys() {
+        if !matches!(key.as_str(), "label" | "summarize" | "draft_reply") {
+            return Err(Error::Validation(format!("unknown action key {key}")).into());
+        }
+    }
+    if let Some(label) = action.get("label") {
+        let s = label.as_str().ok_or_else(|| Error::Validation("label must be a string".into()))?;
+        if s.trim().is_empty() || s.len() > 64 || s.chars().any(|c| c.is_control() || c == '"' || c == '\\') {
+            return Err(Error::Validation("label must be 1..64 safe characters".into()).into());
+        }
+    }
+    for flag in ["summarize", "draft_reply"] {
+        if let Some(v) = action.get(flag) {
+            if !v.is_boolean() {
+                return Err(Error::Validation(format!("{flag} must be a boolean")).into());
+            }
+        }
+    }
+    Ok((name.to_owned(), Value::Object(matcher.clone()), Value::Object(action.clone())))
+}
+/// Pure matcher: does this rule fire for this sender/subject/topic triple?
+/// Case-insensitive substring; empty matcher matches nothing (a rule with no
+/// conditions is a config error, not a catch-all).
+pub fn triage_matches(matcher: &Value, from: &str, subject: &str, topic: &str) -> bool {
+    let Some(obj) = matcher.as_object() else { return false };
+    if obj.is_empty() {
+        return false;
+    }
+    for (key, want) in obj {
+        let Some(want) = want.as_str() else { return false };
+        let hay = match key.as_str() {
+            "from_contains" => from,
+            "subject_contains" => subject,
+            "topic" => topic,
+            _ => return false,
+        };
+        if !hay.to_lowercase().contains(&want.to_lowercase()) {
+            return false;
+        }
+    }
+    true
+}
+#[utoipa::path(get, path = "/api/v1/email/triage-rules", responses((status = 200, body = Value)))]
+pub async fn list_triage_rules(State(state): State<ApiState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
+    let auth = authenticate(&state, &headers, false).await?;
+    let items: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(t) FROM triage_rules t WHERE owner_id=$1 ORDER BY created_at DESC").bind(auth.scope.owner_id).fetch_all(&state.pool).await?;
+    Ok(Json(json!({"items": items})))
+}
+#[utoipa::path(post, path = "/api/v1/email/triage-rules", request_body = TriageRuleCreate, responses((status = 200, body = Value)))]
+pub async fn create_triage_rule(State(state): State<ApiState>, headers: HeaderMap, Json(input): Json<TriageRuleCreate>) -> Result<Json<Value>, ApiError> {
+    let auth = authenticate(&state, &headers, true).await?;
+    let (name, matcher, action) = valid_triage_rule(&input.name, &input.matcher, &input.action)?;
+    let row: Value = sqlx::query_scalar("INSERT INTO triage_rules(id,owner_id,name,matcher,action) VALUES($1,$2,$3,$4,$5) RETURNING to_jsonb(triage_rules)").bind(Uuid::new_v4()).bind(auth.scope.owner_id).bind(name).bind(matcher).bind(action).fetch_one(&state.pool).await?;
+    Ok(Json(row))
+}
+#[utoipa::path(patch, path = "/api/v1/email/triage-rules/{id}", params(("id" = Uuid, Path)), request_body = TriageRuleUpdate, responses((status = 200, body = Value)))]
+pub async fn update_triage_rule(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>, Json(input): Json<TriageRuleUpdate>) -> Result<Json<Value>, ApiError> {
+    let auth = authenticate(&state, &headers, true).await?;
+    let row: Option<(String, Value, Value, bool)> = sqlx::query_as("SELECT name,matcher,action,enabled FROM triage_rules WHERE owner_id=$1 AND id=$2").bind(auth.scope.owner_id).bind(id).fetch_optional(&state.pool).await?;
+    let Some((name, matcher, action, enabled)) = row else { return Err(Error::NotFound.into()) };
+    let next_name = input.name.as_deref().unwrap_or(&name);
+    let next_matcher = input.matcher.as_ref().unwrap_or(&matcher);
+    let next_action = input.action.as_ref().unwrap_or(&action);
+    let (name, matcher, action) = valid_triage_rule(next_name, next_matcher, next_action)?;
+    let enabled = input.enabled.unwrap_or(enabled);
+    let out: Value = sqlx::query_scalar("UPDATE triage_rules SET name=$3,matcher=$4,action=$5,enabled=$6,updated_at=now() WHERE owner_id=$1 AND id=$2 RETURNING to_jsonb(triage_rules)").bind(auth.scope.owner_id).bind(id).bind(name).bind(matcher).bind(action).bind(enabled).fetch_one(&state.pool).await?;
+    Ok(Json(out))
+}
+#[utoipa::path(delete, path = "/api/v1/email/triage-rules/{id}", params(("id" = Uuid, Path)), responses((status = 200, body = Value)))]
+pub async fn delete_triage_rule(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>, ApiError> {
+    let auth = authenticate(&state, &headers, true).await?;
+    let n = sqlx::query("DELETE FROM triage_rules WHERE owner_id=$1 AND id=$2").bind(auth.scope.owner_id).bind(id).execute(&state.pool).await?.rows_affected();
+    if n != 1 {
+        return Err(Error::NotFound.into());
+    }
+    Ok(Json(json!({"deleted": id})))
+}
 #[derive(utoipa::OpenApi)]
 #[openapi(
     paths(
         list_accounts, create_account, account_detail, update_account, remove_account, purge_account,
         test_account, sync_account, list_messages, message_detail,
         list_drafts, create_draft, draft_detail, update_draft, send_draft,
-        list_checkpoints
+        list_checkpoints,
+        list_triage_rules, create_triage_rule, update_triage_rule, delete_triage_rule
     ),
-    components(schemas(AccountCreate, AccountUpdate, DraftCreate, DraftUpdate, SendRequest, MessageQuery, DraftQuery, CheckpointQuery))
+    components(schemas(AccountCreate, AccountUpdate, DraftCreate, DraftUpdate, SendRequest, MessageQuery, DraftQuery, CheckpointQuery, TriageRuleCreate, TriageRuleUpdate))
 )]
 pub struct EmailApi;

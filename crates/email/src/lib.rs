@@ -67,13 +67,55 @@ impl MailService{
     let live:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM email_accounts a JOIN email_ingestion_leases l ON l.owner_id=a.owner_id AND l.account_id=a.id WHERE a.owner_id=$1 AND a.id=$2 AND a.enabled AND a.revision=$3 AND l.lease_holder=$4 AND l.fence=$5 AND l.lease_until>now())").bind(scope.owner_id).bind(id).bind(revision).bind(holder).bind(fence).fetch_one(&mut *tx).await?;if !live{return Err(Error::Forbidden)}
     let msg=Uuid::new_v4();let inserted=sqlx::query("INSERT INTO email_messages(id,owner_id,account_id,mailbox,uidvalidity,uid,source_key,message_id,thread_references,metadata,body_text,attachments) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING").bind(msg).bind(scope.owner_id).bind(id).bind(mailbox).bind(validity).bind(uid).bind(&message.source_key).bind(&message.message_id).bind(json!(message.references)).bind(&message.metadata).bind(&message.body_text).bind(json!(message.attachments)).execute(&mut *tx).await?.rows_affected()>0;
     sqlx::query("INSERT INTO email_checkpoints(owner_id,account_id,mailbox,uidvalidity,last_uid) VALUES($1,$2,$3,$4,$5) ON CONFLICT(owner_id,account_id,mailbox) DO UPDATE SET uidvalidity=excluded.uidvalidity,last_uid=excluded.last_uid").bind(scope.owner_id).bind(id).bind(mailbox).bind(validity).bind(uid).execute(&mut *tx).await?;
-    if inserted{let principal=Uuid::new_v4();sqlx::query("INSERT INTO principals(id,owner_id,principal_type,auth_method,trust_level,source) VALUES($1,$2,'EMAIL_SENDER','VERIFIED_IMAP','UNTRUSTED_EXTERNAL',$3)").bind(principal).bind(scope.owner_id).bind(format!("email:{id}")).execute(&mut *tx).await?;let event=Uuid::new_v4();let source=format!("email:{id}");let kind=if message.metadata["in_reply_to"].as_str().is_some(){"EMAIL_REPLIED"}else{"EMAIL_RECEIVED"};sqlx::query("INSERT INTO events(id,owner_id,event_type,source,principal_id,payload,trust_level,privacy_class,correlation_id,source_event_key) VALUES($1,$2,$3,$4,$5,$6,'UNTRUSTED_EXTERNAL','PRIVATE',$7,$8)").bind(event).bind(scope.owner_id).bind(kind).bind(source).bind(principal).bind(json!({"message_id":msg,"account_id":id,"source_reference":format!("email:{id}:{msg}")})).bind(event).bind(&message.source_key).execute(&mut *tx).await?;sqlx::query("INSERT INTO event_deliveries(id,owner_id,event_id,consumer) VALUES($1,$2,$3,'agents') ON CONFLICT DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(event).execute(&mut *tx).await?;added+=1;}
+    if inserted{let principal=Uuid::new_v4();sqlx::query("INSERT INTO principals(id,owner_id,principal_type,auth_method,trust_level,source) VALUES($1,$2,'EMAIL_SENDER','VERIFIED_IMAP','UNTRUSTED_EXTERNAL',$3)").bind(principal).bind(scope.owner_id).bind(format!("email:{id}")).execute(&mut *tx).await?;let event=Uuid::new_v4();let source=format!("email:{id}");let kind=if message.metadata["in_reply_to"].as_str().is_some(){"EMAIL_REPLIED"}else{"EMAIL_RECEIVED"};sqlx::query("INSERT INTO events(id,owner_id,event_type,source,principal_id,payload,trust_level,privacy_class,correlation_id,source_event_key) VALUES($1,$2,$3,$4,$5,$6,'UNTRUSTED_EXTERNAL','PRIVATE',$7,$8)").bind(event).bind(scope.owner_id).bind(kind).bind(source).bind(principal).bind(json!({"message_id":msg,"account_id":id,"source_reference":format!("email:{id}:{msg}")})).bind(event).bind(&message.source_key).execute(&mut *tx).await?;sqlx::query("INSERT INTO event_deliveries(id,owner_id,event_id,consumer) VALUES($1,$2,$3,'agents') ON CONFLICT DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(event).execute(&mut *tx).await?;self.apply_triage_rules(scope,id,msg,&message.metadata,&mut tx).await?;added+=1;}
     tx.commit().await?;
    }
   }Ok(json!({"received":added,"uidvalidity_rescan":rescanned,"batch_limit":50}))
  }
+
+ /// First matching enabled triage rule wins. Runs inside the sync
+ /// transaction, after the message + event rows exist: label appends to the
+ /// stored metadata (no IMAP write — the server mailbox is untouched), and
+ /// summarize/draft_reply queue an agent task whose drafts stay DRAFT until
+ /// the owner approves them. Matcher is plain substring only (see
+ /// `triage_matches` validation in the api crate); a rule that matches
+ /// nothing fires never, a rule that matches fires exactly once per message.
+ pub async fn apply_triage_rules(&self,scope:&OwnerScope,account:Uuid,message:Uuid,metadata:&Value,tx:&mut sqlx::Transaction<'_,sqlx::Postgres>)->Result<()>{
+  let rules:Vec<(Value,Value)> = sqlx::query_as::<_, (Value,Value)>("SELECT matcher,action FROM triage_rules WHERE owner_id=$1 AND enabled ORDER BY created_at ASC").bind(scope.owner_id).fetch_all(&mut **tx).await?;
+  let from = metadata.get("from").and_then(Value::as_str).unwrap_or("");
+  let subject = metadata.get("subject").and_then(Value::as_str).unwrap_or("");
+  let topic = metadata.get("topic").and_then(Value::as_str).unwrap_or("");
+  for (matcher,action) in &rules{
+   if !triage_match(matcher,from,subject,topic){continue}
+   if let Some(label) = action.get("label").and_then(Value::as_str){
+    sqlx::query("UPDATE email_messages SET metadata=jsonb_set(metadata,'{triage_label}',to_jsonb($3::text)) WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(message).bind(label).execute(&mut **tx).await?;
+   }
+   if action.get("summarize").and_then(Value::as_bool).unwrap_or(false) || action.get("draft_reply").and_then(Value::as_bool).unwrap_or(false){
+    let draft = action.get("draft_reply").and_then(Value::as_bool).unwrap_or(false);
+    let correlation = Uuid::new_v4();
+    let task = Uuid::new_v4();
+    sqlx::query("INSERT INTO tasks(id,owner_id,principal_id,correlation_id,title,consumer,checkpoint) VALUES($1,$2,$3,$4,$5,'agents',$6)").bind(task).bind(scope.owner_id).bind(scope.principal_id).bind(correlation).bind(format!("triage: {subject}")).bind(serde_json::json!({"phase":"TRIAGE_SUMMARY","account_id":account,"message_id":message,"draft_reply":draft})).execute(&mut **tx).await?;
+   }
+   break;
+  }
+  Ok(())
+ }
  pub async fn materialize_send(&self,scope:&OwnerScope,args:&Value)->Result<(Value,std::collections::BTreeMap<String,i64>,std::collections::BTreeMap<String,String>)>{let id=uuid_field(args,"draft_id")?;let version=args["expected_version"].as_i64().ok_or_else(||Error::Validation("draft version required".into()))?;let row=sqlx::query("SELECT account_id,content,content_digest FROM email_drafts WHERE owner_id=$1 AND id=$2 AND version=$3 AND state='DRAFT'").bind(scope.owner_id).bind(id).bind(version).fetch_optional(&self.pool).await?.ok_or_else(||Error::Conflict("draft version changed or already submitted".into()))?;let account:Uuid=row.get("account_id");let(_,_,_,rev)=self.account(scope,account).await?;let content:Value=row.get("content");let draft:DraftContent=serde_json::from_value(content.clone())?;let mut digests=std::collections::BTreeMap::new();for a in &draft.attachments{digests.insert(a.name.clone(),a.sha256.clone());}Ok((json!({"draft_id":id,"expected_version":version,"account_id":account,"content":content,"content_digest":row.get::<String,_>("content_digest")}),[(format!("email_account:{account}"),rev),(format!("email_draft:{id}"),version)].into(),digests))}
 }
+
+/// Plain-substring triage matcher (mirrors api validation: only
+/// from_contains/subject_contains/topic keys, case-insensitive contains).
+pub fn triage_match(matcher:&Value,from:&str,subject:&str,topic:&str)->bool{
+ let Some(obj) = matcher.as_object() else {return false};
+ if obj.is_empty(){return false}
+ for (key,want) in obj{
+  let Some(want) = want.as_str() else {return false};
+  let hay = match key.as_str(){"from_contains"=>from,"subject_contains"=>subject,"topic"=>topic,_=>return false};
+  if !hay.to_lowercase().contains(&want.to_lowercase()){return false}
+ }
+ true
+}
+
 pub fn uuid_field(v:&Value,key:&str)->Result<Uuid>{v[key].as_str().and_then(|s|Uuid::parse_str(s).ok()).ok_or_else(||Error::Validation(format!("{key} required")))}
 #[async_trait::async_trait]
 impl EmailProvider for MailService{

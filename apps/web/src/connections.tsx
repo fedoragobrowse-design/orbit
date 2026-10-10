@@ -692,7 +692,77 @@ function Email() {
         </Confirm>
       )}
       {adding ? (<NewEmailAccount onDone={() => setAdding(false)} />) : (<button className="secondary" onClick={() => setAdding(true)}>Add mail account</button>)}
+      <TriageRules />
     </div>
+  );
+}
+/// Inbox triage: substring rules that label incoming mail and queue a summary
+/// task. Drafts are never sent — a summary task only prepares text the owner
+/// approves through the normal drafts flow.
+function TriageRules() {
+  const client = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ name: "", from: "", subject: "", label: "", summarize: true });
+  const rules = useQuery({ queryKey: ["triage-rules"], queryFn: () => api<{ items: RecordData[] }>("/email/triage-rules") });
+  const invalidate = () => client.invalidateQueries({ queryKey: ["triage-rules"] });
+  const create = useMutation({
+    mutationFn: () => post<RecordData>("/email/triage-rules", {
+      name: form.name,
+      matcher: { ...(form.from ? { from_contains: form.from } : {}), ...(form.subject ? { subject_contains: form.subject } : {}) },
+      action: { ...(form.label ? { label: form.label } : {}), summarize: form.summarize },
+    }),
+    onSuccess: () => { invalidate(); setOpen(false); setForm({ name: "", from: "", subject: "", label: "", summarize: true }); },
+  });
+  const toggle = useMutation({
+    mutationFn: (row: RecordData) => api<RecordData>(`/email/triage-rules/${String(row.id)}`, { method: "PATCH", body: JSON.stringify({ enabled: !(row.enabled as boolean) }) }),
+    onSuccess: invalidate,
+  });
+  const removeRule = useMutation({ mutationFn: (id: string) => remove(`/email/triage-rules/${id}`), onSuccess: invalidate });
+  const items = rules.data?.items ?? [];
+  return (
+    <section aria-label="Inbox triage rules">
+      <h3>Sort incoming mail for me</h3>
+      <p><small>The first matching rule wins. Matches label the stored message and queue a summary for you — drafts are never sent without your approval.</small></p>
+      {rules.isPending ? (<p role="status">Loading rules…</p>) : items.length === 0 ? (<Empty title="No triage rules">Add one below — e.g. subject contains “invoice” → label “bills”.</Empty>) : (
+        <table>
+          <thead><tr><th scope="col">Name</th><th scope="col">When</th><th scope="col">Then</th><th scope="col">On</th><th scope="col">Actions</th></tr></thead>
+          <tbody>
+            {items.map((row) => {
+              const matcher = (row.matcher ?? {}) as RecordData;
+              const action = (row.action ?? {}) as RecordData;
+              const when = [matcher.from_contains ? `from “${text(matcher.from_contains)}”` : "", matcher.subject_contains ? `subject “${text(matcher.subject_contains)}”` : "", matcher.topic ? `topic “${text(matcher.topic)}”` : ""].filter(Boolean).join(" + ") || "—";
+              const then = [action.label ? `label “${text(action.label)}”` : "", action.summarize ? "summarize" : "", action.draft_reply ? "draft reply" : ""].filter(Boolean).join(" + ") || "—";
+              return (
+                <tr key={String(row.id)}>
+                  <th scope="row">{text(row.name)}</th>
+                  <td><small>{when}</small></td>
+                  <td><small>{then}</small></td>
+                  <td><Status value={row.enabled} /></td>
+                  <td><div className="actions">
+                    <button className="secondary" disabled={toggle.isPending} onClick={() => toggle.mutate(row)}>{row.enabled ? "Pause" : "Resume"}</button>
+                    <button className="danger" disabled={removeRule.isPending} onClick={() => removeRule.mutate(String(row.id))}>Delete</button>
+                  </div></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      {(rules.error ?? create.error ?? toggle.error ?? removeRule.error) && (<ErrorNotice error={(rules.error ?? create.error ?? toggle.error ?? removeRule.error) as Error} retry={() => { rules.refetch(); create.reset(); toggle.reset(); removeRule.reset(); }} />)}
+      {open ? (
+        <form className="grid" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
+          <Input label="Rule name" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Bills" />
+          <Input label="From contains" value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} placeholder="billing@" />
+          <Input label="Subject contains" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="invoice" />
+          <Input label="Label to apply" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="bills" />
+          <label className="check"><input type="checkbox" checked={form.summarize} onChange={(e) => setForm({ ...form, summarize: e.target.checked })} /> Queue a summary task for me</label>
+          <div className="actions">
+            <button className="secondary" type="submit" disabled={create.isPending || (!form.from && !form.subject)}>{create.isPending ? "Adding…" : "Add rule"}</button>
+            <button className="secondary" type="button" onClick={() => setOpen(false)}>Cancel</button>
+          </div>
+        </form>
+      ) : (<button className="secondary" onClick={() => setOpen(true)}>Add triage rule</button>)}
+    </section>
   );
 }
 
