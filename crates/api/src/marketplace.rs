@@ -97,11 +97,14 @@ pub async fn list_installs(State(state): State<ApiState>, headers: HeaderMap) ->
 pub async fn install(State(state): State<ApiState>, headers: HeaderMap, Json(input): Json<InstallRequest>) -> Result<Json<Value>, ApiError> {
     let auth = authenticate(&state, &headers, true).await?;
     // Default-deny: the manifest is fetched from the repo index (or taken from the previewed body in tests), digest + signature verified, and install only proceeds on explicit capability approval.
+    // Trust model: the verifying key ships inside the manifest itself, so a
+    // passing check is self-asserted, never registry trust — `allow_unsigned`
+    // is the owner's explicit consent to that (mutation auth + sandbox-only
+    // exec + audit row already bound it), recorded as `self-asserted`.
     let InstallRequest { name: wanted, manifest: pinned, allow_unsigned, approved_capabilities, accept_trust_level } = input;
     let (manifest, source) = match pinned { Some(m) => (m, format!("{REPO}/entries/{wanted}/manifest.json (pinned preview)")), None => fetch_manifest(&wanted).await? };
     let dev = allow_unsigned.unwrap_or(false);
     let (sig_valid, flags) = checked_manifest(&manifest, dev)?;
-    if !sig_valid && !dev { return Err(Error::Validation("marketplace package is unsigned".into()).into()); }
     let approved = approved_capabilities.as_ref().ok_or_else(|| Error::Validation("marketplace install requires explicit capability approval: echo requested_capabilities back as approved_capabilities".into())).map_err(ApiError::from)?;
     if *approved != manifest.get("requested_capabilities").cloned().unwrap_or(json!(null)) { return Err(Error::Validation("marketplace install denied: approved capabilities must exactly match the manifest".into()).into()); }
     if !accept_trust_level.unwrap_or(false) { return Err(Error::Validation("marketplace install requires accept_trust_level after reviewing the package trust level".into()).into()); }

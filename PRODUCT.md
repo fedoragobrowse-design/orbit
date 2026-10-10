@@ -19,8 +19,8 @@ resume, retry, reconcile), an activity trail, and notifications.
 Milestones 1–10 live in the API router and wired in the web workspace
 (golden journeys J1–J10 in `tests/e2e/golden.ts`).
 
-LIVE-PROVEN (test path in-repo): marketplace signed installs
-(`crates/api/tests/marketplace.rs` — tamper/unsigned/capability); encrypted
+LIVE-PROVEN (test path in-repo): marketplace self-asserted installs
+(digest recompute + embedded-key ed25519 check, owner consent, sandbox-only, recorded self-asserted; `crates/api/tests/marketplace.rs` — tamper/unsigned/capability); encrypted
 backup/restore
 (`crates/api/tests/ops.rs::encrypted_backup_round_trips_one_row`); ops kill
 switch + automation dry-run (`crates/api/tests/ops.rs`, 3 tests) + doctor

@@ -95,8 +95,8 @@ agent runtime and chat (M3), approvals (M4), computers and files with pairing
 Golden journeys J1–J10 run live in `tests/e2e/golden.ts`. No mock routes, no
 fake success.
 
-LIVE-PROVEN (each names its test path): marketplace signed installs
-(`crates/api/tests/marketplace.rs` — tamper/unsigned/capability); encrypted
+LIVE-PROVEN (each names its test path): marketplace self-asserted installs
+(digest recompute + embedded-key ed25519 check, owner consent, sandbox-only, recorded self-asserted; `crates/api/tests/marketplace.rs` — tamper/unsigned/capability); encrypted
 backup/restore (`crates/api/tests/ops.rs::encrypted_backup_round_trips_one_row`);
 ops kill switch + automation dry-run (`crates/api/tests/ops.rs`, 3 tests) +
 doctor script (`scripts/doctor.sh`, PASS/FAIL/SKIP); morning brief

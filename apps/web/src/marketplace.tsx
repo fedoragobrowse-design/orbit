@@ -41,7 +41,7 @@ function InstallFlow({ onInstalled }: { onInstalled: () => void }) {
   return (
     <div className="panel">
       <h2>Install a package</h2>
-      <p><small>Manifests are fetched from the Orbit-MarketPlace repo index and verified here: sha256 digest first, then the ed25519 signature. Install needs your explicit approval below.</small></p>
+      <p><small>Manifests are fetched from the Orbit-MarketPlace repo index and verified here: sha256 digest recomputed first, then the ed25519 signature — but the signing key ships inside the manifest itself, so a passing check is self-asserted, never registry trust. Installs run sandbox-only and are recorded as self-asserted. Install needs your explicit approval below.</small></p>
       <form onSubmit={(e) => { e.preventDefault(); fetchPreview.mutate(); }}>
         <Field label="Package name" hint="Lowercase kebab-case, e.g. hello-skill.">
           <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="hello-skill" />
