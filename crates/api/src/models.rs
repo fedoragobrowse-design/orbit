@@ -451,6 +451,7 @@ fn provider_view(
         "credential_kind": serde_json::to_value(&config.credential_kind).unwrap_or(Value::String("API_KEY".into())),
         "rerank_path": config.rerank_path,
         "secret_set": config.credential_id.is_some(),
+        "enabled": config.enabled,
         "revision": revision,
         "created_at": created_at,
         "updated_at": updated_at,
