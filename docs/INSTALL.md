@@ -1,15 +1,19 @@
 # Install Orbit
 
-One-command install from pinned tagged releases. Scripts refuse to run
-unpinned: pass `--version vX.Y.Z` (or set `GITHUB_REF` / `ORBIT_VERSION`
-to a tag). No `latest`, no branch installs.
+One-command install from tagged releases. Default: `--latest` resolves the
+newest `vX.Y.Z` tag from the GitHub releases API (needs network; offline:
+pass `--version vX.Y.Z` instead). Resolved tags go through the same pinned
+path — tag-shape check plus checksum + signature verify, fail closed.
+Or pin explicitly: `--version vX.Y.Z` (or set `GITHUB_REF` / `ORBIT_VERSION`
+to a tag). No branch installs.
 
 Status: BUILT — `install.sh` + node installers with signed dry-run transcripts (`docs/INSTALL.md:92-230`); no tagged release exists yet so step 2+ is unexecuted by design. See docs/PARITY.md.
 
 ## Quick start (server)
 
 ```sh
-./install.sh --version vX.Y.Z
+./install.sh --latest
+# or pin: ./install.sh --version vX.Y.Z
 ```
 
 What it does, in order:

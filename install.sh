@@ -12,8 +12,9 @@ COMPOSE_FILE="${ORBIT_COMPOSE_FILE:-compose.yaml}"
 ENV_FILE="${ORBIT_ENV_FILE:-.env}"
 CRED_IMPORT="${ORBIT_CREDENTIALS_IMPORT:-credentials.import}"
 usage() { cat <<'USAGE'
-Usage: install.sh --version vX.Y.Z [--yes] [--dry-run] [--upgrade] [--uninstall] [--with-keys] [--with-oauth google[,outlook][,github]]
-  --version vX.Y.Z   pinned release tag (or set GITHUB_REF / ORBIT_VERSION). Required.
+Usage: install.sh (--version vX.Y.Z | --latest) [--yes] [--dry-run] [--upgrade] [--uninstall] [--with-keys] [--with-oauth google[,outlook][,github]]
+  --version vX.Y.Z   pinned release tag (or set GITHUB_REF / ORBIT_VERSION).
+  --latest           resolve newest vX.Y.Z release tag from GitHub, then install it (needs network).
   --yes              skip confirmation prompts
   --dry-run          print planned actions, change nothing
   --upgrade          re-pull pinned images and restart (requires --version)
@@ -64,6 +65,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --version) [ $# -ge 2 ] || die "--version needs a value"; VERSION="$2"; shift 2;;
     --version=*) VERSION="${1#--version=}"; shift;;
+    --latest|--latest=*) LATEST=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
     --yes) ASSUME_YES=1; shift;;
     --upgrade) UPGRADE=1; shift;;
@@ -75,7 +77,7 @@ while [ $# -gt 0 ]; do
     *) die "unknown flag: $1 (see --help)";;
   esac
 done
-VERSION="$(normalize_version "$VERSION")"
+if [ "${LATEST:-0}" -eq 1 ]; then [ -z "$VERSION" ] || die "--latest and --version are exclusive; pass one"; need curl; RELEASE_JSON="$(curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null)" || die "--latest needs network to api.github.com; offline: pass --version vX.Y.Z"; VERSION="$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"; [ -n "$VERSION" ] || die "--latest could not read tag_name from releases API"; log "latest release: ${VERSION}"; fi
 case "$VERSION" in v[0-9]*.[0-9]*.[0-9]*) ;; *) die "refusing unpinned install: pass --version vX.Y.Z (got '${VERSION:-empty}'). GITHUB_REF / ORBIT_VERSION accepted when they name a tag.";; esac
 validate_oauth
 OS="$(uname -s)"; ARCH="$(uname -m)"
