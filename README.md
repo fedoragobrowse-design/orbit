@@ -12,6 +12,26 @@ assisted tasks with a durable record for every action.
 - Server: `apps/server/` (`orbit-server`, serves with no subcommand; `bootstrap-token` prints the setup token)
 - E2E: `tests/e2e/` (Playwright, serial, isolated `orbit-test` deployment)
 
+## What it looks like
+
+Real screenshots from a running Orbit (captured on the isolated e2e
+deployment, clean database — these are the actual app):
+
+![Home: a typed request in the Ask Orbit box, a needs-attention panel, and recent activity](docs/shots/home.png)
+
+Home. You type what you need and it becomes a job you can follow — cancel it
+or run it again. Nothing just vanishes into a chat window.
+
+![Connections: tabs for email, calendars, computers and more, nothing connected yet](docs/shots/connections.png)
+
+Connections. Email, calendars, files, your other computers — you add each one
+yourself. Nothing is connected until you connect it.
+
+![Memory: project notebooks and a setting for how long things are kept](docs/shots/memory.png)
+
+Memory. Notes and project facts you can look at, fix, or delete — plus a
+setting for how long anything sticks around.
+
 ## Quick start
 
 Pinned tagged releases only — scripts refuse unpinned runs (no `latest`, no branches):
