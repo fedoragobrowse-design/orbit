@@ -25,16 +25,17 @@ function InstallFlow({ onInstalled }: { onInstalled: () => void }) {
   const [name, setName] = useState("hello-skill");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [accepted, setAccepted] = useState(false);
+  const [devUnsigned, setDevUnsigned] = useState(false);
   const fetchPreview = useMutation({
     mutationFn: () => post<Preview>("/marketplace/preview", { name: name.trim() }),
-    onSuccess: (data) => { setPreview(data); setAccepted(false); },
+    onSuccess: (data) => { setPreview(data); setAccepted(false); setDevUnsigned(false); },
   });
   const install = useMutation({
     mutationFn: () => {
       if (!preview) throw new Error("Preview a package first.");
-      return post<RecordData>("/marketplace/install", { name: preview.manifest.name, approved_capabilities: preview.capabilities, accept_trust_level: accepted });
+      return post<RecordData>("/marketplace/install", { name: preview.manifest.name, approved_capabilities: preview.capabilities, accept_trust_level: accepted, ...(devUnsigned ? { allow_unsigned: true } : {}) });
     },
-    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["marketplace"] }); setPreview(null); setAccepted(false); onInstalled(); },
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["marketplace"] }); setPreview(null); setAccepted(false); setDevUnsigned(false); onInstalled(); },
   });
   const error = fetchPreview.error ?? install.error;
   return (
@@ -69,6 +70,12 @@ function InstallFlow({ onInstalled }: { onInstalled: () => void }) {
             <input type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />
             I reviewed these capabilities and the {text(preview.manifest.trust_level)} trust level, and approve this install.
           </label>
+          {!preview.signature_valid && (
+            <label className="consent">
+              <input type="checkbox" checked={devUnsigned} onChange={(e) => setDevUnsigned(e.target.checked)} />
+              Dev install: accept this self-asserted (unsigned) package. Recorded as self-asserted trust.
+            </label>
+          )}
           <div className="actions">
             <button disabled={!accepted || install.isPending} onClick={() => install.mutate()}>{install.isPending ? "Installing…" : "Approve and install (sandbox-only)"}</button>
           </div>

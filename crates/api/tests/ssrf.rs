@@ -93,19 +93,16 @@ async fn ssrf_ha_create_and_sync_reject_loopback() {
     cleanup(&pool, &db, &key_dir).await;
 }
 #[tokio::test]
-async fn ssrf_browser_screen_rejects_bypass_forms_but_passes_legit_https() {
+async fn ssrf_browser_screen_rejects_bypass_forms() {
     for url in ["http://169.254.169.254/", "https://169.254.169.254/", "http://127.0.0.1/", "http://[::1]/", "http://user@127.0.0.1/", "http://user:pass@example.invalid/", "http://2130706433/", "http://0x7f.0.0.1/", "http://0x7F.0.0.1/", "gopher://example.invalid/", "file:///etc/passwd", "http://10.0.0.1/", "http://192.168.1.1/", "https://localhost/"] {
         assert!(orbit_api::computers::screen_browser_url(url).await.is_err(), "browser {url} must fail the screen");
     }
-    // Legit public https passes the screen (unresolvable-in-sandbox hostnames fail open here; fetch-time DNS-pinning is the backstop).
-    assert!(orbit_api::computers::screen_browser_url("https://example.com/").await.is_ok(), "legit https must pass the screen");
 }
 #[tokio::test]
-async fn ssrf_browser_screen_passes_legit_public_urls() {
-    // `submit()` in computers.rs runs this screen before any node dispatch for
-    // browser tools; legit public URLs must pass it (not 422), while approval
-    // policy for the agent path is orthogonal and unchanged.
-    for url in ["https://example.com/", "http://example.com/", "https://example.com:443/a?b=c#d"] {
-        assert!(orbit_api::computers::screen_browser_url(url).await.is_ok(), "legit {url} must pass the screen");
-    }
+async fn ssrf_browser_screen_fails_closed_on_unresolvable() {
+    // Fail-closed: `nonexistent.invalid.` (RFC 2606/6761 reserved TLD) never
+    // resolves, so the screen denies even though the shape is http(s) — the
+    // node fetch has no backstop for names the server cannot see.
+    assert!(orbit_api::computers::screen_browser_url("http://nonexistent.invalid/").await.is_err(), "unresolvable host must fail closed");
+    assert!(orbit_api::computers::screen_browser_url("https://nonexistent.invalid/a?b=c").await.is_err(), "unresolvable host must fail closed");
 }

@@ -94,7 +94,10 @@ pub async fn login(State(state):State<ApiState>,headers:HeaderMap,Json(input):Js
  // Per-IP+email composite bucket: one attacker's failures must not lock out
  // the owner on another egress IP. Follow-up: axum ConnectInfo peer IP.
  let attempts:i32=sqlx::query_scalar("INSERT INTO login_attempts(key_hash,attempts,window_start) VALUES($1,1,now()) ON CONFLICT(key_hash) DO UPDATE SET attempts=CASE WHEN login_attempts.window_start<now()-interval '15 minutes' THEN 1 ELSE login_attempts.attempts+1 END,window_start=CASE WHEN login_attempts.window_start<now()-interval '15 minutes' THEN now() ELSE login_attempts.window_start END RETURNING attempts").bind(hash(&format!("{ipf}:{email}"))).fetch_one(&state.pool).await?;
- if attempts>10{return Ok((axum::http::StatusCode::TOO_MANY_REQUESTS,Json(json!({"error":{"code":"RATE_LIMITED","message":"Try again later","request_id":Uuid::new_v4()}}))).into_response())}
+ // Global per-email backstop: rotating X-Forwarded-For must not grant
+ // unbounded guesses (100/15min ceiling; ConnectInfo is the real fix).
+ let global:i32=sqlx::query_scalar("INSERT INTO login_attempts(key_hash,attempts,window_start) VALUES($1,1,now()) ON CONFLICT(key_hash) DO UPDATE SET attempts=CASE WHEN login_attempts.window_start<now()-interval '15 minutes' THEN 1 ELSE login_attempts.attempts+1 END,window_start=CASE WHEN login_attempts.window_start<now()-interval '15 minutes' THEN now() ELSE login_attempts.window_start END RETURNING attempts").bind(hash(&format!("global:{email}"))).fetch_one(&state.pool).await?;
+ if attempts>10||global>100{return Ok((axum::http::StatusCode::TOO_MANY_REQUESTS,Json(json!({"error":{"code":"RATE_LIMITED","message":"Try again later","request_id":Uuid::new_v4()}}))).into_response())}
  let row=sqlx::query("SELECT id,email,display_name,password_hash FROM users WHERE email=$1").bind(&email).fetch_optional(&state.pool).await?;
  let encoded=row.as_ref().map(|r|r.get::<String,_>("password_hash")).unwrap_or_else(||"$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
  let valid=tokio::task::spawn_blocking(move||PasswordHash::new(&encoded).map(|p|Argon2::default().verify_password(input.password.as_bytes(),&p).is_ok()).unwrap_or(false)).await.map_err(|_|Error::Unavailable("password verification unavailable".into()))?;

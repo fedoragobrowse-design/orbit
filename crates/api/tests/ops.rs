@@ -59,6 +59,7 @@ fn must_fail<T>(r: Result<T, orbit_api::ApiError>, what: &str) { assert!(r.is_er
 async fn kill_switch_freezes_mutations_reads_stay_open() {
  let (pool, db, key_dir) = pool().await;let c = ctx(&pool, "kill", &key_dir).await;
  ok!(publish(&c.state, &c.headers, "ops-kill-before").await, "publish before kill");
+ let Json(mk) = ok!(orbit_api::automations::create_automation(State(c.state.clone()), c.headers.clone(), Json(orbit_api::automations::CreateAutomationRequest { trigger: json!({"kind":"timer","run_at":"2030-01-01T00:00:00Z"}), filters: Value::Null, agent_id: None, instructions: "ops-frozen-preview".into(), policy_scope: Value::Null, model_role: "FAST".into(), notification_behavior: "IN_APP".into(), timezone: "UTC".into(), enabled: true })).await, "create automation before kill");
  // Engage.
  let Json(killed) = ok!(ops::kill(State(c.state.clone()), c.headers.clone()).await, "kill");
  assert_eq!(killed["frozen"], json!(true));
@@ -68,10 +69,12 @@ async fn kill_switch_freezes_mutations_reads_stay_open() {
  must_fail(orbit_api::automations::create_automation(State(c.state.clone()), c.headers.clone(), Json(orbit_api::automations::CreateAutomationRequest { trigger: json!({"kind":"timer","run_at":"2030-01-01T00:00:00Z"}), filters: Value::Null, agent_id: None, instructions: "ops".into(), policy_scope: Value::Null, model_role: "FAST".into(), notification_behavior: "IN_APP".into(), timezone: "UTC".into(), enabled: true })).await.map(|Json(v)| v), "automation create");
  // Marketplace installs go through the same guard: frozen means 403 here too.
  must_fail(orbit_api::marketplace::install(State(c.state.clone()), c.headers.clone(), Json(orbit_api::marketplace::InstallRequest { name: "orbit-test".into(), manifest: None, allow_unsigned: None, approved_capabilities: None, accept_trust_level: None })).await.map(|Json(v)| v), "marketplace install");
- // Reads stay open: approvals inbox + ops status + automation dry-run path (preview read).
+ // Reads stay open: approvals inbox + ops status + automation dry-run path (preview read, full-mutation auth keeps CSRF binding).
  let _ = ok!(orbit_api::gateway::list_approvals(State(c.state.clone()), c.headers.clone(), axum::extract::Query(orbit_api::gateway::Page { cursor: None, limit: None })).await, "approvals readable while frozen");
  let Json(st) = ok!(ops::status(State(c.state.clone()), c.headers.clone()).await, "status");
  assert_eq!(st["frozen"], json!(true));
+ let Json(dry) = ok!(ops::dry_run(State(c.state.clone()), c.headers.clone(), axum::extract::Path(Uuid::parse_str(mk["id"].as_str().unwrap()).unwrap())).await, "dry-run readable while frozen");
+ assert!(dry["would_dispatch"]["consumer"].is_string(), "frozen dry-run still previews dispatch");
  // Restore is a mutation: blocked while frozen.
  must_fail(ops::restore(State(c.state.clone()), c.headers.clone(), Json(ops::RestoreRequest { artifact_id: Uuid::new_v4() })).await.map(|Json(v)| v), "restore");
  // Resume lifts the freeze; mutations succeed again.

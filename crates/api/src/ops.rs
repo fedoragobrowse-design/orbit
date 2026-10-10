@@ -111,9 +111,9 @@ pub async fn restore(State(state):State<ApiState>,headers:HeaderMap,Json(input):
 /// with the same rule as dispatch, never executed.
 #[utoipa::path(post,path="/api/v1/automations/{id}/dry-run",responses((status=200,body=Value)))]
 pub async fn dry_run(State(state):State<ApiState>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<Uuid>)->Result<Json<Value>,ApiError>{
- // Read-scoped guard: the preview inserts nothing, so it stays available
- // while frozen (freeze-transparent by design).
- let a=guard(&state,&headers,false).await?;
+ // Full-mutation auth keeps origin + CSRF binding on this POST; the preview
+ // inserts nothing so it stays available while frozen by design.
+ let a=crate::auth::authenticate(&state,&headers,true).await?;
  let automation=orbit_scheduler::get(&state.pool,&a.scope,id).await?;
  let preview=orbit_scheduler::preview(&state.pool,&a.scope,id).await?;
  let consumer=if automation.notification_behavior=="IN_APP"&&automation.agent_id.is_none(){"foundation"}else{"agents"};

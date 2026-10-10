@@ -112,3 +112,11 @@ async fn login_buckets_are_per_ip(){
  assert_ne!(other,429);
  let _=std::fs::remove_dir_all(&c.artifact_base);cleanup(&pool,&db,&key_dir).await;
 }
+#[tokio::test]
+async fn login_global_backstop_survives_xff_rotation(){
+ let (pool,db,key_dir)=pool("loginrot").await;let c=ctx(&pool,&key_dir,"loginrot").await;
+ let email=format!("authz-loginrot-{}@example.invalid",c.owner);
+ for i in 0..101{let ip=format!("10.99.{}.{}",i/250+1,i%250+1);let s=login_status(&c.state,&ip,&email).await;assert!(s==401||s==429,"attempt {i} must be 401 or 429");}
+ assert_eq!(login_status(&c.state,"10.99.9.9",&email).await,429,"101 rotated-IP failures must trip the global backstop");
+ let _=std::fs::remove_dir_all(&c.artifact_base);cleanup(&pool,&db,&key_dir).await;
+}

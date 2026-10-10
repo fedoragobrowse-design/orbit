@@ -1318,7 +1318,11 @@ pub async fn screen_browser_url(raw: &str) -> Result<(), Error> {
         return Ok(());
     }
     let port = url.port_or_known_default().unwrap_or(443);
-    if let Ok(addrs) = tokio::net::lookup_host((host.as_str(), port)).await { for a in addrs { if browser_ip_denied(a.ip()) { return Err(Error::Validation("browser url must resolve to a public address".into())); } } }
+    // Fail closed: NXDOMAIN/timeout/split-horizon (or zero addresses) means the
+    // node fetch has no backstop, so the screen denies rather than passes.
+    let mut saw = false;
+    for a in tokio::net::lookup_host((host.as_str(), port)).await.map_err(|_| Error::Validation("browser url must resolve to a public address".into()))? { saw = true; if browser_ip_denied(a.ip()) { return Err(Error::Validation("browser url must resolve to a public address".into())); } }
+    if !saw { return Err(Error::Validation("browser url must resolve to a public address".into())); }
     Ok(())
 }
 fn browser_ip_denied(ip: std::net::IpAddr) -> bool {
