@@ -789,7 +789,7 @@ export function Settings() {
     <>
       <PageHeader
         title="Settings"
-        description="Privacy, autonomy, budgets, and retention belong to you."
+        description="Where your data can go, how much Orbit may do on its own, and how much it may spend."
       />
       {q.error && <ErrorNotice error={q.error} />}{" "}
       {settings && (
@@ -803,7 +803,7 @@ export function Settings() {
         >
           <h2>How Orbit works</h2>
           <Select
-            label="Installation mode"
+            label="Where may models run?"
             value={settings.installation_mode}
             onChange={(e) =>
               setSettings({ ...settings, installation_mode: e.target.value })
@@ -815,8 +815,13 @@ export function Settings() {
               </option>
             ))}
           </Select>
+          <p className="muted">
+            Local only: only models on your own machine. Hybrid: local when
+            possible, cloud services when you allow it. Cloud only: always
+            uses online services.
+          </p>
           <Select
-            label="Autonomy"
+            label="How much may Orbit do on its own?"
             value={settings.autonomy_mode}
             onChange={(e) =>
               setSettings({ ...settings, autonomy_mode: e.target.value })
@@ -830,6 +835,11 @@ export function Settings() {
               ),
             )}
           </Select>
+          <p className="muted">
+            Chat: only answers you. Observe: watches and suggests, changes
+            nothing. Assist: can act but asks first. Trusted automation:
+            runs approved routines on its own.
+          </p>
           <label className="check">
             <input
               type="checkbox"
@@ -841,25 +851,24 @@ export function Settings() {
                 })
               }
             />
-            Allow PRIVATE context on cloud providers
+            Allow personal context on cloud models
           </label>
           <p className="muted">
-            HIGHLY_PRIVATE stays local. SECRET never enters a model. Trusted
-            Automation still requires specific low-risk grants; high-impact
-            actions do not become automatic.
+            Off means cloud services only see the bare minimum. Your most
+            private notes stay on this machine either way, and secrets never
+            enter a model.
           </p>
-          <button disabled={save.isPending}>Save privacy and autonomy</button>
+          <button disabled={save.isPending}>Save</button>
         </form>
       )}
       <PushToggle />
       <UpdateNotice />
       <section className="panel form">
-        <h2>Policies and budgets</h2>
+        <h2>Safety rules</h2>
         <p className="muted">
-          <Link to="/approvals">Approvals</Link> enforce the standing policy:
-          denials win, and approval plus sandbox requirements accumulate.
-          Standing rules are managed through the policy crate by the owner —
-          there is no separate rules API in this build.
+          Risky actions need your say-so in <Link to="/approvals">Approvals</Link> before
+          they run. Blocked things stay blocked, and anything needing a safe
+          sandbox waits for one.
         </p>
       </section>
       {save.error && <ErrorNotice error={save.error} />}{" "}

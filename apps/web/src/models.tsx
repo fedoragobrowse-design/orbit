@@ -580,8 +580,13 @@ function Budgets() {
   if (budget.isPending) return <p role="status">Loading budgets…</p>;
   if (budget.error) return <ErrorNotice error={budget.error} retry={() => budget.refetch()} />;
   const current = budget.data!;
-  const fields = ["task_usd", "day_usd", "month_usd", "agent_day_usd"];
-  const values = form ?? Object.fromEntries(fields.map((f) => [f, String(current[f] ?? "")]));
+  const fields = [
+    { name: "task_usd", label: "Max spend per task ($)", hint: "Stops a runaway task before it costs more than this." },
+    { name: "day_usd", label: "Max spend per day ($)", hint: "All model use pauses once the day's total passes this." },
+    { name: "month_usd", label: "Max spend per month ($)", hint: "The monthly ceiling across everything." },
+    { name: "agent_day_usd", label: "Max spend per helper per day ($)", hint: "Caps what one helper (agent) may spend in a day." },
+  ];
+  const values = form ?? Object.fromEntries(fields.map((f) => [f.name, String(current[f.name] ?? "")]));
   return (
     <form
       onSubmit={(event) => {
@@ -597,27 +602,26 @@ function Budgets() {
         } as unknown as RecordData);
       }}
     >
-      {fields.map((field) => (
-        <Input
-          key={field}
-          label={label(field)}
-          type="number"
-          step="any"
-          value={values[field]}
-          onChange={(e) => setForm({ ...values, [field]: e.target.value })}
-        />
-      ))}
-      <p>
-        <small>
-          Ceilings also cap model calls ({text(current.max_model_calls)}), input
-          tokens ({text(current.max_input_tokens)}) and output tokens (
-          {text(current.max_output_tokens)}).
-        </small>
+      <p className="muted">
+        Spending limits. Orbit stops calling paid models once a limit is
+        reached — it will tell you instead of spending more.
       </p>
+      {fields.map((field) => (
+        <div key={field.name}>
+          <Input
+            label={field.label}
+            type="number"
+            step="any"
+            value={values[field.name]}
+            onChange={(e) => setForm({ ...values, [field.name]: e.target.value })}
+          />
+          <p className="muted">{field.hint}</p>
+        </div>
+      ))}
       {save.error && <ErrorNotice error={save.error} retry={() => save.reset()} />}
       <div className="actions">
         <button type="submit" disabled={save.isPending}>
-          {save.isPending ? "Saving…" : "Save budgets"}
+          {save.isPending ? "Saving…" : "Save spending limits"}
         </button>
       </div>
     </form>
