@@ -185,8 +185,10 @@ function ThreadReplies({
 export function Chat() {
   const [params, setParams] = useSearchParams();
   const conversation = params.get("conversation");
+  const [chatModel, setChatModel] = useState(() => localStorage.getItem("orbit.chat.model") ?? "");
+  const [chatRole, setChatRole] = useState(() => localStorage.getItem("orbit.chat.role") ?? "FAST");
+  const [modelFilter, setModelFilter] = useState("");
   const [draft, setDraft] = useDraft(`chat-${conversation ?? "new"}`);
-
   const detail = useQuery({
     queryKey: ["event", conversation],
     queryFn: () => api<RecordData>(`/events/${conversation}`),
@@ -197,7 +199,7 @@ export function Chat() {
     mutationFn: () =>
       post<{ id: string }>("/events", {
         event_type: "USER_MESSAGE",
-        payload: { text: draft.trim(), title: messageTitle(draft) },
+        payload: { text: draft.trim(), title: messageTitle(draft), ...(chatModel ? { model_id: chatModel } : {}), model_role: chatRole },
         source_event_key: `web-chat-${crypto.randomUUID()}`,
         privacy_class: "PRIVATE",
       }),
@@ -274,6 +276,7 @@ export function Chat() {
             />
           )}
         </div>
+        <ChatPickers chatModel={chatModel} setChatModel={(v) => { setChatModel(v); localStorage.setItem("orbit.chat.model", v); }} chatRole={chatRole} setChatRole={(v) => { setChatRole(v); localStorage.setItem("orbit.chat.role", v); }} modelFilter={modelFilter} setModelFilter={setModelFilter} />
         <form
           className="composer chat-composer"
           onSubmit={(e) => {
@@ -301,6 +304,28 @@ export function Chat() {
           {send.error && <ErrorNotice error={send.error} />}
         </form>
       </section>
+    </div>
+  );
+}
+function ChatPickers({ chatModel, setChatModel, chatRole, setChatRole, modelFilter, setModelFilter }: { chatModel: string; setChatModel: (v: string) => void; chatRole: string; setChatRole: (v: string) => void; modelFilter: string; setModelFilter: (v: string) => void }) {
+  const models = useQuery({ queryKey: ["models"], queryFn: () => api<{ items: RecordData[] }>("/models").then((r) => r.items ?? []) });
+  const providers = useQuery({ queryKey: ["providers"], queryFn: () => api<{ items: RecordData[] }>("/providers").then((r) => r.items ?? []) });
+  const providerName = (id: string) => { const p = (providers.data ?? []).find((r) => r.id === id); return p ? String(p.name ?? p.id) : ""; };
+  const items = (models.data ?? []).filter((m) => { const hay = `${String(m.name ?? "")} ${String(m.model ?? "")} ${providerName(String(m.provider_id ?? ""))}`.toLowerCase(); return hay.includes(modelFilter.toLowerCase()); });
+  return (
+    <div className="chat-pickers">
+      <Input label="Find model" placeholder="Type to filter…" value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} />
+      <Select label="Model (optional — auto when blank)" value={chatModel} onChange={(e) => setChatModel(e.target.value)}>
+        <option value="">Auto (role default)</option>
+        {items.slice(0, 100).map((m) => (
+          <option key={String(m.id)} value={String(m.id)}>{`${providerName(String(m.provider_id ?? ""))} — ${String(m.name ?? m.model ?? m.id)}`}</option>
+        ))}
+      </Select>
+      <Select label="Function" value={chatRole} onChange={(e) => setChatRole(e.target.value)}>
+        {AGENT_ROLES.map((option) => (
+          <option key={option} value={option}>{label(option)}</option>
+        ))}
+      </Select>
     </div>
   );
 }

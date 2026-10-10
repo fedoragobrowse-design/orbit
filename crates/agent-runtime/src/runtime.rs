@@ -570,6 +570,7 @@ async fn run(
                             task_fence: Some(fence),
                             agent_id: Some(agent.id),
                             automatic: r.get("automatic"),
+                            model_id: None,
                         },
                     ),
                 )

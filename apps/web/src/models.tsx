@@ -7,14 +7,14 @@ type Settings = { installation_mode?: unknown };
 
 const PROVIDER_PRESETS: { kind: string; label: string; origin: string; local: boolean }[] = [
   { kind: "OLLAMA", label: "Ollama (local)", origin: "http://ollama:11434", local: true },
-  { kind: "OPENAI_COMPATIBLE", label: "OpenAI", origin: "https://api.openai.com", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "OpenAI", origin: "https://api.openai.com/v1", local: false },
   { kind: "ANTHROPIC", label: "Anthropic", origin: "https://api.anthropic.com", local: false },
-  { kind: "OPENAI_COMPATIBLE", label: "OpenRouter", origin: "https://openrouter.ai/api", local: false },
-  { kind: "OPENAI_COMPATIBLE", label: "Together", origin: "https://api.together.xyz", local: false },
-  { kind: "OPENAI_COMPATIBLE", label: "Groq", origin: "https://api.groq.com/openai", local: false },
-  { kind: "OPENAI_COMPATIBLE", label: "Mistral", origin: "https://api.mistral.ai", local: false },
-  { kind: "OPENAI_COMPATIBLE", label: "DeepSeek", origin: "https://api.deepseek.com", local: false },
-  { kind: "OPENAI_COMPATIBLE", label: "xAI", origin: "https://api.x.ai", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "OpenRouter", origin: "https://openrouter.ai/api/v1", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "Together", origin: "https://api.together.xyz/v1", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "Groq", origin: "https://api.groq.com/openai/v1", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "Mistral", origin: "https://api.mistral.ai/v1", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "DeepSeek", origin: "https://api.deepseek.com/v1", local: false },
+  { kind: "OPENAI_COMPATIBLE", label: "xAI", origin: "https://api.x.ai/v1", local: false },
   { kind: "GEMINI", label: "Gemini", origin: "https://generativelanguage.googleapis.com", local: false },
   { kind: "OPENAI_COMPATIBLE", label: "Custom (OpenAI-compatible)", origin: "https://", local: false },
 ];

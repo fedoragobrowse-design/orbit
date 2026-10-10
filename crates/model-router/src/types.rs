@@ -61,7 +61,7 @@ pub trait ModelProvider:Send+Sync {
  fn capabilities(&self)->ProviderCapabilities;
 }
 #[derive(Debug,Clone)]
-pub struct RoutedRequest {pub role:ModelRole,pub chat:ChatRequest,pub context:Vec<ContextBlock>,pub privacy:PrivacyClass,pub task_id:Option<Uuid>,pub task_fence:Option<i64>,pub agent_id:Option<Uuid>,pub automatic:bool}
+pub struct RoutedRequest {pub role:ModelRole,pub chat:ChatRequest,pub context:Vec<ContextBlock>,pub privacy:PrivacyClass,pub task_id:Option<Uuid>,pub task_fence:Option<i64>,pub agent_id:Option<Uuid>,pub automatic:bool,pub model_id:Option<Uuid>}
 #[derive(Debug,Clone,Serialize,Deserialize)]
 pub struct RouteMetadata {pub provider_id:Uuid,pub model_id:Uuid,pub model:String,pub local:bool,pub privacy:PrivacyClass,pub reason:String,pub effective_origin:String}
 #[derive(Debug,Clone,Serialize,Deserialize)]

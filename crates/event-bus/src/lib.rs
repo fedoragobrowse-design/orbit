@@ -64,7 +64,8 @@ pub fn classify_message(text: &str) -> (&'static str, f64, &'static str) {
     sqlx::query("UPDATE events SET classification=$3 WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(delivery.event_id).bind(&classification).execute(&mut *tx).await?;
     orbit_audit::append(&mut tx,&scope,correlation,Some(delivery.event_id),None,"EVENT_CLASSIFIED","deterministic classification",classification).await?;
     if kind_name=="CHAT" {
-     sqlx::query("INSERT INTO events(id,owner_id,event_type,source,principal_id,payload,trust_level,privacy_class,correlation_id,source_event_key) VALUES($1,$2,'AGENT_MESSAGE','foundation',$3,$4,'SYSTEM','PRIVATE',$5,$6) ON CONFLICT(owner_id,source,source_event_key) DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(scope.principal_id).bind(json!({"source_reference":delivery.event_id.to_string(),"reply_to":delivery.event_id,"status":"QUEUED_REPLY"})).bind(correlation).bind(format!("chat-reply:{}",delivery.event_id)).execute(&mut *tx).await?;
+     let carry=json!({"source_reference":delivery.event_id.to_string(),"reply_to":delivery.event_id,"status":"QUEUED_REPLY","model_id":payload_now.get("model_id"),"model_role":payload_now.get("model_role")});
+     sqlx::query("INSERT INTO events(id,owner_id,event_type,source,principal_id,payload,trust_level,privacy_class,correlation_id,source_event_key) VALUES($1,$2,'AGENT_MESSAGE','foundation',$3,$4,'SYSTEM','PRIVATE',$5,$6) ON CONFLICT(owner_id,source,source_event_key) DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(scope.principal_id).bind(carry).bind(correlation).bind(format!("chat-reply:{}",delivery.event_id)).execute(&mut *tx).await?;
     }
     if create {
      let title=payload_now.get("title").and_then(Value::as_str).unwrap_or("Message received");

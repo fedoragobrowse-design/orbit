@@ -82,6 +82,7 @@ impl ModelRouter {
                 request.task_fence,
                 request.agent_id,
                 request.automatic,
+                request.model_id,
             )
             .await?;
         let start = std::time::Instant::now();
@@ -126,6 +127,7 @@ impl ModelRouter {
                 request.task_fence,
                 request.agent_id,
                 request.automatic,
+                request.model_id,
             )
             .await?;
         let adapter = self
@@ -171,6 +173,7 @@ impl ModelRouter {
                 None,
                 None,
                 true,
+                None,
             )
             .await?;
         let start = std::time::Instant::now();
@@ -214,6 +217,7 @@ impl ModelRouter {
                 None,
                 None,
                 true,
+                None,
             )
             .await?;
         let start = std::time::Instant::now();
@@ -256,6 +260,7 @@ impl ModelRouter {
         fence: Option<i64>,
         agent_id: Option<Uuid>,
         automatic: bool,
+        pinned: Option<Uuid>,
     ) -> Result<Selection> {
         if privacy == PrivacyClass::Secret {
             return Err(Error::Forbidden);
@@ -297,9 +302,9 @@ impl ModelRouter {
             let model: ModelConfig = serde_json::from_value(row.try_get("model")?)?;
             let mut provider: ProviderConfig = serde_json::from_value(row.try_get("provider")?)?;
             provider.credential_id = row.try_get("credential_id")?;
-            if !model.enabled || !provider.enabled || !model.roles.contains(&role) {
-                continue;
-            }
+            if let Some(want) = pinned { if model.id != want { continue; } if !model.roles.contains(&role) { return Err(Error::Validation("pinned model does not carry the requested role".into())); } }
+            if pinned.is_none() && !model.roles.contains(&role) { continue; }
+            if pinned.is_none() && (!model.enabled || !provider.enabled) { continue; }
             role_exists = true;
             if !route_allowed(mode, privacy, provider.local, private_cloud) {
                 continue;
@@ -317,6 +322,7 @@ impl ModelRouter {
             selected = Some((provider, model));
             break;
         }
+        if pinned.is_some() && selected.is_none() { return Err(Error::NotFound); }
         let (provider, model) = selected.ok_or_else(|| {
             if !role_exists {
                 Error::Unavailable(
@@ -413,9 +419,7 @@ impl ModelRouter {
             model: model.model.clone(),
             local: provider.local,
             privacy,
-            reason:
-                "ordered role, explicit capability, installation mode and maximum context privacy"
-                    .into(),
+            reason: if pinned.is_some() { "explicit chat model choice, capability and privacy still enforced".into() } else { "ordered role, explicit capability, installation mode and maximum context privacy".into() },
             effective_origin: provider.origin.clone(),
         };
         sqlx::query("INSERT INTO model_calls(id,owner_id,task_id,agent_id,provider_id,model_id,model,local,privacy_class,operation,reserved_micro_usd,pricing_known,reserved_input_tokens,reserved_output_tokens) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)").bind(call_id).bind(scope.owner_id).bind(task_id).bind(agent_id).bind(provider.id).bind(model.id).bind(&model.model).bind(provider.local).bind(orbit_core::literal(privacy)).bind(operation.name()).bind(reserve).bind(pricing_known).bind(max_input as i64).bind(max_output as i64).execute(&mut *tx).await?;

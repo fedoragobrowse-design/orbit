@@ -191,13 +191,16 @@ async fn run_chat_replies(state: &ApiState) -> orbit_core::Result<()> {
         let id: uuid::Uuid = row.get("id");
         let payload: serde_json::Value = row.get("payload");
         let reply_to = payload.get("reply_to").and_then(serde_json::Value::as_str).unwrap_or("");
-        let user_text: String = sqlx::query_scalar("SELECT payload->>'text' FROM events WHERE owner_id=$1 AND id=$2::uuid").bind(scope.owner_id).bind(reply_to).fetch_optional(&state.pool).await?.flatten().unwrap_or_default();
+        let user_row: Option<(Option<String>, serde_json::Value)> = sqlx::query_as("SELECT payload->>'text', payload FROM events WHERE owner_id=$1 AND id=$2::uuid").bind(scope.owner_id).bind(reply_to).fetch_optional(&state.pool).await?;
+        let (user_text, user_payload) = user_row.map(|(t, p)| (t.unwrap_or_default(), p)).unwrap_or_default();
         if user_text.trim().is_empty() {
             sqlx::query("UPDATE events SET payload=jsonb_set(payload,'{status}','\"FAILED_REPLY\"') WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(id).execute(&state.pool).await?;
             continue;
         }
+        let pinned: Option<uuid::Uuid> = user_payload.get("model_id").and_then(serde_json::Value::as_str).and_then(|s| s.parse().ok());
+        let role = user_payload.get("model_role").and_then(serde_json::Value::as_str).map(|s| match s { "PRIVATE" => orbit_core::ModelRole::Private, "REASONING" => orbit_core::ModelRole::Reasoning, "CODING" => orbit_core::ModelRole::Coding, "VISION" => orbit_core::ModelRole::Vision, "EMBEDDING" => orbit_core::ModelRole::Embedding, _ => orbit_core::ModelRole::Fast }).unwrap_or(orbit_core::ModelRole::Fast);
         let request = orbit_model_router::RoutedRequest {
-            role: orbit_core::ModelRole::Fast,
+            role,
             chat: orbit_model_router::ChatRequest { messages: vec![orbit_model_router::ChatMessage { role: "user".into(), content: user_text, tool_call_id: None, tool_calls: vec![], images: vec![] }], tools: vec![], output_schema: None, max_output_tokens: 1024, reasoning: false },
             context: vec![],
             privacy: orbit_core::PrivacyClass::Private,
@@ -205,6 +208,7 @@ async fn run_chat_replies(state: &ApiState) -> orbit_core::Result<()> {
             task_fence: None,
             agent_id: None,
             automatic: true,
+            model_id: pinned,
         };
         let answer = tokio::time::timeout(std::time::Duration::from_secs(120), orbit_model_router::ModelRouter::new(state.pool.clone(), state.key_dir.clone()).complete(&scope, request)).await;
         match answer {

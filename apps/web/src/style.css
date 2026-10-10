@@ -646,6 +646,8 @@ dd {
 .chat-composer textarea {
   min-height: 64px;
 }
+.chat-pickers { display: grid; grid-template-columns: 1fr 1fr 160px; gap: 8px; padding: 8px 12px; }
+@media (max-width: 900px) { .chat-pickers { grid-template-columns: 1fr; } }
 @media (max-width: 900px) {
   .chat-shell {
     grid-template-columns: 1fr;
