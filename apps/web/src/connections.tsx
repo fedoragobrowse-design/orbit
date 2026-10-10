@@ -6,6 +6,7 @@ import {
   api,
   label,
   post,
+  put,
   remove,
   text,
   timestamp,
@@ -33,6 +34,120 @@ const tabs = [
   { to: "/connections/api", label: "API" },
 ] as const;
 
+function OAuthClientSection({ connector, title }: { connector: string; title: string }) {
+  const client = useQueryClient();
+  const status = useQuery({
+    queryKey: ["oauth-clients"],
+    queryFn: () => api<{ items: RecordData[] }>("/oauth/clients"),
+  });
+  const [form, setForm] = useState({ client_id: "", client_secret: "" });
+  const [editing, setEditing] = useState(false);
+  const save = useMutation({
+    mutationFn: () =>
+      put<RecordData>(`/oauth/clients/${connector}`, {
+        client_id: form.client_id,
+        client_secret: form.client_secret,
+      }),
+    onSuccess: async () => {
+      setForm({ client_id: "", client_secret: "" });
+      setEditing(false);
+      await client.invalidateQueries({ queryKey: ["oauth-clients"] });
+    },
+  });
+  const forget = useMutation({
+    mutationFn: () => remove(`/oauth/clients/${connector}`),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["oauth-clients"] }),
+  });
+  const entry = status.data?.items.find((item) => item.connector === connector);
+  return (
+    <div className="panel">
+      <h2>{title} credentials</h2>
+      {status.isPending ? (
+        <p role="status">Loading client status…</p>
+      ) : status.error ? (
+        <ErrorNotice error={status.error} retry={() => status.refetch()} />
+      ) : entry?.configured ? (
+        <p role="status">
+          Client stored (…{text(entry.client_id_suffix)}). OAuth sign-in stays
+          unavailable in this build — credentials are pending verification.
+        </p>
+      ) : (
+        <p role="status">
+          No client stored. OAuth sign-in stays unavailable in this build.
+        </p>
+      )}
+      {entry?.configured && !editing ? (
+        <div className="actions">
+          <button className="secondary" onClick={() => setEditing(true)}>
+            Replace credentials
+          </button>{" "}
+          <button
+            className="danger"
+            disabled={forget.isPending}
+            onClick={() => forget.mutate()}
+          >
+            {forget.isPending ? "Removing…" : "Remove"}
+          </button>
+        </div>
+      ) : (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            save.mutate();
+          }}
+        >
+          <Input
+            label="Client ID"
+            required
+            autoComplete="off"
+            value={form.client_id}
+            onChange={(e) => setForm({ ...form, client_id: e.target.value })}
+          />
+          <Input
+            label="Client secret"
+            type="password"
+            required
+            autoComplete="new-password"
+            value={form.client_secret}
+            onChange={(e) => setForm({ ...form, client_secret: e.target.value })}
+          />
+          {save.error && <ErrorNotice error={save.error} retry={() => save.reset()} />}
+          {forget.error && <ErrorNotice error={forget.error} retry={() => forget.reset()} />}
+          <div className="actions">
+            {entry?.configured ? (
+              <>
+                <button type="button" className="secondary" onClick={() => setEditing(false)}>
+                  Cancel
+                </button>{" "}
+              </>
+            ) : null}
+            <button type="submit" disabled={save.isPending || !form.client_id || !form.client_secret}>
+              {save.isPending ? "Saving…" : "Save credentials"}
+            </button>
+          </div>
+        </form>
+      )}
+      <p>
+        <small>
+          Write-only: the secret is sealed into the secret store and never
+          shown back. OAuth sign-in is not wired up yet, so storing a client
+          does not enable sign-in.
+        </small>
+      </p>
+    </div>
+  );
+}
+
+function OAuthConnectors() {
+  return (
+    <>
+      <OAuthClientSection connector="google" title="Google" />
+      <OAuthClientSection connector="outlook" title="Outlook" />
+      <OAuthClientSection connector="github" title="GitHub" />
+    </>
+  );
+}
+
 function gated(title: string, reason: string, extra?: React.ReactNode) {
   return (
     <div className="panel">
@@ -44,7 +159,6 @@ function gated(title: string, reason: string, extra?: React.ReactNode) {
     </div>
   );
 }
-
 function Runtimes() {
   const client = useQueryClient();
   const [adding, setAdding] = useState(false);
@@ -327,6 +441,7 @@ export function Connections() {
           element={gated(
             "Calendars",
             "Native calendar connections (OAuth calendar access) are not served by this backend.",
+            <OAuthConnectors />,
           )}
         />
         <Route
@@ -334,6 +449,7 @@ export function Connections() {
           element={gated(
             "GitHub",
             "Native GitHub connections (OAuth) are not served by this backend.",
+            <OAuthConnectors />,
           )}
         />
         <Route

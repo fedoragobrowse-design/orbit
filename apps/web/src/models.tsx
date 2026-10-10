@@ -71,12 +71,7 @@ function InstallationMode() {
 }
 
 function Providers() {
-  const client = useQueryClient();
   const [open, setOpen] = useState(false);
-  const removeProvider = useMutation({
-    mutationFn: (id: string) => remove(`/providers/${id}`),
-    onSuccess: () => client.invalidateQueries({ queryKey: ["providers"] }),
-  });
   return (
     <section className="section" aria-label="Providers">
       <div className="panel">
@@ -97,29 +92,12 @@ function Providers() {
               </thead>
               <tbody>
                 {items.map((row) => (
-                  <tr key={row.id}>
-                    <th scope="row">{text(row.name)}</th>
-                    <td>{label(row.kind)}</td>
-                    <td>{text(row.origin)}</td>
-                    <td>{row.secret_set ? "Set" : "None"}</td>
-                    <td><Status value={row.enabled} /></td>
-                    <td>{text(row.revision)}</td>
-                    <td>
-                      <button
-                        className="danger"
-                        disabled={removeProvider.isPending}
-                        onClick={() => removeProvider.mutate(String(row.id))}
-                      >
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
+                  <ProviderRow key={row.id} row={row} />
                 ))}
               </tbody>
             </table>
           )}
         </Resource>
-        {removeProvider.error && <ErrorNotice error={removeProvider.error} retry={() => removeProvider.reset()} />}
         {open ? (
           <NewProvider onDone={() => setOpen(false)} />
         ) : (
@@ -129,6 +107,104 @@ function Providers() {
         )}
       </div>
     </section>
+  );
+}
+
+function ProviderRow({ row }: { row: RecordData }) {
+  const client = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [credential, setCredential] = useState("");
+  const removeProvider = useMutation({
+    mutationFn: () => remove(`/providers/${row.id}`),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["providers"] }),
+  });
+  const rotate = useMutation({
+    mutationFn: () =>
+      post<RecordData>(`/providers/${row.id}/credential`, {
+        credential,
+        expected_revision: row.revision,
+      }),
+    onSuccess: async () => {
+      setCredential("");
+      setOpen(false);
+      await client.invalidateQueries({ queryKey: ["providers"] });
+    },
+  });
+  const test = useMutation({
+    mutationFn: () => post<RecordData>(`/providers/${row.id}/test`, {}),
+  });
+  return (
+    <>
+      <tr>
+        <th scope="row">{text(row.name)}</th>
+        <td>{label(row.kind)}</td>
+        <td>{text(row.origin)}</td>
+        <td>{row.secret_set ? "Set" : "None"}</td>
+        <td><Status value={row.enabled} /></td>
+        <td>{text(row.revision)}</td>
+        <td>
+          <button
+            className="secondary"
+            onClick={() => {
+              setCredential("");
+              rotate.reset();
+              test.reset();
+              setOpen(!open);
+            }}
+          >
+            {open ? "Close" : "Key"}
+          </button>{" "}
+          <button
+            className="danger"
+            disabled={removeProvider.isPending}
+            onClick={() => removeProvider.mutate()}
+          >
+            Remove
+          </button>
+        </td>
+      </tr>
+      {open && (
+        <tr>
+          <td colSpan={7}>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                rotate.mutate();
+              }}
+            >
+              <Input
+                label={`Rotate key for ${text(row.name)}`}
+                type="password"
+                autoComplete="new-password"
+                placeholder="New API key (write-only, never shown again)"
+                value={credential}
+                onChange={(e) => setCredential(e.target.value)}
+              />
+              {rotate.error && <ErrorNotice error={rotate.error} retry={() => rotate.reset()} />}
+              {rotate.isSuccess && <p role="status">Key saved.</p>}
+              {test.data && <p role="status">Test call accepted.</p>}
+              {test.error && <ErrorNotice error={test.error} retry={() => test.reset()} />}
+              <div className="actions">
+                <button type="submit" disabled={rotate.isPending || !credential}>
+                  {rotate.isPending ? "Saving…" : "Save key"}
+                </button>{" "}
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={test.isPending}
+                  onClick={() => test.mutate()}
+                >
+                  {test.isPending ? "Testing…" : "Test"}
+                </button>
+              </div>
+            </form>
+            {removeProvider.error && (
+              <ErrorNotice error={removeProvider.error} retry={() => removeProvider.reset()} />
+            )}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 

@@ -54,6 +54,23 @@ pub struct ProviderUpdate {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+pub struct CredentialRotate {
+    pub credential: String,
+    pub expected_revision: Option<i64>,
+}
+
+/// OAuth client registration. The client secret is write-only (sealed into
+/// the shared secret store); the client id is configuration and may be
+/// shown back with only a short suffix in status responses.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthClientUpsert {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ModelCreate {
     pub provider_id: Uuid,
     pub name: String,
@@ -211,6 +228,35 @@ fn validate_credential(secret: &str) -> Result<(), Error> {
         return Err(Error::Validation("invalid credential size".into()));
     }
     Ok(())
+}
+
+/// Supported OAuth connector names. Only connectors with a real (planned)
+/// integration surface stay listed; unknown names are rejected so a typo
+/// cannot create a silently unused credential row.
+fn parse_connector(raw: &str) -> Result<&'static str, Error> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "google" => Ok("google"),
+        "outlook" => Ok("outlook"),
+        "github" => Ok("github"),
+        _ => Err(Error::Validation(
+            "unknown OAuth connector; expected google, outlook or github".into(),
+        )),
+    }
+}
+
+fn validate_client_id(id: &str) -> Result<String, Error> {
+    let id = id.trim();
+    if id.is_empty() || id.len() > 1024 {
+        return Err(Error::Validation("invalid OAuth client id".into()));
+    }
+    Ok(id.to_owned())
+}
+
+/// Last-4 suffix of a client id for status display. A client id is
+/// non-secret configuration, but even it is only shown truncated.
+fn client_id_suffix(id: &str) -> String {
+    let tail: String = id.chars().rev().take(4).collect::<String>().chars().rev().collect();
+    format!("…{tail}")
 }
 
 fn parse_roles(roles: &[String]) -> Result<Vec<ModelRole>, Error> {
@@ -809,6 +855,258 @@ pub async fn test_provider(
     })))
 }
 
+/// Dedicated credential rotate: seals the new value into the shared secret
+/// store and swaps the provider row to point at it. The old secret is
+/// revoked only after the row swap commits, so a failed write can never
+/// orphan the live credential. The value never appears in any response.
+#[utoipa::path(post, path = "/api/v1/providers/{id}/credential", params(("id" = Uuid, Path)), request_body = CredentialRotate, responses((status = 200, body = Value)))]
+pub async fn rotate_credential(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<CredentialRotate>,
+) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, true).await?;
+    validate_credential(&input.credential)?;
+    let store = SecretStore::open(state.pool.clone(), &state.key_dir).await?;
+    let row = provider_row(&state.pool, a.scope.owner_id, id).await?;
+    let (mut config, _) = provider_from_row(&row)?;
+    let previous = config.credential_id;
+    let fresh = store
+        .put(
+            &a.scope,
+            "model-provider-credential",
+            input.credential.as_bytes(),
+        )
+        .await?;
+    config.credential_id = Some(fresh);
+    let stored: Value = serde_json::to_value(&config).map_err(Error::from)?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE")
+        .bind(a.scope.owner_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let expected = input.expected_revision.unwrap_or(i64::MAX);
+    let updated = if input.expected_revision.is_some() {
+        sqlx::query(
+            "UPDATE model_providers SET configuration=$3, credential_id=$4, revision=revision+1, updated_at=now() WHERE owner_id=$1 AND id=$2 AND revision=$5 RETURNING revision, created_at, updated_at",
+        )
+        .bind(a.scope.owner_id)
+        .bind(id)
+        .bind(&stored)
+        .bind(config.credential_id)
+        .bind(expected)
+        .fetch_optional(&mut *tx)
+        .await?
+    } else {
+        sqlx::query(
+            "UPDATE model_providers SET configuration=$3, credential_id=$4, revision=revision+1, updated_at=now() WHERE owner_id=$1 AND id=$2 RETURNING revision, created_at, updated_at",
+        )
+        .bind(a.scope.owner_id)
+        .bind(id)
+        .bind(&stored)
+        .bind(config.credential_id)
+        .fetch_optional(&mut *tx)
+        .await?
+    };
+    let Some(updated) = updated else {
+        drop(tx);
+        revoke_quiet(&state, &a.scope, fresh).await;
+        return Err(Error::Conflict("provider revision changed".into()).into());
+    };
+    orbit_audit::append(
+        &mut tx,
+        &a.scope,
+        Uuid::new_v4(),
+        None,
+        None,
+        "PROVIDER_CREDENTIAL_ROTATED",
+        "owner rotated model provider credential",
+        json!({"provider_id": id}),
+    )
+    .await?;
+    tx.commit().await?;
+    if let Some(old) = previous {
+        if old != fresh {
+            revoke_quiet(&state, &a.scope, old).await;
+        }
+    }
+    Ok(Json(provider_view(
+        &config,
+        updated.try_get("revision")?,
+        updated.try_get("created_at")?,
+        updated.try_get("updated_at")?,
+    )))
+}
+
+// ---------------------------------------------------------------------------
+// OAuth client credentials. Connectors stay UNAVAILABLE-for-use: no OAuth
+// flow, token exchange, or Graph/CalDAV access exists in this slice. These
+// endpoints only store the client id/secret so a future flow has sealed
+// credentials to use, and report configured/unconfigured per connector.
+// ---------------------------------------------------------------------------
+
+const OAUTH_CONNECTORS: [&str; 3] = ["google", "outlook", "github"];
+
+/// Per-connector status: whether a client is stored, a truncated client-id
+/// suffix, and when it was last written. The secret is never surfaced.
+#[utoipa::path(get, path = "/api/v1/oauth/clients", responses((status = 200, body = Value)))]
+pub async fn oauth_status(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, false).await?;
+    let rows = sqlx::query(
+        "SELECT connector, client_id, revision, updated_at FROM oauth_clients WHERE owner_id=$1",
+    )
+    .bind(a.scope.owner_id)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut by_connector = std::collections::HashMap::<String, (String, i64, chrono::DateTime<chrono::Utc>)>::new();
+    for row in &rows {
+        let connector: String = row.try_get("connector")?;
+        let client_id: String = row.try_get("client_id")?;
+        let revision: i64 = row.try_get("revision")?;
+        let updated_at: chrono::DateTime<chrono::Utc> = row.try_get("updated_at")?;
+        by_connector.insert(connector, (client_id, revision, updated_at));
+    }
+    let items: Vec<Value> = OAUTH_CONNECTORS
+        .iter()
+        .map(|connector| match by_connector.get(*connector) {
+            Some((client_id, revision, updated_at)) => json!({
+                "connector": connector,
+                "configured": true,
+                "client_id_suffix": client_id_suffix(client_id),
+                "revision": revision,
+                "updated_at": updated_at,
+                "usable": false,
+                "note": "Client stored. OAuth sign-in is not available in this build; credentials are pending verification.",
+            }),
+            None => json!({
+                "connector": connector,
+                "configured": false,
+                "client_id_suffix": Value::Null,
+                "revision": Value::Null,
+                "updated_at": Value::Null,
+                "usable": false,
+                "note": "No client stored. OAuth sign-in is not available in this build.",
+            }),
+        })
+        .collect();
+    Ok(Json(json!({"items": items})))
+}
+
+/// Create or replace one connector's client credentials. The secret goes
+/// straight into the shared secret store; only its id lands in the row.
+#[utoipa::path(put, path = "/api/v1/oauth/clients/{connector}", params(("connector" = String, Path)), request_body = OAuthClientUpsert, responses((status = 200, body = Value)))]
+pub async fn upsert_oauth_client(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(connector): Path<String>,
+    Json(input): Json<OAuthClientUpsert>,
+) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, true).await?;
+    let connector = parse_connector(&connector)?;
+    let client_id = validate_client_id(&input.client_id)?;
+    validate_credential(&input.client_secret)?;
+    let store = SecretStore::open(state.pool.clone(), &state.key_dir).await?;
+    let fresh = store
+        .put(&a.scope, "oauth-client-secret", input.client_secret.as_bytes())
+        .await?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE")
+        .bind(a.scope.owner_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let previous: Option<Option<Uuid>> = sqlx::query_scalar(
+        "SELECT credential_id FROM oauth_clients WHERE owner_id=$1 AND connector=$2",
+    )
+    .bind(a.scope.owner_id)
+    .bind(connector)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let previous: Option<Uuid> = previous.flatten();
+    let row = sqlx::query(
+        "INSERT INTO oauth_clients(id, owner_id, connector, client_id, credential_id) VALUES($1,$2,$3,$4,$5)
+         ON CONFLICT (owner_id, connector) DO UPDATE SET client_id=EXCLUDED.client_id, credential_id=EXCLUDED.credential_id, revision=oauth_clients.revision+1, updated_at=now()
+         RETURNING revision, updated_at",
+    )
+    .bind(Uuid::new_v4())
+    .bind(a.scope.owner_id)
+    .bind(connector)
+    .bind(&client_id)
+    .bind(fresh)
+    .fetch_one(&mut *tx)
+    .await?;
+    orbit_audit::append(
+        &mut tx,
+        &a.scope,
+        Uuid::new_v4(),
+        None,
+        None,
+        "OAUTH_CLIENT_STORED",
+        "owner stored OAuth client credentials",
+        json!({"connector": connector}),
+    )
+    .await?;
+    tx.commit().await?;
+    if let Some(old) = previous {
+        if old != fresh {
+            revoke_quiet(&state, &a.scope, old).await;
+        }
+    }
+    let revision: i64 = row.try_get("revision")?;
+    let updated_at: chrono::DateTime<chrono::Utc> = row.try_get("updated_at")?;
+    Ok(Json(json!({
+        "connector": connector,
+        "configured": true,
+        "client_id_suffix": client_id_suffix(&client_id),
+        "revision": revision,
+        "updated_at": updated_at,
+        "usable": false,
+        "note": "Client stored. OAuth sign-in is not available in this build; credentials are pending verification.",
+    })))
+}
+
+/// Remove one connector's client credentials and revoke the sealed secret.
+#[utoipa::path(delete, path = "/api/v1/oauth/clients/{connector}", params(("connector" = String, Path)), responses((status = 200, body = Value)))]
+pub async fn delete_oauth_client(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(connector): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, true).await?;
+    let connector = parse_connector(&connector)?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE")
+        .bind(a.scope.owner_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let credential_id: Option<Uuid> = sqlx::query_scalar(
+        "DELETE FROM oauth_clients WHERE owner_id=$1 AND connector=$2 RETURNING credential_id",
+    )
+    .bind(a.scope.owner_id)
+    .bind(connector)
+    .fetch_optional(&mut *tx)
+    .await?;
+    orbit_audit::append(
+        &mut tx,
+        &a.scope,
+        Uuid::new_v4(),
+        None,
+        None,
+        "OAUTH_CLIENT_REMOVED",
+        "owner removed OAuth client credentials",
+        json!({"connector": connector}),
+    )
+    .await?;
+    tx.commit().await?;
+    if let Some(old) = credential_id {
+        revoke_quiet(&state, &a.scope, old).await;
+    }
+    Ok(Json(json!({"connector": connector, "configured": false, "usable": false})))
+}
+
 // ---------------------------------------------------------------------------
 // Models
 // ---------------------------------------------------------------------------
@@ -1200,6 +1498,10 @@ pub async fn update_budgets(
         update_provider,
         delete_provider,
         test_provider,
+        rotate_credential,
+        oauth_status,
+        upsert_oauth_client,
+        delete_oauth_client,
         list_models,
         create_model,
         model_detail,
@@ -1212,6 +1514,8 @@ pub async fn update_budgets(
     components(schemas(
         ProviderCreate,
         ProviderUpdate,
+        CredentialRotate,
+        OAuthClientUpsert,
         ModelCreate,
         ModelUpdate,
         BudgetUpdate
@@ -1232,6 +1536,12 @@ pub fn router() -> Router<ApiState> {
                 .delete(delete_provider),
         )
         .route("/api/v1/providers/{id}/test", post(test_provider))
+        .route("/api/v1/providers/{id}/credential", post(rotate_credential))
+        .route("/api/v1/oauth/clients", get(oauth_status))
+        .route(
+            "/api/v1/oauth/clients/{connector}",
+            axum::routing::put(upsert_oauth_client).delete(delete_oauth_client),
+        )
         .route("/api/v1/models", get(list_models).post(create_model))
         .route(
             "/api/v1/models/{id}",
