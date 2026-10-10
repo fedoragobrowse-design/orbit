@@ -17,6 +17,7 @@ pub mod push;
 pub mod runtimes;
 pub mod search;
 pub mod updates;
+pub mod uploads;
 use axum::{
     Json, Router,
     http::{HeaderMap, StatusCode},
@@ -93,6 +94,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(brief::router())
         .merge(calendar::router())
         .merge(connectors::router())
+        .merge(uploads::router())
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
 }

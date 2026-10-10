@@ -1300,6 +1300,43 @@ export function Files() {
           {listing.data && <Json value={listing.data} />}
         </div>
       )}
+      <Documents />
     </>
+  );
+}
+function Documents() {
+  const client = useQueryClient();
+  const uploads = useQuery({ queryKey: ["uploads"], queryFn: () => api<{ items: RecordData[] }>("/uploads") });
+  const [file, setFile] = useState<File | null>(null);
+  const send = useMutation({
+    mutationFn: async () => {
+      if (!file) throw new Error("Choose a PDF first.");
+      const buf = await file.arrayBuffer();
+      const res = await fetch(`/api/v1/uploads?${new URLSearchParams({ filename: file.name })}`, { method: "POST", body: buf, headers: { "Content-Type": "application/pdf" }, credentials: "same-origin" });
+      if (!res.ok) throw new Error(`Upload failed (${res.status}).`);
+      return res.json() as Promise<RecordData>;
+    },
+    onSuccess: () => { setFile(null); client.invalidateQueries({ queryKey: ["uploads"] }); },
+  });
+  const items = uploads.data?.items ?? [];
+  return (
+    <div className="panel">
+      <h2>Documents</h2>
+      <p><small>PDFs only, up to 50 MB. Orbit stores the original bytes and indexes the text so memory can find it. Anything else is rejected.</small></p>
+      {uploads.error ? (<ErrorNotice error={uploads.error} retry={() => uploads.refetch()} />) : !items.length ? (<Empty title="No documents yet">Upload a PDF to make it searchable.</Empty>) : (
+        <table>
+          <thead><tr><th scope="col">Name</th><th scope="col">Size</th><th scope="col">Added</th></tr></thead>
+          <tbody>
+            {items.map((row) => (<tr key={String(row.id)}><th scope="row">{text(row.name)}</th><td>{text(row.size)}</td><td>{timestamp(row.created_at)}</td></tr>))}
+          </tbody>
+        </table>
+      )}
+      <form aria-label="Upload document" onSubmit={(e) => { e.preventDefault(); send.mutate(); }}>
+        <label>PDF<input type="file" accept="application/pdf,.pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label>
+        {send.error && (<ErrorNotice error={send.error} retry={() => send.reset()} />)}
+        {send.data && (<p role="status"><small>Stored {text((send.data as RecordData).name)} — {text((send.data as RecordData).chars)} characters indexed.</small></p>)}
+        <div className="actions"><button type="submit" disabled={!file || send.isPending}>Upload PDF</button></div>
+      </form>
+    </div>
   );
 }
