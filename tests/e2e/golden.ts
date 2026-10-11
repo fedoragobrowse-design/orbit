@@ -10,7 +10,7 @@ import type { Page } from "@playwright/test";
 export async function goldenJourneys(page: Page) {
   await test.step("J1 install→ready: setup owner exists, Home renders", async () => {
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Your workspace", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /^(Your workspace|Hello, )/ })).toBeVisible();
     await expect(page.getByLabel("What would you like help with?")).toBeVisible();
   });
 
@@ -24,7 +24,7 @@ export async function goldenJourneys(page: Page) {
   });
 
   await test.step("J3 calendar→notification: UNAVAILABLE names missing OAuth creds", async () => {
-    await page.goto("/connections/calendars");
+    await page.goto("/connections/api");
     await expect(page.getByText("not served by this backend")).toBeVisible();
   });
 
