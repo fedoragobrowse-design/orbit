@@ -41,6 +41,7 @@ export function Memory() {
 }
 
 function MemoryList() {
+  const [typeFilter, setTypeFilter] = useState("all");
   return (
     <section className="section" aria-label="Memories">
       <div className="panel">
@@ -54,34 +55,73 @@ function MemoryList() {
             </Empty>
           }
         >
-          {(items) => (
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Subject</th>
-                  <th scope="col">Type</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Privacy</th>
-                  <th scope="col">When</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((row) => (
-                  <tr key={row.id}>
-                    <th scope="row">
-                      <Link className="safe-link" to={`/memory/${row.id}`}>
-                        {text(row.subject)}
-                      </Link>
-                    </th>
-                    <td>{label(row.type)}</td>
-                    <td><Status value={row.status} /></td>
-                    <td>{label(row.privacy_class)}</td>
-                    <td>{timestamp(row.updated_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          {(items) => {
+            const verified = items.filter((r) => text(r.status) === "VERIFIED").length;
+            const types: Record<string, number> = {};
+            for (const r of items) {
+              const t = label(r.type) || "Untyped";
+              types[t] = (types[t] ?? 0) + 1;
+            }
+            const typeNames = Object.keys(types).sort();
+            const shown =
+              typeFilter === "all"
+                ? items
+                : items.filter((r) => label(r.type) === typeFilter);
+            return (
+              <>
+                <p className="memory-summary" role="status">
+                  Remembering <strong>{items.length}</strong>{" "}
+                  {items.length === 1 ? "thing" : "things"}
+                  {verified > 0 && (
+                    <> · {verified} verified</>
+                  )}
+                  {typeNames.length > 0 && (
+                    <> · {typeNames.map((t) => `${types[t]} ${t.toLowerCase()}`).join(" · ")}</>
+                  )}
+                </p>
+                {typeNames.length > 1 && (
+                  <div className="memory-folders" role="group" aria-label="Filter by type">
+                    <button
+                      type="button"
+                      className={typeFilter === "all" ? "memory-folder-active" : ""}
+                      onClick={() => setTypeFilter("all")}
+                    >
+                      All ({items.length})
+                    </button>
+                    {typeNames.map((t) => (
+                      <button
+                        type="button"
+                        key={t}
+                        className={typeFilter === t ? "memory-folder-active" : ""}
+                        onClick={() => setTypeFilter(t)}
+                      >
+                        {t} ({types[t]})
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {shown.length === 0 ? (
+                  <Empty title="Nothing of this type">
+                    No memories filed under {typeFilter} yet.
+                  </Empty>
+                ) : (
+                  <ul className="memory-files">
+                    {shown.map((row) => (
+                      <li key={row.id} className="memory-file">
+                        <Link className="safe-link memory-file-name" to={`/memory/${row.id}`}>
+                          {text(row.subject)}
+                        </Link>
+                        <span className="memory-file-meta">
+                          {label(row.type)} · <Status value={row.status} /> ·{" "}
+                          {label(row.privacy_class)} · {timestamp(row.updated_at)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            );
+          }}
         </Resource>
       </div>
     </section>

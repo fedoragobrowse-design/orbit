@@ -121,7 +121,17 @@ function LiveReply({ eventId }: { eventId: string }) {
     },
   });
   const row = reply.data;
-  if (!row) return null;
+  if (!row)
+    return (
+      <article className="message assistant" aria-live="polite">
+        <div className="assistant-typing" role="status">
+          <span className="typing-dot" />
+          <span className="typing-dot" />
+          <span className="typing-dot" />
+          <span className="typing-label">Responding…</span>
+        </div>
+      </article>
+    );
   const payload = payloadOf(row);
   const status = text(payload.status);
   const body = text(payload.text);
@@ -238,7 +248,6 @@ export function Chat() {
   const conversation = params.get("conversation");
   const [chatModel, setChatModel] = useState(() => localStorage.getItem("orbit.chat.model") ?? "");
   const [chatRole, setChatRole] = useState(() => localStorage.getItem("orbit.chat.role") ?? "FAST");
-  const [modelFilter, setModelFilter] = useState("");
   const [draft, setDraft] = useDraft(`chat-${conversation ?? "new"}`);
   const detail = useQuery({
     queryKey: ["event", conversation],
@@ -330,7 +339,7 @@ export function Chat() {
             </>
           )}
         </div>
-        <ChatPickers chatModel={chatModel} setChatModel={(v) => { setChatModel(v); localStorage.setItem("orbit.chat.model", v); }} chatRole={chatRole} setChatRole={(v) => { setChatRole(v); localStorage.setItem("orbit.chat.role", v); }} modelFilter={modelFilter} setModelFilter={setModelFilter} />
+        <ChatPickers chatModel={chatModel} setChatModel={(v) => { setChatModel(v); localStorage.setItem("orbit.chat.model", v); }} chatRole={chatRole} setChatRole={(v) => { setChatRole(v); localStorage.setItem("orbit.chat.role", v); }} />
         <form
           className="composer chat-composer"
           onSubmit={(e) => {
@@ -361,7 +370,7 @@ export function Chat() {
     </div>
   );
 }
-function ChatPickers({ chatModel, setChatModel, chatRole, setChatRole, modelFilter, setModelFilter }: { chatModel: string; setChatModel: (v: string) => void; chatRole: string; setChatRole: (v: string) => void; modelFilter: string; setModelFilter: (v: string) => void }) {
+function ChatPickers({ chatModel, setChatModel, chatRole, setChatRole }: { chatModel: string; setChatModel: (v: string) => void; chatRole: string; setChatRole: (v: string) => void }) {
   const models = useQuery({ queryKey: ["models"], queryFn: () => api<{ items: RecordData[] }>("/models?limit=100").then((r) => r.items ?? []) });
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api<{ items: RecordData[] }>("/providers?limit=100").then((r) => r.items ?? []) });
   const providerOf = (id: string) => (providers.data ?? []).find((r) => String(r.id) === id);
@@ -373,10 +382,9 @@ function ChatPickers({ chatModel, setChatModel, chatRole, setChatRole, modelFilt
     return p && (p as RecordData).secret_set ? "key set" : "no key — add in Models";
   };
   const providerName = (id: string) => { const p = providerOf(id); return p ? String(p.name ?? p.id) : ""; };
-  const items = (models.data ?? []).filter((m) => { const hay = `${String(m.name ?? "")} ${String(m.model ?? "")} ${providerName(String(m.provider_id ?? ""))}`.toLowerCase(); return hay.includes(modelFilter.toLowerCase()); });
+  const items = models.data ?? [];
   return (
     <div className="chat-pickers">
-      <Input label="Find model" placeholder="Type to filter…" value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} />
       <Select label="Model (optional — auto when blank)" value={chatModel} onChange={(e) => setChatModel(e.target.value)}>
         <option value="">Auto (role default)</option>
         {items.slice(0, 100).map((m) => (

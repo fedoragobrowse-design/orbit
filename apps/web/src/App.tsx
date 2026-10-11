@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Link, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Link, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   AlarmClock,
@@ -15,6 +15,7 @@ import {
   BookOpen,
   Bookmark,
   Contact,
+  CalendarDays,
   Cpu,
   Folder,
   Home as HomeIcon,
@@ -83,6 +84,7 @@ const destinations = [
       ["/bookmarks", "Bookmarks", Bookmark],
       ["/clips", "Clips", Scissors],
       ["/files", "Files", Folder],
+      ["/calendar", "Calendar", CalendarDays],
       ["/computers", "Computers", Monitor],
       ["/home-assistant", "Home Assistant", HousePlug],
       ["/activity", "Activity", ActivityIcon],
@@ -241,6 +243,7 @@ export function App() {
             <Route path="/models" element={<Models />} />
             <Route path="/marketplace" element={<Marketplace />} />
             <Route path="/connections/*" element={<Connections />} />
+            <Route path="/calendar" element={<Navigate to="/connections/calendars" replace />} />
             <Route path="/computers" element={<Computers />} />
             <Route path="/files" element={<Files />} />
             <Route path="/home-assistant" element={<HomeAssistant />} />

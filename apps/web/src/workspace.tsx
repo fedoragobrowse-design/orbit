@@ -654,6 +654,153 @@ export function TaskDetail() {
     </>
   );
 }
+type SpendCall = {
+  id: string;
+  state?: unknown;
+  actual_micro_usd?: unknown;
+  input_tokens?: unknown;
+  output_tokens?: unknown;
+  model_id?: unknown;
+  created_at?: unknown;
+  timestamp?: unknown;
+};
+function microToUsd(v: unknown): number {
+  const n = Number(v ?? 0);
+  return Number.isFinite(n) ? n / 1_000_000 : 0;
+}
+function usd(n: number): string {
+  return n < 0.01 && n > 0 ? "<$0.01" : `$${n.toFixed(n < 10 ? 4 : 2)}`;
+}
+function dayKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function last14Days(): string[] {
+  const out: string[] = [];
+  const now = new Date();
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(now.getDate() - i);
+    out.push(dayKey(d));
+  }
+  return out;
+}
+function SpendBoard() {
+  const [range, setRange] = useState<"7" | "14">("14");
+  const calls = useQuery({
+    queryKey: ["spend-calls"],
+    queryFn: () => api<{ items: SpendCall[] }>(`/model-calls?limit=100`),
+  });
+  const models = useQuery({
+    queryKey: ["spend-models"],
+    queryFn: () => api<{ items: RecordData[] }>(`/models?limit=100`),
+  });
+  const items = (calls.data?.items ?? []).filter(
+    (c) => text(c.state) === "COMPLETED",
+  );
+  const nameOf = (id: unknown) => {
+    const m = (models.data?.items ?? []).find((r) => r.id === text(id));
+    return text(m?.name) || text(m?.model) || "Unknown model";
+  };
+  const totalSpend = items.reduce((s, c) => s + microToUsd(c.actual_micro_usd), 0);
+  const totalTokens =
+    items.reduce((s, c) => s + Number(c.input_tokens ?? 0), 0) +
+    items.reduce((s, c) => s + Number(c.output_tokens ?? 0), 0);
+  const days = last14Days().slice(range === "7" ? 7 : 0);
+  const perDay: Record<string, number> = Object.fromEntries(days.map((d) => [d, 0]));
+  for (const c of items) {
+    const at = text(c.created_at) || text(c.timestamp);
+    if (!at) continue;
+    const k = dayKey(new Date(at));
+    if (k in perDay) perDay[k] += microToUsd(c.actual_micro_usd);
+  }
+  const peak = Math.max(0.000001, ...Object.values(perDay));
+  const byModel: Record<string, { spend: number; calls: number; tokens: number }> = {};
+  for (const c of items) {
+    const name = nameOf(c.model_id);
+    const e = byModel[name] ?? { spend: 0, calls: 0, tokens: 0 };
+    e.spend += microToUsd(c.actual_micro_usd);
+    e.calls += 1;
+    e.tokens += Number(c.input_tokens ?? 0) + Number(c.output_tokens ?? 0);
+    byModel[name] = e;
+  }
+  const modelRows = Object.entries(byModel).sort((a, b) => b[1].spend - a[1].spend);
+  if (calls.isPending)
+    return (
+      <section className="panel section" aria-label="Trends">
+        <p role="status">Loading…</p>
+      </section>
+    );
+  if (calls.error)
+    return (
+      <section className="panel section" aria-label="Trends">
+        <ErrorNotice error={calls.error} retry={() => calls.refetch()} />
+      </section>
+    );
+  return (
+    <section className="panel section" aria-label="Trends">
+      <h2>Trends</h2>
+      <p className="spend-total">
+        Total spend <strong>{usd(totalSpend)}</strong>
+        <span className="spend-sub">
+          {" "}· {items.length} calls · {totalTokens.toLocaleString()} tokens
+        </span>
+      </p>
+      <div className="spend-range" role="group" aria-label="Date range">
+        {(["7", "14"] as const).map((r) => (
+          <button
+            key={r}
+            type="button"
+            className={range === r ? "spend-range-active" : ""}
+            onClick={() => setRange(r)}
+          >
+            {r === "7" ? "Last 7 days" : "Last 14 days"}
+          </button>
+        ))}
+      </div>
+      {items.length === 0 ? (
+        <Empty title="No model spend yet">
+          Costs appear here after the first answered chat or agent run.
+        </Empty>
+      ) : (
+        <>
+          <div className="spend-chart" role="img" aria-label={`Daily spend, total ${usd(totalSpend)}`}>
+            {days.map((d) => {
+              const v = perDay[d] ?? 0;
+              return (
+                <div className="spend-bar" key={d} title={`${d}: ${usd(v)}`}>
+                  <div className="spend-bar-track">
+                    <div className="spend-bar-fill" style={{ height: `${Math.max(2, (v / peak) * 100)}%` }} />
+                  </div>
+                  <span className="spend-bar-day">{d.slice(5)}</span>
+                </div>
+              );
+            })}
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Model</th>
+                <th scope="col">Spend</th>
+                <th scope="col">Calls</th>
+                <th scope="col">Tokens</th>
+              </tr>
+            </thead>
+            <tbody>
+              {modelRows.map(([name, e]) => (
+                <tr key={name}>
+                  <th scope="row">{name}</th>
+                  <td>{usd(e.spend)}</td>
+                  <td>{e.calls}</td>
+                  <td>{e.tokens.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </section>
+  );
+}
 export function Activity() {
   const { id } = useParams();
   const [params] = useSearchParams();
@@ -671,6 +818,7 @@ export function Activity() {
         title="Activity"
         description="Follow the recorded source, decision, and result for every change."
       />
+      <SpendBoard />
       <Input
         label="Correlation reference"
         value={correlation}
