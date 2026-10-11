@@ -253,7 +253,7 @@ async fn wait(
         json!({}),
     )
     .await?;
-    sqlx::query("INSERT INTO notifications(id,owner_id,task_id,correlation_id,severity,title,body) VALUES($1,$2,$3,$4,'ACTION_REQUIRED','Assistant needs a resource',$5) ON CONFLICT(owner_id,task_id) DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(task).bind(c).bind(reason).execute(&mut *tx).await?;
+    if !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM notifications WHERE task_id=$1)").bind(task).fetch_one(&mut *tx).await? { sqlx::query("INSERT INTO notifications(id,owner_id,task_id,correlation_id,severity,title,body) VALUES($1,$2,$3,$4,'ACTION_REQUIRED','Assistant needs a resource',$5)").bind(Uuid::new_v4()).bind(scope.owner_id).bind(task).bind(c).bind(reason).execute(&mut *tx).await?; }
     tx.commit().await?;
     Ok(())
 }
@@ -291,7 +291,7 @@ async fn wait_for_approval(
         json!({"approvals":approvals}),
     )
     .await?;
-    sqlx::query("INSERT INTO notifications(id,owner_id,task_id,correlation_id,severity,title,body) VALUES($1,$2,$3,$4,'ACTION_REQUIRED','Assistant needs approval',$5) ON CONFLICT(owner_id,task_id) DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(task).bind(c).bind(&reason).execute(&mut *tx).await?;
+    if !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM notifications WHERE task_id=$1)").bind(task).fetch_one(&mut *tx).await? { sqlx::query("INSERT INTO notifications(id,owner_id,task_id,correlation_id,severity,title,body) VALUES($1,$2,$3,$4,'ACTION_REQUIRED','Assistant needs approval',$5)").bind(Uuid::new_v4()).bind(scope.owner_id).bind(task).bind(c).bind(&reason).execute(&mut *tx).await?; }
     tx.commit().await?;
     Ok(())
 }
@@ -326,7 +326,7 @@ async fn finish(
         json!({}),
     )
     .await?;
-    sqlx::query("INSERT INTO events(id,owner_id,event_type,source,principal_id,payload,trust_level,privacy_class,correlation_id,source_event_key) VALUES($1,$2,$3,'agent-runtime',$4,$5,'SYSTEM','PRIVATE',$6,$7) ON CONFLICT DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(if state=="COMPLETED"{"TASK_COMPLETED"}else{"TASK_FAILED"}).bind(scope.principal_id).bind(json!({"task_id":task,"state":state})).bind(correlation).bind(format!("terminal:{task}")).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO events(id,owner_id,event_type,source,principal_id,payload,trust_level,privacy_class,correlation_id,source_event_key) VALUES($1,$2,$3,'agent-runtime',$4,$5,'SYSTEM','PRIVATE',$6,$7) ON CONFLICT(owner_id,source,source_event_key) DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(if state=="COMPLETED"{"TASK_COMPLETED"}else{"TASK_FAILED"}).bind(scope.principal_id).bind(json!({"task_id":task,"state":state})).bind(correlation).bind(format!("terminal:{task}")).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }

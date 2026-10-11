@@ -784,8 +784,7 @@ async fn park_waiting(
         json!({"run_id": run}),
     )
     .await?;
-    sqlx::query("INSERT INTO notifications(id,owner_id,task_id,correlation_id,severity,title,body) VALUES($1,$2,$3,$4,'ACTION_REQUIRED','Assistant needs the AIec resource',$5) ON CONFLICT(owner_id,task_id) DO NOTHING")
-        .bind(Uuid::new_v4()).bind(scope.owner_id).bind(task).bind(correlation).bind(reason).execute(&mut *tx).await?;
+    if !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM notifications WHERE task_id=$1)").bind(task).fetch_one(&mut *tx).await? { sqlx::query("INSERT INTO notifications(id,owner_id,task_id,correlation_id,severity,title,body) VALUES($1,$2,$3,$4,'ACTION_REQUIRED','Assistant needs the AIec resource',$5)").bind(Uuid::new_v4()).bind(scope.owner_id).bind(task).bind(correlation).bind(reason).execute(&mut *tx).await?; }
     tx.commit().await?;
     Ok(())
 }
