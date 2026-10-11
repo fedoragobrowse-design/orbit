@@ -220,6 +220,8 @@ dd {
 }
 .rail nav {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 .nav-group {
   margin-bottom: 20px;
