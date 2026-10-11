@@ -509,6 +509,7 @@ impl orbit_tools::ToolExecutor for ShellExecutor {
             lifetime_seconds: 1680,
             network_enabled: false,
             inputs,
+            egress: None,
         };
         spec.validate()?;
         let request_digest =

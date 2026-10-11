@@ -1,0 +1,16 @@
+[package]
+name = "orbit-agent-backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+orbit-core = { path = "../core" }
+orbit-model-router = { path = "../model-router" }
+orbit-task-runtime = { path = "../task-runtime" }
+orbit-sandbox-dispatch = { path = "../sandbox-dispatch" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true

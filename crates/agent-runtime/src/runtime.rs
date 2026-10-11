@@ -51,6 +51,7 @@ pub async fn tick(
     key_dir: PathBuf,
     worker: Uuid,
     dispatcher: Arc<dyn Dispatcher>,
+    backend: Option<Arc<dyn orbit_agent_backend::AgentBackend>>,
 ) -> Result<()> {
     let candidates=sqlx::query("SELECT owner_id,id FROM tasks WHERE consumer IN ('agents','gateway') AND (state='QUEUED' OR (state='RUNNING' AND lease_until<now())) ORDER BY created_at,id LIMIT 10").fetch_all(pool).await?;
     for row in candidates {
@@ -99,6 +100,7 @@ pub async fn tick(
             worker,
             fence,
             dispatcher.as_ref(),
+            backend.clone(),
         )
         .await;
         heartbeat.abort();
@@ -329,6 +331,28 @@ async fn finish(
     Ok(())
 }
 
+/// Tool descriptors the agent may use, filtered to its allow-list. Shared by
+/// the CONTEXT arm (alias registration) and the backend adapter.
+async fn permitted_tools(scope: &OwnerScope, dispatcher: &dyn Dispatcher, agent: &AgentDefinition) -> Result<Vec<orbit_core::ToolDescriptor>> {
+    Ok(dispatcher.descriptors(scope).await?.into_iter().filter(|d| agent.config.allowed_tools.contains(&d.name)).collect())
+}
+/// Fold backend events into the `ChatResponse` shape the RESPONSE/PROPOSE arms
+/// already persist and govern. Tool proposals flow through `Dispatcher::propose`
+/// untouched — the backend never bypasses tool governance.
+fn backend_events_to_response(events: &[orbit_agent_backend::AgentEvent]) -> (String, Vec<orbit_model_router::ToolCall>) {
+    use orbit_agent_backend::AgentEvent;
+    let mut text = String::new();
+    let mut tool_calls = Vec::new();
+    for e in events {
+        match e {
+            AgentEvent::Message { text: t, .. } => { if !text.is_empty() { text.push('\n'); } text.push_str(t); }
+            AgentEvent::ToolProposal { call_id, name, args } => tool_calls.push(orbit_model_router::ToolCall { id: call_id.clone(), name: name.clone(), arguments: args.clone() }),
+            _ => {}
+        }
+    }
+    (text, tool_calls)
+}
+
 async fn run(
     pool: &PgPool,
     key_dir: &PathBuf,
@@ -337,6 +361,7 @@ async fn run(
     worker: Uuid,
     fence: i64,
     dispatcher: &dyn Dispatcher,
+    backend: Option<Arc<dyn orbit_agent_backend::AgentBackend>>,
 ) -> Result<()> {
     let task_row = sqlx::query("SELECT consumer,checkpoint FROM tasks WHERE owner_id=$1 AND id=$2")
         .bind(scope.owner_id)
@@ -557,6 +582,70 @@ async fn run(
                 let remaining = (f64::from(limits.max_active_seconds)
                     - r.get::<f64, _>("active_seconds"))
                 .max(0.0);
+                // Backend path: OMP/Claude manages the model loop inside AIec; the
+                // adapter persists its events onto the same columns/tables and keeps
+                // every invariant (budget pre-check above, MODEL_INFLIGHT accounting,
+                // RESPONSE persist, fence-guarded transitions). `None` keeps the
+                // inline ModelRouter path until the backend is wired in settings.
+                if let Some(backend) = backend.clone() {
+                    let history: Vec<ChatMessage> = serde_json::from_value(r.get::<Value,_>("chat")).ok().and_then(|c: Value| c.get("messages").cloned()).and_then(|m| serde_json::from_value(m).ok()).unwrap_or_default();
+                    let origin = std::env::var("ORBIT_MODEL_ORIGIN").unwrap_or_default();
+                    let step_req = orbit_agent_backend::BackendRequest {
+                        task_id: task,
+                        owner_id: scope.owner_id,
+                        agent: agent.clone(),
+                        input: history.iter().rev().find(|m| m.role == "user").map(|m| m.content.clone()).unwrap_or_default(),
+                        history,
+                        tools: permitted_tools(scope, dispatcher, &agent).await?,
+                        limits: limits.clone(),
+                        model_endpoint: orbit_agent_backend::ModelEndpoint { origin, model: String::new() },
+                        use_sandbox: agent.config.sandbox_required,
+                        approval_id: None,
+                        depth: r.get::<i32, _>("depth") as u32,
+                    };
+                    let answer = tokio::time::timeout(
+                        std::time::Duration::from_secs_f64(remaining),
+                        backend.step(step_req),
+                    )
+                    .await;
+                    let mut tx = lock(pool, scope, task, fence).await?;
+                    sqlx::query("UPDATE agent_runs SET active_seconds=active_seconds+$3 WHERE owner_id=$1 AND task_id=$2").bind(scope.owner_id).bind(task).bind(started.elapsed().as_secs_f64()).execute(&mut *tx).await?;
+                    match answer {
+                        Ok(Ok(step)) => {
+                            let calls = orbit_agent_backend::count_model_calls(&step.events);
+                            if r.get::<i32, _>("model_calls") + calls as i32 > limits.max_model_calls as i32 {
+                                tx.commit().await?;
+                                return Err(Error::Validation("model call or retry budget exhausted".into()));
+                            }
+                            let (text, tool_calls) = backend_events_to_response(&step.events);
+                            if tool_calls.len() > 24 || text.len() > 262144 {
+                                tx.commit().await?;
+                                return Err(Error::Validation("model response exceeded bounds".into()));
+                            }
+                            let step_tokens = (step.usage.input_tokens+step.usage.output_tokens) as i64;
+                            let step_failed = step.finished && step.outcome.as_deref() == Some("FAILED");
+                            // Backend spend stays exact without a `model_calls` ledger row:
+                            // the guest's token counts are untrusted and this step already
+                            // consumed one `agent_runs.model_calls` unit above. Tokens fold
+                            // into the shared `agent_runs.tokens` cap below.
+                            sqlx::query("UPDATE agent_runs SET phase='RESPONSE',model_response=$3,tokens=tokens+$4,proposal_index=0,pending_calls='[]' WHERE owner_id=$1 AND task_id=$2").bind(scope.owner_id).bind(task).bind(json!(ChatResponse { text, tool_calls, structured_output: None, usage: step.usage.clone(), finish_reason: step.outcome.clone() })).bind(step_tokens).execute(&mut *tx).await?;
+                            tx.commit().await?;
+                            if step_failed {
+                                return finish(pool, scope, task, fence, "FAILED", "backend step failed").await;
+                            }
+                            phase(pool, scope, task, fence, "RESPONSE").await?;
+                        }
+                        Ok(Err(e)) => {
+                            tx.commit().await?;
+                            return Err(e);
+                        }
+                        Err(_) => {
+                            tx.commit().await?;
+                            return Err(Error::Timeout);
+                        }
+                    }
+                    continue;
+                }
                 let answer = tokio::time::timeout(
                     std::time::Duration::from_secs_f64(remaining),
                     ModelRouter::new(pool.clone(), key_dir.clone()).complete(
@@ -757,6 +846,25 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbit_agent_backend::AgentEvent;
+    #[test]
+    fn backend_events_fold_to_response_and_proposals() {
+        // Assistant text concatenates; tool proposals map 1:1 onto ToolCall so the
+        // PROPOSE arm governs them through Dispatcher::propose untouched.
+        let events = vec![
+            AgentEvent::Message { role: "assistant".into(), text: "pineapple".into() },
+            AgentEvent::ToolProposal { call_id: "c1".into(), name: "shell.execute".into(), args: serde_json::json!({"command": "echo"}) },
+        ];
+        let (text, tool_calls) = backend_events_to_response(&events);
+        assert_eq!(text, "pineapple");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "c1");
+        assert_eq!(tool_calls[0].name, "shell.execute");
+        // Empty backend output folds to empty text: RESPONSE persists honestly,
+        // never a faked answer.
+        let (text, tool_calls) = backend_events_to_response(&[]);
+        assert!(text.is_empty() && tool_calls.is_empty());
+    }
     #[test]
     fn step_journal_advances_along_the_loop() {
         for (from, to) in [

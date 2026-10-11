@@ -32,6 +32,22 @@ const IN_APP_TOOLS: [&str; 4] = [
     "notifications.create",
     "reports.save",
 ];
+/// Extract command text from tool args carrying `command` (string or array) or
+/// `argv`. Returns `None` when the proposal carries no command text.
+fn command_argv(args: &Value) -> Option<Vec<String>> {
+    if let Some(argv) = args.get("argv").and_then(Value::as_array) {
+        let v: Vec<String> = argv.iter().filter_map(|a| a.as_str().map(str::to_owned)).collect();
+        if !v.is_empty() { return Some(v); }
+    }
+    match args.get("command") {
+        Some(Value::String(s)) if !s.is_empty() => Some(vec![s.clone()]),
+        Some(Value::Array(a)) => {
+            let v: Vec<String> = a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect();
+            if v.is_empty() { None } else { Some(v) }
+        }
+        _ => None,
+    }
+}
 
 #[derive(Clone)]
 pub struct AgentDispatcher {
@@ -82,6 +98,13 @@ impl AgentDispatcher {
             },
         )?
         .level;
+        // Same Jev destructive-bash verdict the backends run on runner commands:
+        // any tool proposal carrying command text is Denied on Block, before policy.
+        if let Some(argv) = command_argv(args) {
+            if orbit_sandbox_dispatch::decide_with_threshold(&argv, 0.8).verdict == orbit_sandbox_dispatch::Verdict::Block {
+                return Err(Error::Forbidden);
+            }
+        }
         let settings: Value = sqlx::query_scalar("SELECT value FROM settings WHERE owner_id=$1")
             .bind(scope.owner_id)
             .fetch_optional(&self.pool)

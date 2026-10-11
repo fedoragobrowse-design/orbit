@@ -30,6 +30,30 @@ pub struct RuntimeSpec {
     pub lifetime_seconds: u64,
     pub network_enabled: bool,
     pub inputs: Vec<InputArtifact>,
+    /// Optional brokered model egress. The guest keeps `network_enabled=false`;
+    /// AIec Guard outside the sandbox brokers HTTPS to this origin only. Origin
+    /// only — credentials never enter the guest or this struct.
+    #[serde(default)]
+    pub egress: Option<ModelEgress>,
+}
+/// Brokered model endpoint: origin + model name, no credentials.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelEgress {
+    pub origin: String,
+    pub model: String,
+}
+impl ModelEgress {
+    pub fn validate(&self) -> Result<()> {
+        if self.origin.is_empty() || self.origin.len() > 256 || !(self.origin.starts_with("https://") || self.origin.starts_with("http://")) || self.model.is_empty() || self.model.len() > 256 {
+            return Err(Error::Validation("invalid brokered model egress".into()));
+        }
+        Ok(())
+    }
+    /// Guard environment JSON: outside-topology broker allowing only this origin.
+    pub fn guard_environment(&self) -> serde_json::Value {
+        serde_json::json!({"workspace":{"type":"empty"},"guard":{"topology":"outside","policy_template":"brokered-egress","allow":[{"origin":self.origin}]}})
+    }
 }
 impl RuntimeSpec {
     pub fn validate(&self) -> Result<()> {
@@ -46,6 +70,7 @@ impl RuntimeSpec {
             total = total.checked_add(input.size as usize).ok_or_else(|| Error::Validation("transfer overflow".into()))?;
         }
         if total > TRANSFER_LIMIT { return Err(Error::Validation("runtime inputs exceed 10 MiB".into())); }
+        if let Some(egress) = &self.egress { egress.validate()?; }
         Ok(())
     }
 }
@@ -117,6 +142,7 @@ pub struct Artifact {
 pub trait TaskRuntime: Send + Sync {
     async fn create(&self, spec: RuntimeSpec) -> Result<RuntimeHandle>;
     async fn execute(&self, handle: &RuntimeHandle, task: RuntimeTask) -> Result<RuntimeResult>;
+    async fn put_file(&self, handle: &RuntimeHandle, path: &str, bytes: &[u8]) -> Result<()>;
     async fn collect_artifacts(&self, handle: &RuntimeHandle) -> Result<Vec<Artifact>>;
     async fn destroy(&self, handle: RuntimeHandle) -> Result<()>;
 }

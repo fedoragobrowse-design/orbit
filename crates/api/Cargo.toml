@@ -39,6 +39,8 @@ orbit-risk = { path = "../risk" }
 orbit-approvals = { path = "../approvals" }
 orbit-tools = { path = "../tools" }
 orbit-agent-runtime = { path = "../agent-runtime" }
+orbit-agent-backend = { path = "../agent-backend" }
+orbit-sandbox-dispatch = { path = "../sandbox-dispatch" }
 orbit-task-runtime = { path = "../task-runtime" }
 orbit-aiec-runtime = { path = "../aiec-runtime" }
 orbit-computer-node-protocol = { path = "../computer-node-protocol" }

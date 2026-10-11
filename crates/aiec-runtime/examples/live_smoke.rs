@@ -81,6 +81,7 @@ async fn main() -> Result<(), String> {
         lifetime_seconds: 1680,
         network_enabled: false,
         inputs: Vec::new(),
+        egress: None,
     };
     // The run UUID is the POST Idempotency-Key; status polling reuses it.
     let handle = runtime

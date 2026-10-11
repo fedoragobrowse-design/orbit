@@ -70,3 +70,24 @@ pub fn validate_event(kind:EventType,payload:&Value)->Result<()> {
  if payload.get(required).and_then(Value::as_str).filter(|s| !s.is_empty() && s.len()<=32768).is_none(){return Err(Error::Validation(format!("missing event field {required}")));}
  Ok(())
 }
+/// Agent definition wire types. Owned here (bottom of the stack) so both
+/// `agent-runtime` (governance) and `agent-backend` (model loop) share them
+/// without a crate cycle. Moved verbatim from `agent-runtime`.
+#[derive(Debug,Clone,Serialize,Deserialize,ToSchema)]
+pub struct ContextStrategy {pub include_memory:bool,pub history_messages:u32,pub max_context_characters:u32}
+#[derive(Debug,Clone,Serialize,Deserialize,ToSchema)]
+pub struct RunLimits {pub max_model_calls:u32,pub max_tool_calls:u32,pub max_active_seconds:u32,pub max_tokens:u64,pub max_retries:u32,pub max_subagent_depth:u32}
+#[derive(Debug,Clone,Serialize,Deserialize,ToSchema)]
+pub struct MemoryPermissions {pub read_types:Vec<String>,pub write_types:Vec<String>,pub project_ids:Vec<Uuid>}
+#[derive(Debug,Clone,Serialize,Deserialize,ToSchema)]
+pub struct AgentInput {pub name:String,pub purpose:String,pub instructions:String,pub allowed_tools:Vec<String>,pub model_role:ModelRole,pub context_strategy:ContextStrategy,pub limits:RunLimits,pub autonomy_constraints:Vec<String>,pub memory_permissions:MemoryPermissions,pub sandbox_required:bool}
+#[derive(Debug,Clone,Serialize,Deserialize,ToSchema)]
+pub struct AgentDefinition {pub id:Uuid,pub owner_id:Uuid,#[serde(flatten)]pub config:AgentInput,pub revision:i64}
+impl AgentInput {
+ pub fn validate(&self)->Result<()> {
+  if self.name.trim().is_empty() || self.name.len()>120 || self.purpose.len()>2000 || self.instructions.len()>16000 || self.allowed_tools.len()>128 || self.allowed_tools.iter().any(|s|s.is_empty()||s.len()>256) || self.context_strategy.history_messages==0 || self.context_strategy.history_messages>100 || !(1000..=64000).contains(&self.context_strategy.max_context_characters) || self.limits.max_model_calls==0 || self.limits.max_model_calls>100 || self.limits.max_tool_calls==0 || self.limits.max_tool_calls>200 || self.limits.max_active_seconds==0 || self.limits.max_active_seconds>3600 || !(1024..=1000000).contains(&self.limits.max_tokens) || self.limits.max_retries>5 || self.limits.max_subagent_depth>1 || self.memory_permissions.project_ids.len()>100 {return Err(Error::Validation("invalid bounded agent definition".into()));}
+  let types=["PROFILE","PREFERENCE","PERSON","PROJECT","TASK","DECISION","EVENT","ROUTINE","DOCUMENT","TEMPORARY_CONTEXT"];
+  if self.memory_permissions.read_types.iter().chain(&self.memory_permissions.write_types).any(|t|!types.contains(&t.as_str())) {return Err(Error::Validation("invalid memory type".into()));}
+  Ok(())
+ }
+}

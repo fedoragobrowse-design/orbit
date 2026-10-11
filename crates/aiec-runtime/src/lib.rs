@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use orbit_core::{Error, PrivacyClass, Result};
 use orbit_model_router::endpoint::AdmittedEndpoint;
 use orbit_task_runtime::{
-    Artifact, FILE_LIMIT, RuntimeHandle, RuntimeOutcome, RuntimeResult, RuntimeSpec, RuntimeTask,
-    TRANSFER_LIMIT, TaskRuntime, workspace_path,
+    Artifact, FILE_LIMIT, ModelEgress, RuntimeHandle, RuntimeOutcome, RuntimeResult, RuntimeSpec,
+    RuntimeTask, TRANSFER_LIMIT, TaskRuntime, workspace_path,
 };
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -370,6 +370,12 @@ impl TaskRuntime for AIecRuntime {
         {
             return Err(Error::OutcomeUnknown);
         }
+        let environment = match &spec.egress {
+            // Brokered egress: Guard outside the sandbox brokers HTTPS to the
+            // model origin only. The guest still has no network interface.
+            Some(egress) => egress.guard_environment(),
+            None => json!({"workspace":{"type":"empty"},"guard":{"topology":"outside","policy_template":"no-network"}}),
+        };
         let body = CreateBody {
             image: &spec.image,
             runtime: "firecracker",
@@ -379,7 +385,7 @@ impl TaskRuntime for AIecRuntime {
             disk_mb: spec.disk_mb,
             timeout_seconds: 1680,
             network: Network { enabled: false },
-            environment: json!({"workspace":{"type":"empty"},"guard":{"topology":"outside","policy_template":"no-network"}}),
+            environment,
         };
         let response = self
             .request(Method::POST, "v1/sandboxes", 1020)?
@@ -447,6 +453,7 @@ impl TaskRuntime for AIecRuntime {
             output_completeness: "NOT_ASSERTED_BY_PROVIDER".into(),
         })
     }
+    async fn put_file(&self, handle: &RuntimeHandle, path: &str, bytes: &[u8]) -> Result<()> { Self::put_file(self, handle, path, bytes).await }
     async fn collect_artifacts(&self, handle: &RuntimeHandle) -> Result<Vec<Artifact>> {
         handle.require_remaining(270)?;
         let paths = self
@@ -568,6 +575,22 @@ mod tests {
             !raw.contains("no_network") && !raw.contains("Outside") && !raw.contains("NO_NETWORK")
         );
     }
+    /// Brokered egress guard: origin-allowlisted `brokered-egress` template,
+    /// kebab-case literals, guest network still disabled, no credentials.
+    #[test]
+    fn brokered_egress_guard_allows_configured_origin_only() {
+        let egress = ModelEgress { origin: "https://openrouter.ai".into(), model: "m".into() };
+        egress.validate().unwrap();
+        let env = egress.guard_environment();
+        assert_eq!(env["guard"]["topology"], json!("outside"));
+        assert_eq!(env["guard"]["policy_template"], json!("brokered-egress"));
+        assert_eq!(env["guard"]["allow"], json!([{"origin": "https://openrouter.ai"}]));
+        let raw = serde_json::to_string(&env).unwrap();
+        assert!(!raw.contains("api_key") && !raw.contains("secret") && !raw.contains("bearer"), "egress env carries origin only, got {raw}");
+        // Invalid origins never validate: fail-closed before any POST.
+        assert!(ModelEgress { origin: "ftp://x".into(), model: "m".into() }.validate().is_err());
+        assert!(ModelEgress { origin: "".into(), model: "m".into() }.validate().is_err());
+    }
     /// Every creation carries a fresh v4 UUID as `Idempotency-Key`; the same
     /// run UUID is reused for status polling, never a second POST.
     #[test]
@@ -581,6 +604,7 @@ mod tests {
             lifetime_seconds: 1680,
             network_enabled: false,
             inputs: Vec::new(),
+            egress: None,
         };
         let header = spec.run_id.to_string();
         let parsed = Uuid::parse_str(&header).unwrap();
@@ -598,7 +622,7 @@ mod tests {
         if let Error::Unavailable(message) = &err { assert!(message.contains("AIec"), "error must carry AIec identity for the AIEC_UNAVAILABLE mapping, got {message:?}"); }
         let reason = format!("AIEC_UNAVAILABLE: {err}");
         assert!(reason.starts_with("AIEC_UNAVAILABLE: ") && reason.contains("AIec"), "mapped reason must keep the exact prefix, got {reason:?}");
-        let spec = RuntimeSpec { run_id: Uuid::new_v4(), image: "admitted-image".into(), cpu: 1, memory_mb: 512, disk_mb: 1024, lifetime_seconds: 1680, network_enabled: false, inputs: Vec::new() };
+        let spec = RuntimeSpec { run_id: Uuid::new_v4(), image: "admitted-image".into(), cpu: 1, memory_mb: 512, disk_mb: 1024, lifetime_seconds: 1680, network_enabled: false, inputs: Vec::new(), egress: None };
         let created = runtime.create(spec).await;
         assert!(created.is_err(), "unreachable AIec must never yield a runtime handle (no host exec fallback)");
         assert!(matches!(&created, Err(Error::OutcomeUnknown) | Err(Error::Unavailable(_)) | Err(Error::Timeout)), "transport failure must stay fail-closed, got {created:?}");

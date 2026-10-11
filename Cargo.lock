@@ -1977,12 +1977,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "orbit-agent-backend"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "orbit-core",
+ "orbit-model-router",
+ "orbit-sandbox-dispatch",
+ "orbit-task-runtime",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "orbit-agent-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
  "hex",
+ "orbit-agent-backend",
  "orbit-audit",
  "orbit-core",
  "orbit-model-router",
@@ -2031,6 +2046,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
+ "orbit-agent-backend",
  "orbit-agent-runtime",
  "orbit-aiec-runtime",
  "orbit-approvals",
@@ -2045,6 +2061,7 @@ dependencies = [
  "orbit-model-router",
  "orbit-policy",
  "orbit-risk",
+ "orbit-sandbox-dispatch",
  "orbit-scheduler",
  "orbit-secrets",
  "orbit-task-runtime",
@@ -2314,6 +2331,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "orbit-sandbox-dispatch"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "hex",
+ "orbit-core",
+ "orbit-risk",
+ "orbit-task-runtime",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "orbit-scheduler"
 version = "0.1.0"
 dependencies = [
@@ -2359,6 +2394,7 @@ dependencies = [
  "chrono",
  "orbit-core",
  "serde",
+ "serde_json",
  "uuid",
 ]
 

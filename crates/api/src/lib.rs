@@ -173,6 +173,7 @@ pub async fn worker(state: ApiState) {
             state.key_dir.clone(),
             worker,
             agents_dispatcher,
+            None,
         )
         .await
         {

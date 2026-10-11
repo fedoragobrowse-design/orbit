@@ -1,0 +1,20 @@
+[package]
+name = "orbit-sandbox-dispatch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+orbit-core = { path = "../core" }
+orbit-risk = { path = "../risk" }
+orbit-task-runtime = { path = "../task-runtime" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
