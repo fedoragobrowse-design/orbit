@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.0 — 2026-10-11 — First stable: control plane, real chat, panes
+
+- Control plane: `orbit-control.*` tools (consent-gated settings
+  updates, ask-owner parking with notifications, skills list, agent
+  docs) + `orbit-data.*` reads (memory/mail/calendar/files, always
+  `UNTRUSTED_EXTERNAL`). Agent docs at `GET /api/v1/docs/:page`
+  (overview/settings/memory/tools). Questions list/answer/cancel API.
+  Skills registry + enable toggles. Updater check/releases/apply
+  (staged-only, never auto-restarts). Settings is the Control Center.
+- Real chat: task-backed `POST /chat/messages` + conversation list +
+  SSE stream, full thread history, context kept across turns, typing
+  bubble, rich tool/MCP/code/file rendering, source chips (Saved
+  memory / Attached file / Your message) from persisted run context.
+- Panes: Notes sidebar+editor, Calendar month grid + click-a-day
+  add-event (`POST /calendar/events`), Mail three-pane reader,
+  Files explorer with kind folders + preview, Memory explorer with
+  summary + type filters, Activity Trends board (total spend + daily
+  chart + per-model table).
+- Memory that works: lightweight extractor auto-saves self-statements
+  (name/favorite/like/prefer) post-commit on answered chats —
+  live-proven (LumenProof ACTIVE after COMPLETED chat); recall runs
+  every MODEL turn when `include_memory` is on.
+- Platform: sandbox OFF by default (opt-in per owner, UNSANDBOXED
+  audit mark when direct); egress advisory (Confirm, never Block —
+  internet allowed until policy denies); runtime upsert fixes (park/fail
+  paths settle instead of `storage operation failed`); prod key-dir
+  env fix; grouped collapsible hideable sidebar; themes (3 presets +
+  custom); boot loading screen.
+
 ## 2026-10-11 — Sandbox opt-out (OFF by default)
 
 Sandbox OFF by default per owner: `sandbox_enabled` on Settings/SettingsUpdate (migration 0031 backfills `{"sandbox_enabled":false}`, column default extended, fresh owners inherit off). `AgentDispatcher::admission` journals `SANDBOX_DISABLED` in the policy decision when off (still Jev-gated on command text plus policy-checked, no AIec); `submit` keeps `requires_sandbox` snapshots parked when the owner enabled the sandbox, and `execute_call` writes `TOOL_EXECUTED` `UNSANDBOXED` in the audit reason for direct runs. AIec create stays fail-closed when unavailable. Web Settings gains a `Run tools inside a sandbox (AIec)` checkbox with a plain-words hint.
