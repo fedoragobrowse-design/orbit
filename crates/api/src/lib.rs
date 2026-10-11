@@ -161,7 +161,12 @@ pub async fn worker(state: ApiState) {
         if let Err(error) = run_scheduler_tick(&state).await {
             tracing::error!(error=%error,"scheduler tick failed")
         }
-        // Memory: transition ACTIVE records past valid_until to EXPIRED so
+        // Due sweep: calendar events + reminders whose time arrived get one
+        // notification each (claimed exactly once). Runs after the
+        // automation scheduler, before event processing.
+        if let Err(error) = run_due_sweep(&state).await {
+            tracing::error!(error=%error,"due sweep failed")
+        }
         // retrieval stops returning them. Owner-scoped sweep; no-op when empty.
         if let Err(error) = run_memory_sweep(&state).await {
             tracing::error!(error=%error,"memory sweep failed")
@@ -257,6 +262,70 @@ async fn run_scheduler_tick(state: &ApiState) -> orbit_core::Result<()> {
     }
     Ok(())
 }
+
+/// Due sweep: exactly-once notifications for time-arrived calendar events +
+/// reminders, and for new mail matching a triage rule that asks for a
+/// summary (label-only rules stay silent). Mail bodies are never copied
+/// into the notification — subject + sender only; the body stays behind
+/// the authenticated reader. SKIP LOCKED so multi-worker ticks don't
+/// double-fire.
+async fn run_due_sweep(state: &ApiState) -> orbit_core::Result<()> {
+    use sqlx::Row;
+    // Calendar events whose start arrived and never fired.
+    let due_events = sqlx::query("SELECT owner_id,id,title,starts_at FROM calendar_events WHERE starts_at IS NOT NULL AND starts_at <= now() AND notified_at IS NULL ORDER BY starts_at LIMIT 20 FOR UPDATE SKIP LOCKED").fetch_all(&state.pool).await?;
+    for e in due_events {
+        let owner: uuid::Uuid = e.get("owner_id");
+        let id: uuid::Uuid = e.get("id");
+        let title: String = e.get("title");
+        let mut tx = state.pool.begin().await?;
+        let claimed: bool = sqlx::query_scalar("UPDATE calendar_events SET notified_at=now() WHERE owner_id=$1 AND id=$2 AND notified_at IS NULL RETURNING true").bind(owner).bind(id).fetch_optional(&mut *tx).await?.unwrap_or(false);
+        if !claimed { continue; }
+        let corr = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO notifications(id,owner_id,correlation_id,severity,title,body) VALUES($1,$2,$3,'ACTION_REQUIRED','Event starting',$4)").bind(uuid::Uuid::new_v4()).bind(owner).bind(corr).bind(format!("Starting now: {title}")).execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
+    // Reminders whose time arrived, not done, never fired.
+    let due_rems = sqlx::query("SELECT owner_id,id,title FROM reminders WHERE done=false AND remind_at IS NOT NULL AND remind_at <= now() AND notified_at IS NULL ORDER BY remind_at LIMIT 20 FOR UPDATE SKIP LOCKED").fetch_all(&state.pool).await?;
+    for r in due_rems {
+        let owner: uuid::Uuid = r.get("owner_id");
+        let id: uuid::Uuid = r.get("id");
+        let title: String = r.get("title");
+        let mut tx = state.pool.begin().await?;
+        let claimed: bool = sqlx::query_scalar("UPDATE reminders SET notified_at=now() WHERE owner_id=$1 AND id=$2 AND notified_at IS NULL RETURNING true").bind(owner).bind(id).fetch_optional(&mut *tx).await?.unwrap_or(false);
+        if !claimed { continue; }
+        let corr = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO notifications(id,owner_id,correlation_id,severity,title,body) VALUES($1,$2,$3,'ACTION_REQUIRED','Reminder',$4)").bind(uuid::Uuid::new_v4()).bind(owner).bind(corr).bind(format!("Reminder due: {title}")).execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
+    // New mail: only when a triage rule with summarize=true matches.
+    // Label-only rules stay silent by design.
+    let fresh = sqlx::query("SELECT owner_id,id,account_id,metadata FROM email_messages WHERE notified_at IS NULL ORDER BY received_at LIMIT 20 FOR UPDATE SKIP LOCKED").fetch_all(&state.pool).await?;
+    for m in fresh {
+        let owner: uuid::Uuid = m.get("owner_id");
+        let id: uuid::Uuid = m.get("id");
+        let meta: serde_json::Value = m.get("metadata");
+        let from = meta.get("from").and_then(|v| v.as_str()).unwrap_or("");
+        let subject = meta.get("subject").and_then(|v| v.as_str()).unwrap_or("(no subject)");
+        let topic = meta.get("topic").and_then(|v| v.as_str()).unwrap_or("");
+        let rules: Vec<(serde_json::Value, serde_json::Value)> = sqlx::query("SELECT matcher,action FROM triage_rules WHERE owner_id=$1 AND enabled").bind(owner).fetch_all(&state.pool).await?.iter().map(|r| (r.get("matcher"), r.get("action"))).collect();
+        let mut wants_summary = false;
+        for (matcher, action) in &rules {
+            if crate::email::triage_matches(matcher, from, subject, topic) {
+                wants_summary = action.get("summarize").and_then(|v| v.as_bool()).unwrap_or(false);
+                break;
+            }
+        }
+        let mut tx = state.pool.begin().await?;
+        sqlx::query("UPDATE email_messages SET notified_at=now() WHERE owner_id=$1 AND id=$2").bind(owner).bind(id).execute(&mut *tx).await?;
+        if wants_summary {
+            let corr = uuid::Uuid::new_v4();
+            sqlx::query("INSERT INTO notifications(id,owner_id,correlation_id,severity,title,body) VALUES($1,$2,$3,'INFO','Mail needs a look',$4)").bind(uuid::Uuid::new_v4()).bind(owner).bind(corr).bind(format!("From {from}: {subject}")).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+    }
+    Ok(())
+}
+
 async fn run_memory_sweep(state: &ApiState) -> orbit_core::Result<()> {
     let workers=sqlx::query("SELECT owner_id,id FROM principals WHERE principal_type='SYSTEM' AND source='orbit-worker'").fetch_all(&state.pool).await?;
     for row in workers {
