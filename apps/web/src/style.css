@@ -1539,3 +1539,17 @@ dialog::backdrop {
   border-radius: 8px;
   padding: 6px 10px;
 }
+.source-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 2px;
+}
+.source-chip {
+  font-size: 12px;
+  color: var(--secondary);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 10px;
+  background: var(--ground);
+}

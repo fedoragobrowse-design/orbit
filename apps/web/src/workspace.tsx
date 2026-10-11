@@ -470,7 +470,10 @@ export function TaskDetail() {
   const q = useQuery({
     queryKey: ["task", id],
     queryFn: () => api<RecordData>(`/tasks/${id}`),
-    refetchInterval: 5000,
+    refetchInterval: (query) => {
+      const s = text(query.state.data?.state);
+      return s && !TERMINAL_TASK_STATES[s] ? 5000 : false;
+    },
   });
   const [callId, setCallId] = useState("");
   const [resolution, setResolution] = useState("CONFIRMED_NOT_APPLIED");
@@ -659,6 +662,7 @@ export function TaskDetail() {
 }
 type TaskRun = {
   task_id: string;
+  sources?: unknown;
   phase: unknown;
   model_calls: unknown;
   model_retries: unknown;
@@ -686,7 +690,14 @@ function LiveRun({ taskId, state }: { taskId: string; state: string }) {
     enabled: !!taskId,
     refetchInterval: active ? 2000 : false,
   });
+  const calls_q = useQuery({
+    queryKey: ["task-tool-calls", taskId],
+    queryFn: () => api<{ items: RecordData[] }>(`/tool-calls?limit=50`),
+    enabled: !!taskId,
+    refetchInterval: active ? 2000 : false,
+  });
   const items = runs.data?.items ?? [];
+  const toolItems = (calls_q.data?.items ?? []).filter((c) => text(c.task_id) === taskId);
   const calls = items.reduce((n, r) => n + (Number(r.model_calls) || 0), 0);
   const retries = items.reduce((n, r) => n + (Number(r.model_retries) || 0), 0);
   const tokens = items.reduce((n, r) => n + (Number(r.tokens) || 0), 0);
@@ -731,9 +742,63 @@ function LiveRun({ taskId, state }: { taskId: string; state: string }) {
               </div>
             );
           })}
+          {!!toolItems.length && (
+            <>
+              <h3>Tool activity{active ? " · live" : ""}</h3>
+              <ul className="memory-files">
+                {toolItems.slice(0, 12).map((c) => (
+                  <ToolRow key={String(c.id)} row={c} />
+                ))}
+              </ul>
+            </>
+          )}
+          <RunSources items={items} />
         </>
       )}
     </section>
+  );
+}
+function toolName(row: RecordData): string {
+  const d = row.descriptor;
+  if (d && typeof d === "object" && "name" in d) return text(d.name);
+  return "Tool call";
+}
+function ToolRow({ row }: { row: RecordData }) {
+  return (
+    <li>
+      <span className="notes-item-title">{toolName(row)}</span>
+      <span className="notes-item-meta">
+        <Status value={row.state} /> · {timestamp(row.created_at)}
+      </span>
+    </li>
+  );
+}
+type RunSourceView = { kind: string; reference: string; trust?: unknown; preview?: unknown };
+function runSourcesOf(r: TaskRun): RunSourceView[] {
+  const v = r.sources;
+  return Array.isArray(v) ? (v as RunSourceView[]) : [];
+}
+function RunSources({ items }: { items: TaskRun[] }) {
+  const all = items.flatMap(runSourcesOf).slice(0, 8);
+  if (!all.length) return null;
+  const name = (s: RunSourceView) =>
+    s.reference.startsWith("orbit-memory:")
+      ? "Saved memory"
+      : s.reference.startsWith("attachment:")
+        ? "Attached file"
+        : s.kind || "Source";
+  return (
+    <>
+      <h3>What the answer used</h3>
+      <ul className="memory-files">
+        {all.map((s, i) => (
+          <li key={i}>
+            <span className="notes-item-title">{name(s)}</span>
+            <span className="notes-item-meta">{text(s.preview)}</span>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 type SpendCall = {

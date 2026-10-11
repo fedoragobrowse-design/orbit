@@ -126,6 +126,34 @@ type ChatMsg = {
   content: string;
   created_at?: unknown;
 };
+type RunSource = { kind: string; reference: string; trust?: unknown; preview?: unknown };
+function SourceChips({ taskId }: { taskId: string }) {
+  const runs = useQuery({
+    queryKey: ["chat-sources", taskId],
+    queryFn: () => api<{ items: { sources: RunSource[] }[] }>(`/tasks/${taskId}/runs`),
+    staleTime: 60000,
+  });
+  const sources = (runs.data?.items ?? []).flatMap((r) => r.sources ?? []).slice(0, 6);
+  if (!sources.length) return null;
+  const label = (s: RunSource) => {
+    if (s.reference.startsWith("orbit-memory:")) return "Saved memory";
+    if (s.reference.startsWith("attachment:")) return "Attached file";
+    if (s.reference.startsWith("message:")) return "Your message";
+    return s.kind || "Source";
+  };
+  return (
+    <p className="source-chips" aria-label="What this answer used">
+      {sources.map((s, i) => (
+        <span key={i} className="source-chip" title={text(s.preview)}>
+          {label(s)}
+          {text(s.trust) && text(s.trust) !== "OwnerAuthenticated" && text(s.trust) !== "OWNER_AUTHENTICATED" && (
+            <> · untrusted</>
+          )}
+        </span>
+      ))}
+    </p>
+  );
+}
 function TypingBubble() {
   return (
     <article className="message assistant" aria-live="polite">
@@ -186,6 +214,7 @@ function ConversationStream({ conversation, taskId }: { conversation: string; ta
       {all.map((m) => (
         <article className={m.role === "user" ? "message user" : "message assistant"} key={m.id}>
           <div className={m.role === "assistant" ? "assistant-streamed" : undefined}>{renderRich(m.content, (m as unknown as RecordData).attachments)}</div>
+          {m.role === "assistant" && !!m.task_id && <SourceChips taskId={text(m.task_id)} />}
           <span className="chat-time">
             {timestamp(m.created_at)}{" "}
             {!!m.task_id && <Link to={`/tasks/${text(m.task_id)}`}>task</Link>}

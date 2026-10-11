@@ -56,7 +56,7 @@ async fn detail(state:ApiState,headers:HeaderMap,id:Uuid,table:&str)->Result<Jso
 #[utoipa::path(get,path="/api/v1/events/{id}",params(("id"=Uuid,Path)),responses((status=200,body=Value)))] pub async fn event_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{detail(s,h,id,"events").await}
 #[utoipa::path(get,path="/api/v1/activity/{id}",params(("id"=Uuid,Path)),responses((status=200,body=Value)))] pub async fn activity_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{detail(s,h,id,"audit_events").await}
 #[utoipa::path(get,path="/api/v1/notifications/{id}",params(("id"=Uuid,Path)),responses((status=200,body=Value)))] pub async fn notification_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{detail(s,h,id,"notifications").await}
-#[derive(Serialize, ToSchema)] pub struct TaskRunItem {pub task_id: Uuid,pub phase: String,pub model_calls: i32,pub model_retries: i32,pub turn: i32,pub depth: i32,pub tool_calls: i32,pub tokens: i64}
+#[derive(Serialize, ToSchema)] pub struct TaskRunItem {pub task_id: Uuid,pub phase: String,pub model_calls: i32,pub model_retries: i32,pub turn: i32,pub depth: i32,pub tool_calls: i32,pub tokens: i64,pub sources: Vec<Value>}
 #[derive(Serialize, ToSchema)] pub struct TaskRuns {pub items: Vec<TaskRunItem>}
  #[utoipa::path(get,path="/api/v1/tasks/{id}",params(("id"=Uuid,Path)),responses((status=200,body=TaskDetail)))]
  pub async fn task_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{
@@ -74,12 +74,26 @@ pub async fn task_runs(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)
  let a=authenticate(&s,&h,false).await?;
  let correlation:Option<Uuid>=sqlx::query_scalar("SELECT correlation_id FROM tasks WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).fetch_optional(&s.pool).await?.ok_or(Error::NotFound)?;
  let correlation=correlation.ok_or(Error::NotFound)?;
- let rows=sqlx::query("SELECT r.task_id,r.phase,r.model_calls,r.model_retries,r.turn,r.depth,r.tool_calls,r.tokens,t.checkpoint FROM agent_runs r JOIN tasks t ON t.owner_id=r.owner_id AND t.id=r.task_id WHERE r.owner_id=$1 AND (r.task_id=$2 OR t.correlation_id=$3) ORDER BY r.depth,r.task_id").bind(a.scope.owner_id).bind(id).bind(correlation).fetch_all(&s.pool).await?;
+ let rows=sqlx::query("SELECT r.task_id,r.phase,r.model_calls,r.model_retries,r.turn,r.depth,r.tool_calls,r.tokens,r.context,t.checkpoint FROM agent_runs r JOIN tasks t ON t.owner_id=r.owner_id AND t.id=r.task_id WHERE r.owner_id=$1 AND (r.task_id=$2 OR t.correlation_id=$3) ORDER BY r.depth,r.task_id").bind(a.scope.owner_id).bind(id).bind(correlation).fetch_all(&s.pool).await?;
  let mut items=Vec::with_capacity(rows.len());
  for r in &rows{
   let checkpoint:Value=r.get("checkpoint");
   let checkpoint_depth=checkpoint.get("depth").and_then(Value::as_i64).and_then(|d|i32::try_from(d).ok()).unwrap_or_else(||r.get("depth"));
-  items.push(TaskRunItem{task_id:r.get("task_id"),phase:r.get("phase"),model_calls:r.get("model_calls"),model_retries:r.get("model_retries"),turn:r.get("turn"),depth:checkpoint_depth,tool_calls:r.get("tool_calls"),tokens:r.get("tokens")});
+  let ctx:Value=r.get("context");
+  let mut sources=Vec::new();
+  if let Some(blocks)=ctx.as_array(){
+   for b in blocks.iter().take(40){
+    let kind=b.get("kind").and_then(Value::as_str).unwrap_or("");
+    let reference=b.get("source_reference").and_then(Value::as_str).unwrap_or("").to_string();
+    if reference.is_empty(){continue;}
+    if matches!(kind,"Memory"|"UntrustedExternalContent"|"UserInstruction")||reference.starts_with("orbit-memory:")||reference.starts_with("attachment:"){
+     let text=b.get("text_or_reference").and_then(Value::as_str).unwrap_or("");
+     sources.push(serde_json::json!({"kind":kind,"reference":reference,"trust":b.get("trust_level"),"preview":text.chars().take(140).collect::<String>()}));
+     if sources.len()>=12{break;}
+    }
+   }
+  }
+  items.push(TaskRunItem{task_id:r.get("task_id"),phase:r.get("phase"),model_calls:r.get("model_calls"),model_retries:r.get("model_retries"),turn:r.get("turn"),depth:checkpoint_depth,tool_calls:r.get("tool_calls"),tokens:r.get("tokens"),sources});
  }
  Ok(Json(TaskRuns{items}))
 }

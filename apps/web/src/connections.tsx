@@ -1660,11 +1660,27 @@ export function HomeAssistant() {
     </>
   );
 }
+function fileIcon(mime: string): string {
+  if (mime.startsWith("image/")) return "🖼";
+  if (mime.startsWith("video/")) return "🎬";
+  if (mime.startsWith("audio/")) return "🎵";
+  if (mime === "application/pdf") return "📕";
+  if (mime.startsWith("text/")) return "📄";
+  return "📦";
+}
+function fileSize(n: unknown): string {
+  const v = Number(n ?? 0);
+  if (!Number.isFinite(v) || v <= 0) return "—";
+  if (v < 1024) return `${v} B`;
+  if (v < 1048576) return `${(v / 1024).toFixed(1)} KB`;
+  return `${(v / 1048576).toFixed(1)} MB`;
+}
 function StoredFiles() {
   const client = useQueryClient();
   const [kind, setKind] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [notice, setNotice] = useState("");
+  const [selected, setSelected] = useState<string | null>(null);
   const stored = useQuery({
     queryKey: ["stored-files", kind],
     queryFn: () =>
@@ -1691,7 +1707,21 @@ function StoredFiles() {
       client.invalidateQueries({ queryKey: ["stored-files"] });
     },
   });
+  const preview = useQuery({
+    queryKey: ["file-preview", selected],
+    queryFn: () => api<RecordData>(`/files/${selected}`),
+    enabled: !!selected,
+  });
   const items = stored.data?.items ?? [];
+  const row = preview.data ?? items.find((r) => String(r.id) === selected) ?? null;
+  const folders: [string, string][] = [
+    ["", "Everything"],
+    ["image/", "Images"],
+    ["video/", "Video"],
+    ["audio/", "Audio"],
+    ["text/", "Text"],
+    ["application/pdf", "PDFs"],
+  ];
   return (
     <div className="panel">
       <h2>Stored files</h2>
@@ -1727,18 +1757,18 @@ function StoredFiles() {
           </button>
         </div>
       </form>
-      <Select
-        label="Show only"
-        value={kind}
-        onChange={(e) => setKind(e.target.value)}
-      >
-        <option value="">Everything</option>
-        <option value="image/">Images</option>
-        <option value="video/">Video</option>
-        <option value="audio/">Audio</option>
-        <option value="text/">Text</option>
-        <option value="application/pdf">PDF documents</option>
-      </Select>
+      <div className="memory-folders" role="group" aria-label="Filter by kind">
+        {folders.map(([v, label]) => (
+          <button
+            type="button"
+            key={v || "all"}
+            className={kind === v ? "memory-folder-active" : ""}
+            onClick={() => { setKind(v); setSelected(null); }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       {stored.isPending ? (
         <p role="status">Loading stored files…</p>
       ) : stored.error ? (
@@ -1748,51 +1778,47 @@ function StoredFiles() {
           Import a file above to keep it with your Orbit.
         </Empty>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Name</th>
-              <th scope="col">Type</th>
-              <th scope="col">Size</th>
-              <th scope="col">Safety</th>
-              <th scope="col">Source</th>
-              <th scope="col">Added</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((row) => (
-              <tr key={String(row.id)}>
-                <th scope="row">
-                  {String(row.mime_type ?? "").startsWith("image/") ? (
-                    <span className="file-thumb">
-                      <img
-                        loading="lazy"
-                        src={`/api/v1/files/${row.id}/content`}
-                        alt={text(row.name) || "Stored image"}
-                      />
-                      {text(row.name)}
+        <div className="notes-shell">
+          <ul className="memory-files" aria-label="Files">
+            {items.map((r) => {
+              const id = String(r.id);
+              const mime = String(r.mime_type ?? "");
+              return (
+                <li key={id}>
+                  <button
+                    type="button"
+                    className={selected === id ? "notes-active" : ""}
+                    onClick={() => setSelected(id)}
+                    style={{ width: "100%", textAlign: "left", background: "none", border: "1px solid transparent", borderRadius: "8px", padding: "8px 10px", cursor: "pointer", color: "inherit" }}
+                  >
+                    <span className="notes-item-title">{fileIcon(mime)} {text(r.name)}</span>
+                    <span className="notes-item-meta">
+                      {fileSize(r.size)} · {r.quarantined ? "Held for review" : "Clear"} · {timestamp(r.created_at)}
                     </span>
-                  ) : (
-                    text(row.name)
-                  )}
-                </th>
-                <td>{text(row.mime_type)}</td>
-                <td>{text(row.size)}</td>
-                <td>
-                  {row.quarantined ? (
-                    <span className="status pending">Held for review</span>
-                  ) : (
-                    <span className="status good">Clear</span>
-                  )}
-                </td>
-                <td>
-                  <small>{label(row.trust_level)}</small>
-                </td>
-                <td>{timestamp(row.created_at)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          <section className="panel form" aria-label={row ? "File detail" : "No file selected"}>
+            {!row ? (
+              <Empty title="Pick a file">Details and preview live here.</Empty>
+            ) : (
+              <>
+                <h3>{text(row.name)}</h3>
+                <p className="muted">
+                  {text(row.mime_type)} · {fileSize(row.size)} · {timestamp(row.created_at)}
+                  {" · "}{row.quarantined ? "Held for review" : "Clear"} {label(row.trust_level)}
+                </p>
+                {String(row.mime_type ?? "").startsWith("image/") && (
+                  <img loading="lazy" src={`/api/v1/files/${row.id}/content`} alt={text(row.name) || "Stored image"} style={{ maxWidth: "100%", borderRadius: "8px" }} />
+                )}
+                {preview.isPending && <p role="status">Loading detail…</p>}
+                {preview.error && <ErrorNotice error={preview.error} retry={() => preview.refetch()} />}
+              </>
+            )}
+          </section>
+        </div>
       )}
     </div>
   );
