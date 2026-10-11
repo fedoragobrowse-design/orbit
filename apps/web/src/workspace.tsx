@@ -881,6 +881,67 @@ type SettingsData = {
   inbox_enabled: boolean;
   revision: number;
 };
+const HIDEABLE_TABS: [string, string][] = [
+  ["Talk", "/chat"],
+  ["Talk", "/inbox"],
+  ["Organize", "/notes"],
+  ["Organize", "/reminders"],
+  ["Organize", "/calendar"],
+  ["Organize", "/contacts"],
+  ["Organize", "/bookmarks"],
+  ["Organize", "/clips"],
+  ["Organize", "/files"],
+  ["Organize", "/memory"],
+  ["Do", "/tasks"],
+  ["Do", "/approvals"],
+  ["Do", "/automations"],
+  ["Do", "/agents"],
+  ["Connect", "/computers"],
+  ["Connect", "/home-assistant"],
+  ["Connect", "/connections"],
+  ["Connect", "/models"],
+  ["Connect", "/marketplace"],
+  ["System", "/activity"],
+  ["System", "/ops"],
+];
+function TabVisibility() {
+  const [hidden, setHidden] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("orbit.nav.hidden") ?? "[]");
+    } catch {
+      return [];
+    }
+  });
+  const toggle = (path: string) => {
+    const next = hidden.includes(path)
+      ? hidden.filter((p) => p !== path)
+      : [...hidden, path];
+    setHidden(next);
+    try {
+      localStorage.setItem("orbit.nav.hidden", JSON.stringify(next));
+    } catch { /* private mode */ }
+    window.dispatchEvent(new Event("orbit-nav"));
+  };
+  return (
+    <section className="panel form">
+      <h2>Sidebar tabs</h2>
+      <p className="muted">
+        Hide tabs you never open. Home and Settings always stay. Changes
+        apply the moment you tick the box.
+      </p>
+      {HIDEABLE_TABS.map(([group, path]) => (
+        <label className="check" key={path}>
+          <input
+            type="checkbox"
+            checked={!hidden.includes(path)}
+            onChange={() => toggle(path)}
+          />
+          {group} · {path.slice(1)}
+        </label>
+      ))}
+    </section>
+  );
+}
 function PushToggle() {
   const [status, setStatus] = useState("Push alerts for approvals are off in this browser.");
   const [busy, setBusy] = useState(false);
@@ -1029,6 +1090,7 @@ export function Settings() {
           <button disabled={save.isPending}>Save</button>
         </form>
       )}
+      <TabVisibility />
       <PushToggle />
       <UpdateNotice />
       <section className="panel form">

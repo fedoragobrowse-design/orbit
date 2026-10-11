@@ -226,6 +226,20 @@ dd {
   color: #d9d0e5;
   margin: 0 12px 8px;
 }
+.nav-group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: calc(100% - 24px);
+  background: none;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: #d9d0e5;
+  margin: 0 12px 8px;
+  padding: 0;
+  cursor: pointer;
+}
 .rail nav a {
   display: flex;
   gap: 12px;

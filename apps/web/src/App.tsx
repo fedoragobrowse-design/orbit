@@ -68,41 +68,115 @@ export function useDraft(key: string, initial = "") {
   const { drafts, save } = useContext(DraftContext);
   return [drafts[key] ?? initial, (value: string) => save(key, value)] as const;
 }
-const destinations = [
-  [
-    "Everyday work",
-    [
+const FAMILIES = [
+  {
+    id: "talk",
+    title: "Talk",
+    links: [
       ["/", "Home", HomeIcon],
       ["/chat", "Chat", MessageSquare],
-      ["/tasks", "Tasks", ListTodo],
-      ["/approvals", "Approvals", ShieldCheck],
-      ["/memory", "Memory", BookOpen],
-      ["/notes", "Notes", StickyNote],
       ["/inbox", "AI Inbox", BellRing],
+    ],
+  },
+  {
+    id: "organize",
+    title: "Organize",
+    links: [
+      ["/notes", "Notes", StickyNote],
       ["/reminders", "Reminders", AlarmClock],
+      ["/calendar", "Calendar", CalendarDays],
       ["/contacts", "Contacts", Contact],
       ["/bookmarks", "Bookmarks", Bookmark],
       ["/clips", "Clips", Scissors],
       ["/files", "Files", Folder],
-      ["/calendar", "Calendar", CalendarDays],
-      ["/computers", "Computers", Monitor],
-      ["/home-assistant", "Home Assistant", HousePlug],
-      ["/activity", "Activity", ActivityIcon],
+      ["/memory", "Memory", BookOpen],
     ],
-  ],
-  [
-    "Setup and routines",
-    [
+  },
+  {
+    id: "do",
+    title: "Do",
+    links: [
+      ["/tasks", "Tasks", ListTodo],
+      ["/approvals", "Approvals", ShieldCheck],
       ["/automations", "Automations", Workflow],
       ["/agents", "Agents", Users],
+    ],
+  },
+  {
+    id: "connect",
+    title: "Connect",
+    links: [
+      ["/computers", "Computers", Monitor],
+      ["/home-assistant", "Home Assistant", HousePlug],
       ["/connections", "Connections", Plug],
       ["/models", "Models", Cpu],
       ["/marketplace", "Marketplace", Store],
+    ],
+  },
+  {
+    id: "system",
+    title: "System",
+    links: [
+      ["/activity", "Activity", ActivityIcon],
       ["/ops", "Ops", Wrench],
       ["/settings", "Settings", SettingsIcon],
     ],
-  ],
+  },
 ] as const;
+function readHidden(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem("orbit.nav.hidden") ?? "[]");
+  } catch {
+    return [];
+  }
+}
+function SidebarFamily({ family }: { family: (typeof FAMILIES)[number] }) {
+  const [hidden, setHidden] = useState<string[]>(readHidden);
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(`orbit.nav.${family.id}`) !== "closed";
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    const on = () => setHidden(readHidden());
+    window.addEventListener("storage", on);
+    window.addEventListener("orbit-nav", on);
+    return () => {
+      window.removeEventListener("storage", on);
+      window.removeEventListener("orbit-nav", on);
+    };
+  }, []);
+  const visible = family.links.filter(([path]) => !hidden.includes(path as string));
+  if (!visible.length) return null;
+  return (
+    <div className="nav-group">
+      <button
+        type="button"
+        className="nav-group-toggle"
+        aria-expanded={open}
+        onClick={() => {
+          const next = !open;
+          setOpen(next);
+          try {
+            localStorage.setItem(`orbit.nav.${family.id}`, next ? "open" : "closed");
+          } catch { /* private mode */ }
+        }}
+      >
+        <span>{family.title}</span>
+        <span aria-hidden="true">{open ? "–" : "+"}</span>
+      </button>
+      {open &&
+        visible.map(([path, name, Icon]) => (
+          <NavLink key={path} to={path as string} end={path === "/"}>
+            <Icon size={18} />
+            {name}
+          </NavLink>
+        ))}
+    </div>
+  );
+}
 export function App() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [menu, setMenu] = useState(false);
@@ -194,16 +268,8 @@ export function App() {
             Orbit
           </Link>
           <nav id="navigation" aria-label="Main navigation">
-            {destinations.map(([group, links]) => (
-              <div className="nav-group" key={group}>
-                <p>{group}</p>
-                {links.map(([path, name, Icon]) => (
-                  <NavLink key={path} to={path} end={path === "/"}>
-                    <Icon size={18} />
-                    {name}
-                  </NavLink>
-                ))}
-              </div>
+            {FAMILIES.map((family) => (
+              <SidebarFamily key={family.id} family={family} />
             ))}
           </nav>
           <small>{session.data.user.display_name}</small>
@@ -263,6 +329,15 @@ export function App() {
         </main>
       </div>
     </DraftContext.Provider>
+  );
+}
+function SetupEmail({ visible }: { visible: boolean }) {
+  if (!visible) return null;
+  return (
+    <p className="muted">
+      Mail is optional — leave this for later, or open Connections → Email
+      after setup to connect an inbox. Skipping loses nothing.
+    </p>
   );
 }
 function Auth({
@@ -358,9 +433,10 @@ function Auth({
           <ol className="muted">
             <li>On the server itself, run <code>docker exec orbit-server-1 orbit-server bootstrap-token</code> and copy the token it prints. (Only someone on the server can see it — that is what makes you the owner.)</li>
             <li>Paste it into Setup token below, then pick your name, email, and a password of 12+ characters.</li>
-            <li>After this page, add models and connections from inside Orbit — this screen appears only once.</li>
+            <li>Mail is optional: connect an inbox now or skip it and add one later under Connections → Email.</li>
           </ol>
         )}
+        <SetupEmail visible={setup} />
         {setup && (
           <>
             <Input
