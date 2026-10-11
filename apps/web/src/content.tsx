@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Confirm,
+  Modal,
   Empty,
   ErrorNotice,
   Input,
@@ -234,20 +235,22 @@ export function Notes() {
         </section>
       </div>
       <p>
-        <button type="button" className="secondary" onClick={() => setShowImport((v) => !v)}>
-          {showImport ? "Hide import" : "Import a batch"}
+        <button type="button" className="secondary" onClick={() => setShowImport(true)}>
+          Import a batch
         </button>
       </p>
       {showImport && (
-        <ImportForm
-          heading="Import notes"
-          description="Paste a JSON array. Each entry needs a title and a body."
-          placeholder='[{"title":"Shopping","body":"milk, eggs"}]'
-          actionLabel="Import notes"
-          payloadKey="notes"
-          endpoint="/api/v1/notes/import"
-          queryKey={["notes"]}
-        />
+        <Modal title="Import notes" onClose={() => setShowImport(false)}>
+          <ImportForm
+            heading="Import notes"
+            description="Paste a JSON array. Each entry needs a title and a body."
+            placeholder='[{"title":"Shopping","body":"milk, eggs"}]'
+            actionLabel="Import notes"
+            payloadKey="notes"
+            endpoint="/api/v1/notes/import"
+            queryKey={["notes"]}
+          />
+        </Modal>
       )}
       {deleting && (
         <Confirm
@@ -267,6 +270,7 @@ export function Notes() {
 
 export function Inbox() {
   const client = useQueryClient();
+  const [showInboxImport, setShowInboxImport] = useState(false);
   const [filter, setFilter] = useState("open");
   const path =
     filter === "handled"
@@ -376,15 +380,24 @@ export function Inbox() {
                 ))}
             </div>
           </section>
-          <ImportForm
-            heading="Import into the inbox"
-            description="Paste a JSON array. Each entry can carry a source, a title, and a body. Anything that looks like an instruction is held for review."
-            placeholder='[{"source":"email","title":"Hello","body":"Just saying hi"}]'
-            actionLabel="Import items"
-            payloadKey="items"
-            endpoint="/api/v1/inbox/import"
-            queryKey={["inbox"]}
-          />
+          <p>
+            <button type="button" className="secondary" onClick={() => setShowInboxImport(true)}>
+              Import a batch
+            </button>
+          </p>
+          {showInboxImport && (
+            <Modal title="Import into the inbox" onClose={() => setShowInboxImport(false)}>
+              <ImportForm
+                heading="Import into the inbox"
+                description="Paste a JSON array. Each entry can carry a source, a title, and a body. Anything that looks like an instruction is held for review."
+                placeholder='[{"source":"email","title":"Hello","body":"Just saying hi"}]'
+                actionLabel="Import items"
+                payloadKey="items"
+                endpoint="/api/v1/inbox/import"
+                queryKey={["inbox"]}
+              />
+            </Modal>
+          )}
         </>
       )}
     </>

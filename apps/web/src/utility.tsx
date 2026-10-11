@@ -34,6 +34,7 @@ export function Reminders() {
     queryKey: ["reminders"],
     queryFn: () => api<ItemList>("/api/v1/reminders?limit=100"),
   });
+  const [showImport_reminders, setShowImport_reminders] = useState(false);
   const [title, setTitle] = useState("");
   const [when, setWhen] = useState("");
   const [showNew, setShowNew] = useState(false);
@@ -232,15 +233,24 @@ export function Reminders() {
           {saveEdit.error && <ErrorNotice error={saveEdit.error} />}
         </section>
       )}
-      <ImportForm
-        heading="Import reminders"
-        description="Paste a JSON array. Each entry needs a title; remind_at is an optional date like 2026-11-01T09:00:00Z."
-        placeholder='[{"title":"Call the dentist","remind_at":"2026-11-01T09:00:00Z"}]'
-        actionLabel="Import reminders"
-        payloadKey="items"
-        endpoint="/api/v1/reminders/import"
-        queryKey={["reminders"]}
-      />
+      <p>
+        <button type="button" className="secondary" onClick={() => setShowImport_reminders(true)}>
+          Import a batch
+        </button>
+      </p>
+      {showImport_reminders && (
+        <Modal title="Import reminders" onClose={() => setShowImport_reminders(false)}>
+        <ImportForm
+          heading="Import reminders"
+          description="Paste a JSON array. Each entry needs a title; remind_at is an optional date like 2026-11-01T09:00:00Z."
+          placeholder='[{"title":"Call the dentist","remind_at":"2026-11-01T09:00:00Z"}]'
+          actionLabel="Import reminders"
+          payloadKey="items"
+          endpoint="/api/v1/reminders/import"
+          queryKey={["reminders"]}
+        />
+        </Modal>
+      )}
       {deleting && (
         <Confirm
           title="Delete this reminder?"
@@ -263,6 +273,7 @@ export function Contacts() {
     queryKey: ["contacts"],
     queryFn: () => api<ItemList>("/api/v1/contacts?limit=100"),
   });
+  const [showImport_contacts, setShowImport_contacts] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -479,15 +490,24 @@ export function Contacts() {
           {saveEdit.error && <ErrorNotice error={saveEdit.error} />}
         </section>
       )}
-      <ImportForm
-        heading="Import contacts"
-        description="Paste a JSON array. Each entry needs a name; email, phone, and notes are optional."
-        placeholder='[{"name":"Sam Rivera","email":"sam@example.com","phone":"555-0100"}]'
-        actionLabel="Import contacts"
-        payloadKey="items"
-        endpoint="/api/v1/contacts/import"
-        queryKey={["contacts"]}
-      />
+      <p>
+        <button type="button" className="secondary" onClick={() => setShowImport_contacts(true)}>
+          Import a batch
+        </button>
+      </p>
+      {showImport_contacts && (
+        <Modal title="Import contacts" onClose={() => setShowImport_contacts(false)}>
+        <ImportForm
+          heading="Import contacts"
+          description="Paste a JSON array. Each entry needs a name; email, phone, and notes are optional."
+          placeholder='[{"name":"Sam Rivera","email":"sam@example.com","phone":"555-0100"}]'
+          actionLabel="Import contacts"
+          payloadKey="items"
+          endpoint="/api/v1/contacts/import"
+          queryKey={["contacts"]}
+        />
+        </Modal>
+      )}
       {deleting && (
         <Confirm
           title="Delete this contact?"
@@ -510,6 +530,7 @@ export function Bookmarks() {
     queryKey: ["bookmarks"],
     queryFn: () => api<ItemList>("/api/v1/bookmarks?limit=100"),
   });
+  const [showImport_bookmarks, setShowImport_bookmarks] = useState(false);
   const [url, setUrl] = useState("");
   const [title, setTitle] = useState("");
   const [showNew, setShowNew] = useState(false);
@@ -692,15 +713,24 @@ export function Bookmarks() {
           {saveEdit.error && <ErrorNotice error={saveEdit.error} />}
         </section>
       )}
-      <ImportForm
-        heading="Import bookmarks"
-        description="Paste a JSON array. Each entry needs a link starting with http:// or https://; titles are optional."
-        placeholder='[{"url":"https://example.com","title":"Example"}]'
-        actionLabel="Import bookmarks"
-        payloadKey="items"
-        endpoint="/api/v1/bookmarks/import"
-        queryKey={["bookmarks"]}
-      />
+      <p>
+        <button type="button" className="secondary" onClick={() => setShowImport_bookmarks(true)}>
+          Import a batch
+        </button>
+      </p>
+      {showImport_bookmarks && (
+        <Modal title="Import bookmarks" onClose={() => setShowImport_bookmarks(false)}>
+        <ImportForm
+          heading="Import bookmarks"
+          description="Paste a JSON array. Each entry needs a link starting with http:// or https://; titles are optional."
+          placeholder='[{"url":"https://example.com","title":"Example"}]'
+          actionLabel="Import bookmarks"
+          payloadKey="items"
+          endpoint="/api/v1/bookmarks/import"
+          queryKey={["bookmarks"]}
+        />
+        </Modal>
+      )}
       {deleting && (
         <Confirm
           title="Delete this bookmark?"
@@ -723,6 +753,7 @@ export function Clips() {
     queryKey: ["clips"],
     queryFn: () => api<ItemList>("/api/v1/clips?limit=100"),
   });
+  const [showImport_clips, setShowImport_clips] = useState(false);
   const [source, setSource] = useState("");
   const [clipText, setClipText] = useState("");
   const [showNew, setShowNew] = useState(false);
@@ -906,15 +937,24 @@ export function Clips() {
           {saveEdit.error && <ErrorNotice error={saveEdit.error} />}
         </section>
       )}
-      <ImportForm
-        heading="Import clips"
-        description="Paste a JSON array. Each entry needs clip text; the source is optional. Anything that looks like an instruction is held for review."
-        placeholder='[{"source":"article","text":"A paragraph worth keeping"}]'
-        actionLabel="Import clips"
-        payloadKey="items"
-        endpoint="/api/v1/clips/import"
-        queryKey={["clips"]}
-      />
+      <p>
+        <button type="button" className="secondary" onClick={() => setShowImport_clips(true)}>
+          Import a batch
+        </button>
+      </p>
+      {showImport_clips && (
+        <Modal title="Import clips" onClose={() => setShowImport_clips(false)}>
+        <ImportForm
+          heading="Import clips"
+          description="Paste a JSON array. Each entry needs clip text; the source is optional. Anything that looks like an instruction is held for review."
+          placeholder='[{"source":"article","text":"A paragraph worth keeping"}]'
+          actionLabel="Import clips"
+          payloadKey="items"
+          endpoint="/api/v1/clips/import"
+          queryKey={["clips"]}
+        />
+        </Modal>
+      )}
       {deleting && (
         <Confirm
           title="Delete this clip?"
