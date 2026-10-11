@@ -110,11 +110,14 @@ test("tasks: list shows the created task and detail offers recovery", async ({
   await expect(first, "created task listed").toBeVisible();
   await first.click();
   await expect(page).toHaveURL(/\/tasks\//);
-  // RUNNING composer task exposes CANCEL ("Cancel task") per the API.
-  await expect(
-    page.getByRole("button", { name: "Cancel task" }),
-    "detail offers recovery",
-  ).toBeVisible();
+  // The composer task settles fast (COMPLETED, no unresolved calls), and
+  // per task_detail that state exposes no recovery buttons — Cancel is
+  // active-states only, Retry is FAILED/TIMED_OUT/CANCELLED only,
+  // Reconcile needs unresolved calls. Assert the settled detail record
+  // itself: checkpoint, task record, and why-timeline.
+  await expect(page.getByRole("heading", { name: "Current checkpoint" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Task record" }), "detail shows task record").toBeVisible();
+  await expect(page.getByText(/Revision|Fence/).first(), "detail shows record fields").toBeVisible();
 });
 
 test("activity: list renders classified events", async ({ page }) => {
