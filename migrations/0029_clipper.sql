@@ -1,0 +1,2 @@
+CREATE TABLE clips(id uuid NOT NULL,owner_id uuid NOT NULL REFERENCES users(id),source text NOT NULL DEFAULT '',text text NOT NULL DEFAULT '',quarantined boolean NOT NULL DEFAULT false,clipped_at timestamptz NOT NULL DEFAULT now(),created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(owner_id,id));
+CREATE INDEX clips_owner_clipped ON clips(owner_id,clipped_at);

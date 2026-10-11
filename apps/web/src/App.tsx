@@ -10,22 +10,30 @@ import {
 import { Link, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
-  Menu,
-  X,
-  Home as HomeIcon,
-  MessageSquare,
-  ListTodo,
-  Activity as ActivityIcon,
+  AlarmClock,
+  BellRing,
   BookOpen,
-  Folder,
-  Plug,
-  Store,
-  ShieldCheck,
-  Workflow,
+  Bookmark,
+  Contact,
   Cpu,
+  Folder,
+  Home as HomeIcon,
+  HousePlug,
+  ListTodo,
+  Menu,
+  MessageSquare,
+  Monitor,
+  Plug,
+  Scissors,
   Settings as SettingsIcon,
+  ShieldCheck,
+  StickyNote,
+  Store,
   Users,
+  Workflow,
   Wrench,
+  X,
+  Activity as ActivityIcon,
 } from "lucide-react";
 import { api, post, queryClient, setSession, type Session } from "./api";
 import { syncPushSubscription } from "./push";
@@ -42,6 +50,13 @@ const Marketplace = lazy(() => import("./marketplace").then((m) => ({ default: m
 const Connections = lazy(() => import("./connections").then((m) => ({ default: m.Connections })));
 const Computers = lazy(() => import("./connections").then((m) => ({ default: m.Computers })));
 const Files = lazy(() => import("./connections").then((m) => ({ default: m.Files })));
+const HomeAssistant = lazy(() => import("./connections").then((m) => ({ default: m.HomeAssistant })));
+const Notes = lazy(() => import("./content").then((m) => ({ default: m.Notes })));
+const Inbox = lazy(() => import("./content").then((m) => ({ default: m.Inbox })));
+const Reminders = lazy(() => import("./utility").then((m) => ({ default: m.Reminders })));
+const Contacts = lazy(() => import("./utility").then((m) => ({ default: m.Contacts })));
+const Bookmarks = lazy(() => import("./utility").then((m) => ({ default: m.Bookmarks })));
+const Clips = lazy(() => import("./utility").then((m) => ({ default: m.Clips })));
 const Ops = lazy(() => import("./ops").then((m) => ({ default: m.Ops })));
 const GlobalSearch = lazy(() => import("./ops").then((m) => ({ default: m.GlobalSearch })));
 const DraftContext = createContext<{
@@ -61,7 +76,15 @@ const destinations = [
       ["/tasks", "Tasks", ListTodo],
       ["/approvals", "Approvals", ShieldCheck],
       ["/memory", "Memory", BookOpen],
+      ["/notes", "Notes", StickyNote],
+      ["/inbox", "AI Inbox", BellRing],
+      ["/reminders", "Reminders", AlarmClock],
+      ["/contacts", "Contacts", Contact],
+      ["/bookmarks", "Bookmarks", Bookmark],
+      ["/clips", "Clips", Scissors],
       ["/files", "Files", Folder],
+      ["/computers", "Computers", Monitor],
+      ["/home-assistant", "Home Assistant", HousePlug],
       ["/activity", "Activity", ActivityIcon],
     ],
   ],
@@ -208,12 +231,19 @@ export function App() {
             <Route path="/approvals/:id" element={<Approvals />} />
             <Route path="/memory" element={<Memory />} />
             <Route path="/memory/projects/:id" element={<Memory />} />
+            <Route path="/notes" element={<Notes />} />
+            <Route path="/inbox" element={<Inbox />} />
+            <Route path="/reminders" element={<Reminders />} />
+            <Route path="/contacts" element={<Contacts />} />
+            <Route path="/bookmarks" element={<Bookmarks />} />
+            <Route path="/clips" element={<Clips />} />
             <Route path="/automations" element={<Automations />} />
             <Route path="/models" element={<Models />} />
             <Route path="/marketplace" element={<Marketplace />} />
             <Route path="/connections/*" element={<Connections />} />
             <Route path="/computers" element={<Computers />} />
             <Route path="/files" element={<Files />} />
+            <Route path="/home-assistant" element={<HomeAssistant />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/ops" element={<Ops />} />
             <Route

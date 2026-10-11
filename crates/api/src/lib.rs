@@ -8,10 +8,12 @@ pub mod connectors;
 pub mod email;
 pub mod foundation;
 pub mod gateway;
+pub mod inbox;
 pub mod marketplace;
 pub mod mcp;
 pub mod memory;
 pub mod models;
+pub mod notes;
 pub mod ops;
 pub mod push;
 pub mod runtimes;
@@ -19,6 +21,7 @@ pub mod search;
 pub mod updates;
 pub mod tokens;
 pub mod uploads;
+pub mod utility_tabs;
 use axum::{
     Json, Router,
     http::{HeaderMap, StatusCode},
@@ -97,6 +100,9 @@ pub fn router(state: ApiState) -> Router {
         .merge(connectors::router())
         .merge(tokens::router())
         .merge(uploads::router())
+        .merge(utility_tabs::router())
+        .merge(notes::router())
+        .merge(inbox::router())
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
 }

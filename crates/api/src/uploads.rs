@@ -1,7 +1,13 @@
-//! Document ingestion (growth C14): PDF-only upload → sealed bytes +
-//! extracted text indexed as a memory DOCUMENT with `upload:<id>`
-//! provenance. Original bytes are never modified; the stored sha256
-//! must match on every read.
+//! P4 Files tab + document ingestion. The tab lists/gets/imports owner
+//! files backed by the sealed artifact store (`artifacts`/`chat_attachments`
+//! from 0003/0004, written through `attachments::upload`): bytes are stored
+//! where those rows already point (`artifact_dir`), never on a node, and
+//! every stored row carries UNTRUSTED_EXTERNAL trust. Uploaded text content
+//! is screened with `ContextBlock::looks_like_injection` — a hit sets the
+//! `quarantined` flag on the returned item (and the stored metadata) but is
+//! never executed; the bytes still round-trip immutably with sha256 match.
+//! Owner-scoped throughout; size caps match the existing 10 MiB
+//! TRANSFER/attachment bound (`MAX_FILE_BYTES` == `MAX_DOC_BYTES`).
 use axum::{Json, Router, body::Body, extract::{Path, Query, State}, http::HeaderMap, response::{IntoResponse, Response}, routing::{get, post}};
 use orbit_core::Error;
 use serde::Deserialize;
@@ -9,7 +15,111 @@ use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::{ApiError, ApiState, authenticate};
-const MAX_DOC_BYTES: usize = 10 * 1024 * 1024;
+const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_FILES_LIST: i64 = 200;
+/// Shared files-tab row shape: artifact rows plus the injection-screen flag.
+fn file_view(id: Uuid, name: &str, mime: &str, size: i64, sha: &str, quarantined: bool, created_at: Option<chrono::DateTime<chrono::Utc>>) -> Value {
+    json!({"id": id, "name": name, "mime_type": mime, "size": size, "sha256": sha, "quarantined": quarantined, "trust_level": "UNTRUSTED_EXTERNAL", "created_at": created_at})
+}
+/// Decode a byte slice for the injection screen only: lossy UTF-8, bounded.
+fn screen_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(&bytes[..bytes.len().min(64 * 1024)]).into_owned()
+}
+/// P4 Files tab list: owner artifacts newest-first. `node`/`kind` filters
+/// narrow by stored metadata (upload source node / mime prefix); unknown
+/// filter values match nothing rather than erroring.
+#[utoipa::path(get, path = "/api/v1/files", responses((status = 200, body = Value)))]
+pub async fn list_files_tab(State(state): State<ApiState>, headers: HeaderMap, Query(q): Query<FileListQuery>) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, false).await?;
+    let rows = sqlx::query("SELECT id,title AS name,mime_type,size,sha256,source_references,created_at FROM artifacts WHERE owner_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2").bind(a.scope.owner_id).bind(MAX_FILES_LIST).fetch_all(&state.pool).await?;
+    let mut items = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let mime: String = r.try_get::<String, _>("mime_type").unwrap_or_default();
+        let source: Value = r.try_get::<Value, _>("source_references").unwrap_or(json!([]));
+        if let Some(node) = q.node.as_deref() {
+            if !node.is_empty() && source.to_string().find(node).is_none() {
+                continue;
+            }
+        }
+        if let Some(kind) = q.kind.as_deref() {
+            if !kind.is_empty() && !mime.starts_with(kind) {
+                continue;
+            }
+        }
+        let quarantined = source.get("quarantined").and_then(Value::as_bool).unwrap_or_else(|| source.as_array().is_some_and(|refs| refs.iter().any(|v| v.get("quarantined").and_then(Value::as_bool).unwrap_or(false))));
+        items.push(file_view(r.try_get::<Uuid, _>("id")?, &r.try_get::<String, _>("name").unwrap_or_default(), &mime, r.try_get::<i64, _>("size").unwrap_or(0), &r.try_get::<String, _>("sha256").unwrap_or_default(), quarantined, r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok()));
+    }
+    Ok(Json(json!({"items": items})))
+}
+/// P4 Files tab get: metadata for one owner artifact.
+#[utoipa::path(get, path = "/api/v1/files/{id}", responses((status = 200, body = Value)))]
+pub async fn get_file_tab(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, false).await?;
+    let row = sqlx::query("SELECT id,title AS name,mime_type,size,sha256,source_references,created_at FROM artifacts WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).fetch_optional(&state.pool).await?.ok_or(Error::NotFound)?;
+    let source: Value = row.try_get::<Value, _>("source_references").unwrap_or(json!([]));
+    let quarantined = source.get("quarantined").and_then(Value::as_bool).unwrap_or_else(|| source.as_array().is_some_and(|refs| refs.iter().any(|v| v.get("quarantined").and_then(Value::as_bool).unwrap_or(false))));
+    Ok(Json(file_view(row.try_get::<Uuid, _>("id")?, &row.try_get::<String, _>("name").unwrap_or_default(), &row.try_get::<String, _>("mime_type").unwrap_or_default(), row.try_get::<i64, _>("size").unwrap_or(0), &row.try_get::<String, _>("sha256").unwrap_or_default(), quarantined, row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok())))
+}
+/// P4 Files tab import: multipart (`file` field, optional `filename`) or a
+/// raw body with `?filename=`. Stores via `attachments::upload` (sealed
+/// bytes under `artifact_dir`, 10 MiB cap), screened by
+/// `ContextBlock::looks_like_injection` into the `quarantined` flag.
+#[utoipa::path(post, path = "/api/v1/files/import", responses((status = 200, body = Value)))]
+pub async fn import_file_tab(State(state): State<ApiState>, headers: HeaderMap, Query(q): Query<ImportQuery>, req: axum::http::Request<Body>) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, true).await?;
+    let (name, bytes) = read_import_body(req, q.filename.as_deref()).await?;
+    store_import(&state, &a.scope, &name, &bytes).await.map(|v| Json(v))
+}
+#[derive(Deserialize)]
+pub struct FileListQuery { pub node: Option<String>, pub kind: Option<String> }
+#[derive(Deserialize)]
+pub struct ImportQuery { pub filename: Option<String>, pub content_type: Option<String> }
+/// Read the import payload: multipart `file` part wins when the content type
+/// is multipart, otherwise the whole body with `?filename=` naming it.
+async fn read_import_body(req: axum::http::Request<Body>, fallback_name: Option<&str>) -> Result<(String, Vec<u8>), ApiError> {
+    let content_type = req.headers().get(axum::http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_owned();
+    if content_type.starts_with("multipart/") {
+        let boundary = multer::parse_boundary(&content_type).map_err(|_| Error::Validation("multipart boundary missing".to_string()))?;
+        let body = axum::body::to_bytes(req.into_body(), MAX_FILE_BYTES + 1).await.map_err(|_| Error::Validation("upload body unreadable".to_string()))?;
+        if body.len() > MAX_FILE_BYTES {
+            return Err(Error::Validation("file exceeds 10 MiB".into()).into());
+        }
+        let mut multipart = multer::Multipart::new(futures_util::stream::once(async move { Ok::<_, std::io::Error>(axum::body::Bytes::from(body)) }), boundary);
+        while let Some(field) = multipart.next_field().await.map_err(|_| Error::Validation("multipart field unreadable".to_string()))? {
+            let field_name = field.name().unwrap_or("").to_owned();
+            let file_name = field.file_name().map(str::to_owned);
+            let data = field.bytes().await.map_err(|_| Error::Validation("multipart field unreadable".to_string()))?;
+            if field_name == "file" || file_name.is_some() {
+                let name = file_name.or_else(|| fallback_name.map(str::to_owned)).unwrap_or_else(|| "upload.bin".into());
+                return Ok((name, data.to_vec()));
+            }
+        }
+        return Err(Error::Validation("multipart import needs a file field".into()).into());
+    }
+    let body = axum::body::to_bytes(req.into_body(), MAX_FILE_BYTES + 1).await.map_err(|_| Error::Validation("upload body unreadable".to_string()))?;
+    if body.len() > MAX_FILE_BYTES {
+        return Err(Error::Validation("file exceeds 10 MiB".into()).into());
+    }
+    let name = fallback_name.unwrap_or("upload.bin").to_owned();
+    Ok((name, body.to_vec()))
+}
+/// Screen + seal one import: quarantine-store guard, injection screen into
+/// the quarantined flag, sealed artifact write with the flag in metadata.
+async fn store_import(state: &ApiState, scope: &orbit_core::OwnerScope, name: &str, bytes: &[u8]) -> Result<Value, ApiError> {
+    if bytes.is_empty() {
+        return Err(Error::Validation("import is empty".into()).into());
+    }
+    let quarantined_blob = orbit_email::quarantine_store(name, "application/octet-stream", bytes)?;
+    let quarantined = orbit_core::ContextBlock::looks_like_injection(&screen_text(bytes));
+    let stored = orbit_agent_runtime::attachments::upload(&state.pool, &state.artifact_dir, scope, &quarantined_blob.name, &quarantined_blob.mime, bytes).await?;
+    let id: Uuid = serde_json::from_value::<Uuid>(stored["id"].clone()).map_err(|_| Error::Unavailable("upload identity unavailable".to_string()))?;
+    if quarantined {
+        let marker = json!([{"kind": "OWNER_UPLOAD", "attachment_id": id, "quarantined": true}]);
+        sqlx::query("UPDATE artifacts SET source_references=$3 WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(id).bind(&marker).execute(&state.pool).await?;
+        sqlx::query("UPDATE chat_attachments SET source_reference=$3 WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(id).bind(&marker).execute(&state.pool).await?;
+    }
+    Ok(json!({"id": id, "name": stored["name"], "mime_type": stored["mime_type"], "size": stored["size"], "sha256": stored["sha256"], "quarantined": quarantined, "trust_level": "UNTRUSTED_EXTERNAL"}))
+}
 const MAX_TEXT_CHARS: usize = 200_000;
 /// Extract printable text runs from a PDF byte stream. This is a bounded
 /// intentionally-lossy preview (parenthesized literal strings + hex
@@ -59,8 +169,8 @@ pub struct UploadQuery { pub filename: String, pub content_type: Option<String> 
 #[utoipa::path(post, path = "/api/v1/uploads", responses((status = 200, body = Value)))]
 pub async fn upload_doc(State(state): State<ApiState>, headers: HeaderMap, Query(q): Query<UploadQuery>, body: Body) -> Result<Json<Value>, ApiError> {
     let a = authenticate(&state, &headers, true).await?;
-    let bytes = axum::body::to_bytes(body, MAX_DOC_BYTES + 1).await.map_err(|e| if e.to_string().contains("length limit exceeded") { Error::Validation("document exceeds 10 MB".into()) } else { Error::Validation("upload body unreadable".into()) })?;
-    if bytes.len() > MAX_DOC_BYTES { return Err(Error::Validation("document exceeds 10 MB".into()).into()); }
+    let bytes = axum::body::to_bytes(body, MAX_FILE_BYTES + 1).await.map_err(|e| if e.to_string().contains("length limit exceeded") { Error::Validation("document exceeds 10 MB".into()) } else { Error::Validation("upload body unreadable".into()) })?;
+    if bytes.len() > MAX_FILE_BYTES { return Err(Error::Validation("document exceeds 10 MB".into()).into()); }
     let name = q.filename.trim();
     if name.is_empty() || name.len() > 256 || name.contains(['\0', '\\']) || name.contains("..") || name.starts_with('/') || name.contains(':') {
         return Err(Error::Validation("upload name fails path-traversal screen".into()).into());
@@ -101,4 +211,7 @@ pub fn router() -> Router<ApiState> {
     Router::new()
         .route("/api/v1/uploads", post(upload_doc).get(list_uploads))
         .route("/api/v1/uploads/{id}", get(download_upload))
+        .route("/api/v1/files", get(list_files_tab))
+        .route("/api/v1/files/import", post(import_file_tab))
+        .route("/api/v1/files/{id}", get(get_file_tab))
 }

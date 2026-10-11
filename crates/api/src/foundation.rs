@@ -13,8 +13,8 @@ pub struct PublishRequest {pub event_type:EventType,pub payload:Value,pub source
 #[derive(Serialize,ToSchema)] pub struct PublishResponse {pub id:Uuid}
 #[derive(Deserialize)] pub struct Page {pub cursor:Option<i64>,pub limit:Option<i64>,pub correlation_id:Option<Uuid>}
 #[derive(Serialize,ToSchema)] pub struct ListResponse {pub items:Vec<Value>,pub next_cursor:Option<i64>}
-#[derive(Serialize,Deserialize,ToSchema)] #[serde(deny_unknown_fields)] pub struct Settings {pub installation_mode:String,pub autonomy_mode:AutonomyMode,pub allow_private_cloud:bool,pub agent_backend:String,pub revision:i64}
-#[derive(Deserialize,ToSchema)] #[serde(deny_unknown_fields)] pub struct SettingsUpdate {pub installation_mode:String,pub autonomy_mode:AutonomyMode,pub allow_private_cloud:bool,pub agent_backend:String,pub expected_revision:i64}
+#[derive(Serialize,Deserialize,ToSchema)] #[serde(deny_unknown_fields)] pub struct Settings {pub installation_mode:String,pub autonomy_mode:AutonomyMode,pub allow_private_cloud:bool,pub agent_backend:String,#[serde(default)] pub inbox_enabled:bool,pub revision:i64}
+#[derive(Deserialize,ToSchema)] #[serde(deny_unknown_fields)] pub struct SettingsUpdate {pub installation_mode:String,pub autonomy_mode:AutonomyMode,pub allow_private_cloud:bool,pub agent_backend:String,#[serde(default)] pub inbox_enabled:bool,pub expected_revision:i64}
 #[derive(Deserialize,ToSchema)] #[serde(deny_unknown_fields)] pub struct RecoveryRequest {pub expected_revision:i64}
 #[derive(Deserialize,ToSchema)] #[serde(deny_unknown_fields)] pub struct ReconcileRequest {pub call_id:Uuid,pub expected_revision:i64,pub resolution:String,pub evidence_reference:String}
 #[derive(Serialize,ToSchema)] pub struct TaskDetail {pub id:Uuid,pub title:String,pub state:String,pub revision:i64,pub fence:i64,pub event_id:Option<Uuid>,pub correlation_id:Uuid,pub checkpoint:Value,pub wait_reason:Option<String>,pub unresolved_call_ids:Value,pub evidence:Value,pub allowed_recovery_actions:Vec<String>,pub retry_of:Option<Uuid>,pub created_at:chrono::DateTime<chrono::Utc>,pub expires_at:chrono::DateTime<chrono::Utc>}
@@ -29,12 +29,12 @@ pub async fn update_settings(State(state):State<ApiState>,headers:HeaderMap,Json
  let a=authenticate(&state,&headers,true).await?;if !matches!(input.installation_mode.as_str(),"LOCAL_ONLY"|"HYBRID"|"CLOUD_ONLY"){return Err(Error::Validation("unknown installation mode".into()).into())}
  orbit_agent_backend::BackendKind::parse(&input.agent_backend).map_err(|e| -> ApiError { e.into() })?;
  let mut tx=state.pool.begin().await?;sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE").bind(a.scope.owner_id).fetch_one(&mut *tx).await?;
- let value=json!({"installation_mode":input.installation_mode,"autonomy_mode":input.autonomy_mode,"allow_private_cloud":input.allow_private_cloud,"agent_backend":input.agent_backend});
+ let value=json!({"installation_mode":input.installation_mode,"autonomy_mode":input.autonomy_mode,"allow_private_cloud":input.allow_private_cloud,"agent_backend":input.agent_backend,"inbox_enabled":input.inbox_enabled});
  let revision:Option<i64>=sqlx::query_scalar("UPDATE settings SET value=$2,revision=revision+1 WHERE owner_id=$1 AND revision=$3 RETURNING revision").bind(a.scope.owner_id).bind(&value).bind(input.expected_revision).fetch_optional(&mut *tx).await?;
  let revision=revision.ok_or(Error::Conflict("settings revision changed".into()))?;
  sqlx::query("UPDATE authorization_epochs SET revision=revision+1 WHERE owner_id=$1").bind(a.scope.owner_id).execute(&mut *tx).await?;
  orbit_audit::append(&mut tx,&a.scope,Uuid::new_v4(),None,None,"SETTINGS_UPDATED","owner updated settings",json!({"revision":revision})).await?;tx.commit().await?;
- Ok(Json(Settings{installation_mode:input.installation_mode,autonomy_mode:input.autonomy_mode,allow_private_cloud:input.allow_private_cloud,agent_backend:input.agent_backend,revision}))
+ Ok(Json(Settings{installation_mode:input.installation_mode,autonomy_mode:input.autonomy_mode,allow_private_cloud:input.allow_private_cloud,agent_backend:input.agent_backend,inbox_enabled:input.inbox_enabled,revision}))
 }
 #[utoipa::path(post,path="/api/v1/events",request_body=PublishRequest,responses((status=200,body=PublishResponse)))]
 pub async fn publish(State(state):State<ApiState>,headers:HeaderMap,Json(input):Json<PublishRequest>)->Result<Json<PublishResponse>,ApiError>{

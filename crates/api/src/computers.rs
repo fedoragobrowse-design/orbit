@@ -2033,6 +2033,50 @@ pub async fn propose_copy(
     ))
 }
 
+// ----------------------------------------------------------------- tab surface
+
+/// P4 Computers tab: every node the owner paired plus its computed
+/// liveness. `live` is `last_seen` recency against `OFFLINE_AFTER` (60 s,
+/// the same threshold the node status surface and `mark_offline_stale`
+/// use) ORed with a live socket in this process — no new daemon, the
+/// existing heartbeat (`serve_loop` updates `last_seen` on every
+/// Heartbeat/EventPush) is the only liveness signal. Revoked nodes report
+/// `live:false` regardless of socket state. Adds the `live` alias the tab
+/// reads plus `os`/`arch`/`version` pulled from the node's last-reported
+/// capabilities; the existing `connected` field is unchanged.
+#[utoipa::path(get, path = "/api/v1/computers/tab", responses((status = 200, body = Value)))]
+pub async fn computers_tab(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, false).await?;
+    let rows = sqlx::query("SELECT id,display_name,last_seen,revoked_at,capabilities,session_expires_at FROM computer_nodes WHERE owner_id=$1 ORDER BY created_at,id")
+        .bind(a.scope.owner_id)
+        .fetch_all(&state.pool)
+        .await?;
+    let online: Vec<Uuid> = state.nodes.links.lock().await.keys().copied().collect();
+    let mut items = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let node: Uuid = row.get("id");
+        let last_seen: Option<DateTime<Utc>> = row.get("last_seen");
+        let revoked: bool = row.try_get::<Option<DateTime<Utc>>, _>("revoked_at").unwrap_or(None).is_some();
+        let heartbeat_live = last_seen.is_some_and(|seen| Utc::now() - seen < OFFLINE_AFTER);
+        let live = !revoked && (heartbeat_live || online.contains(&node));
+        let caps: Value = row.try_get("capabilities").unwrap_or(json!({}));
+        items.push(json!({
+            "id": node,
+            "display_name": row.try_get::<String, _>("display_name").unwrap_or_else(|_| "Computer".into()),
+            "last_seen": last_seen,
+            "live": live,
+            "os": caps.get("os"),
+            "arch": caps.get("arch"),
+            "version": caps.get("version"),
+            "session_expires_at": row.try_get::<DateTime<Utc>, _>("session_expires_at").ok(),
+        }));
+    }
+    Ok(Json(json!({ "items": items })))
+}
+
 // ------------------------------------------------------------------ registry
 
 /// Seed the owner tool registry from the built-in descriptors. Registration is
@@ -2070,6 +2114,7 @@ pub async fn seed_tools(state: &ApiState) -> orbit_core::Result<()> {
 pub fn router() -> Router<ApiState> {
     Router::new()
         .route("/api/v1/computers", get(list_nodes))
+        .route("/api/v1/computers/tab", get(computers_tab))
         .route("/api/v1/computers/pairing-codes", post(create_pairing_code))
         .route("/api/v1/computers/pair", post(pair))
         .route("/api/v1/computers/connect", get(connect))

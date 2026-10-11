@@ -169,6 +169,64 @@ pub async fn list_states(State(state): State<ApiState>, headers: HeaderMap, Quer
     let items: Vec<Value> = rows.iter().map(|r| json!({"id": r.try_get::<Uuid,_>("id").ok(), "connection_id": r.try_get::<Uuid,_>("connection_id").ok(), "entity_id": r.try_get::<String,_>("entity_id").unwrap_or_default(), "state": r.try_get::<String,_>("state").unwrap_or_default(), "attributes": r.try_get::<Value,_>("attributes").unwrap_or(json!({})), "observed_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("observed_at").unwrap_or(None)})).collect();
     Ok(Json(json!({"items": items})))
 }
+/// P4 Home Assistant tab: entity snapshots from `ha_entities` (0030).
+/// Every row returns `tainted:true`: states/attributes are third-party
+/// bytes pulled from the operator-configured HA URL, stored only as
+/// UntrustedExternal content. There is deliberately no actuation path
+/// here — a state change is a Confirm-gated tool proposal, never a write
+/// through this route. Owner-scoped; `last_seen` orders newest first.
+#[utoipa::path(get, path = "/api/v1/ha/entities", responses((status = 200, body = Value)))]
+pub async fn list_entities(State(state): State<ApiState>, headers: HeaderMap, Query(p): Query<Page>) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, false).await?;
+    let limit = p.limit.unwrap_or(50).clamp(1, MAX_ROWS);
+    let rows = sqlx::query("SELECT id,entity_id,state,attributes,connection_id,tainted,last_seen FROM ha_entities WHERE owner_id=$1 ORDER BY last_seen DESC NULLS LAST LIMIT $2").bind(a.scope.owner_id).bind(limit).fetch_all(&state.pool).await?;
+    let items: Vec<Value> = rows.iter().map(|r| json!({"id": r.try_get::<Uuid,_>("id").ok(), "entity_id": r.try_get::<String,_>("entity_id").unwrap_or_default(), "state": r.try_get::<String,_>("state").unwrap_or_default(), "attributes": r.try_get::<Value,_>("attributes").unwrap_or(json!({})), "connection_id": r.try_get::<Option<Uuid>,_>("connection_id").unwrap_or(None), "tainted": r.try_get::<bool,_>("tainted").unwrap_or(true), "trust_level": "UNTRUSTED_EXTERNAL", "last_seen": r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_seen").unwrap_or(None)})).collect();
+    Ok(Json(json!({"items": items})))
+}
+/// P4 HA sync: pull `/api/states` from the operator-configured HA base URL
+/// (the `ha_connections` row names the connection; its token lives
+/// write-only in the sealed `SecretStore` and never surfaces) and upsert
+/// snapshots into `ha_entities`. Request and storage reuse the 0019 screen:
+/// `AdmittedEndpoint` client (SSRF/loopback/metadata refused, no
+/// redirects), 20 s timeout, 200-row cap, entity/state bounded with
+/// control-char rejection, attributes defaulting to `{}`. Rows land with
+/// `tainted=true` — untrusted content taint rides to the classifier and
+/// `validate_context` keeps these values out of SystemPolicy/
+/// UserInstruction privileged context. Never actuates: states are stored,
+/// never sent back as commands.
+#[utoipa::path(post, path = "/api/v1/ha/sync", responses((status = 200, body = Value)))]
+pub async fn sync_entities(State(state): State<ApiState>, headers: HeaderMap, Json(input): Json<HaSync>) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, true).await?;
+    let row = sqlx::query("SELECT base_url,credential_id FROM ha_connections WHERE owner_id=$1 AND id=$2 AND enabled").bind(a.scope.owner_id).bind(input.connection_id).fetch_optional(&state.pool).await?.ok_or(Error::NotFound)?;
+    let base: String = row.try_get("base_url")?;
+    let cred: Option<Uuid> = row.try_get("credential_id")?;
+    let Some(cred) = cred else { return Err(Error::Validation("connection has no stored token".into()).into()); };
+    let store = SecretStore::open(state.pool.clone(), &state.key_dir).await?;
+    let token = String::from_utf8(store.get(&a.scope, cred).await?.to_vec()).map_err(|_| Error::Validation("stored token unreadable".to_string()))?;
+    let ep = ha_endpoint(&base).map_err(ApiError::from)?;
+    let url = ep.url("api/states").map_err(ApiError::from)?;
+    let req = ep.client().await.map_err(ApiError::from)?.get(url).bearer_auth(&token);
+    let sent = tokio::time::timeout(std::time::Duration::from_secs(20), req.send()).await.map_err(|_| Error::Unavailable("home assistant unreachable (timeout)".to_string()))?;
+    let resp = sent.map_err(|_| ApiError(Error::Unavailable("home assistant unreachable".to_string())))?;
+    if resp.status().is_redirection() { return Err(ApiError(Error::Unavailable("home assistant rejected the request (redirect refused)".to_string()))); }
+    let states: Vec<Value> = resp.error_for_status().map_err(|_| ApiError(Error::Unavailable("home assistant rejected the request".to_string())))?.json().await.map_err(|_| ApiError(Error::Validation("home assistant returned invalid states".to_string())))?;
+    let mut stored = 0i64;
+    for s in states.iter().take(MAX_ROWS as usize) {
+        let entity = s.get("entity_id").and_then(Value::as_str).unwrap_or("");
+        let st = s.get("state").and_then(Value::as_str).unwrap_or("");
+        if !entity_ok(entity) || !text_ok(st, 1024) { continue; }
+        let attrs = s.get("attributes").cloned().unwrap_or(json!({}));
+        let observed: Option<chrono::DateTime<chrono::Utc>> = s.get("last_updated").and_then(Value::as_str).and_then(|v| v.parse().ok());
+        sqlx::query("INSERT INTO ha_entities(id,owner_id,entity_id,state,attributes,connection_id,tainted,last_seen) VALUES($1,$2,$3,$4,$5,$6,true,$7) ON CONFLICT (owner_id,entity_id) DO UPDATE SET state=EXCLUDED.state,attributes=EXCLUDED.attributes,connection_id=EXCLUDED.connection_id,tainted=true,last_seen=EXCLUDED.last_seen,updated_at=now()")
+            .bind(Uuid::new_v4()).bind(a.scope.owner_id).bind(entity).bind(st).bind(attrs).bind(input.connection_id).bind(observed).execute(&state.pool).await?;
+        stored += 1;
+    }
+    sqlx::query("UPDATE ha_connections SET last_sync=now(),updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(input.connection_id).execute(&state.pool).await?;
+    Ok(Json(json!({"synced": true, "stored": stored})))
+}
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HaSync { pub connection_id: Uuid }
 pub struct ConnectorApi;
 impl ConnectorApi {
     pub fn router() -> Router<ApiState> {
@@ -177,6 +235,8 @@ impl ConnectorApi {
             .route("/api/v1/ha/connections/{id}/sync", post(sync_ha))
             .route("/api/v1/ha/connections/{id}/remove", post(remove_ha))
             .route("/api/v1/ha/states", get(list_states))
+            .route("/api/v1/ha/entities", get(list_entities))
+            .route("/api/v1/ha/sync", post(sync_entities))
             .route("/api/v1/github/connections", post(create_github).get(list_github))
             .route("/api/v1/github/connections/{id}/sync", post(sync_github))
             .route("/api/v1/github/connections/{id}/remove", post(remove_github))

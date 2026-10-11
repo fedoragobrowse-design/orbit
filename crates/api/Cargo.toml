@@ -49,3 +49,4 @@ orbit-scheduler = { path = "../scheduler" }
 orbit-email = { path = "../email" }
 orbit-calendar = { path = "../calendar" }
 orbit-mcp = { path = "../mcp" }
+multer = "3"

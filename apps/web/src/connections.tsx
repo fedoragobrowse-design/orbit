@@ -20,6 +20,7 @@ import {
   Input,
   Json,
   PageHeader,
+  Select,
   Status,
 } from "./ui";
 
@@ -1062,13 +1063,25 @@ function NewEmailAccount({ onDone }: { onDone: () => void }) {
   );
 }
 
+function computerAge(lastSeen: unknown) {
+  const seen = new Date(text(lastSeen));
+  if (Number.isNaN(seen.getTime())) return "never seen";
+  const minutes = Math.max(0, Math.round((Date.now() - seen.getTime()) / 60000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
 export function Computers() {
   const client = useQueryClient();
   const nodes = useQuery({
-    queryKey: ["computers"],
-    queryFn: () => api<{ items: RecordData[] }>("/computers"),
+    queryKey: ["computers-tab"],
+    queryFn: () => api<{ items: RecordData[] }>("/computers/tab"),
   });
-  const invalidate = () => client.invalidateQueries({ queryKey: ["computers"] });
+  const invalidate = () =>
+    client.invalidateQueries({ queryKey: ["computers-tab"] });
   const pairing = useMutation({
     mutationFn: () => post<RecordData>("/computers/pairing-codes"),
   });
@@ -1119,9 +1132,10 @@ export function Computers() {
             <thead>
               <tr>
                 <th scope="col">Name</th>
-                <th scope="col">Connected</th>
+                <th scope="col">Status</th>
                 <th scope="col">Last seen</th>
-                <th scope="col">Roots</th>
+                <th scope="col">System</th>
+                <th scope="col">Agent</th>
                 <th scope="col">Actions</th>
               </tr>
             </thead>
@@ -1130,14 +1144,17 @@ export function Computers() {
                 <tr key={String(row.id)}>
                   <th scope="row">{text(row.display_name)}</th>
                   <td>
-                    <Status value={row.connected} />
+                    {row.live ? (
+                      <span className="status good">Live</span>
+                    ) : (
+                      <span className="status bad">Dead</span>
+                    )}
                   </td>
-                  <td>{timestamp(row.last_seen)}</td>
+                  <td>{computerAge(row.last_seen)}</td>
                   <td>
-                    {Array.isArray(row.roots)
-                      ? row.roots.map((r) => text((r as RecordData).display_name)).join(", ") || "—"
-                      : "—"}
+                    {[text(row.os), text(row.arch)].filter(Boolean).join(" · ") || "—"}
                   </td>
+                  <td>{text(row.version) || "—"}</td>
                   <td>
                     <button
                       className="danger"
@@ -1300,6 +1317,7 @@ export function Files() {
           {listing.data && <Json value={listing.data} />}
         </div>
       )}
+      <StoredFiles />
       <Documents />
     </>
   );
@@ -1337,6 +1355,246 @@ function Documents() {
         {send.data && (<p role="status"><small>Stored {text((send.data as RecordData).name)} — {text((send.data as RecordData).chars)} characters indexed.</small></p>)}
         <div className="actions"><button type="submit" disabled={!file || send.isPending}>Upload PDF</button></div>
       </form>
+    </div>
+  );
+}
+export function HomeAssistant() {
+  const client = useQueryClient();
+  const [connectionId, setConnectionId] = useState("");
+  const entities = useQuery({
+    queryKey: ["ha-entities"],
+    queryFn: () => api<{ items: RecordData[] }>("/ha/entities?limit=100"),
+  });
+  const conns = useQuery({
+    queryKey: ["ha-connections"],
+    queryFn: () => api<{ items: RecordData[] }>("/ha/connections"),
+  });
+  const sync = useMutation({
+    mutationFn: () =>
+      post<RecordData>("/ha/sync", { connection_id: connectionId }),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["ha-entities"] });
+    },
+  });
+  const items = entities.data?.items ?? [];
+  const options = conns.data?.items ?? [];
+  return (
+    <>
+      <PageHeader
+        title="Home Assistant"
+        description="Devices and sensors from your home."
+      />
+      <div className="panel">
+        <h2>Sync states</h2>
+        <p>
+          <small>
+            Pick the connection to pull fresh states from. States arrive
+            marked untrusted, and Orbit never switches anything on or off
+            without your approval.
+          </small>
+        </p>
+        {conns.isPending ? (
+          <p role="status">Loading connections…</p>
+        ) : conns.error ? (
+          <ErrorNotice error={conns.error} retry={() => conns.refetch()} />
+        ) : !options.length ? (
+          <Empty title="No Home Assistant connection yet">
+            Add one under Connections, then sync here.
+          </Empty>
+        ) : (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              sync.mutate();
+            }}
+          >
+            <Select
+              label="Connection"
+              required
+              value={connectionId}
+              onChange={(e) => setConnectionId(e.target.value)}
+            >
+              <option value="">Choose a connection…</option>
+              {options.map((row) => (
+                <option key={String(row.id)} value={String(row.id)}>
+                  {text(row.name) || text(row.base_url)}
+                </option>
+              ))}
+            </Select>
+            <div className="actions">
+              <button type="submit" disabled={!connectionId || sync.isPending}>
+                {sync.isPending ? "Syncing…" : "Sync now"}
+              </button>
+            </div>
+          </form>
+        )}
+        {sync.error && (
+          <ErrorNotice error={sync.error} retry={() => sync.reset()} />
+        )}
+        {sync.data && (
+          <p role="status">Synced — stored {text(sync.data.stored)} states.</p>
+        )}
+      </div>
+      <div className="panel">
+        <h2>Entities</h2>
+        {entities.isPending ? (
+          <p role="status">Loading entities…</p>
+        ) : entities.error ? (
+          <ErrorNotice error={entities.error} retry={() => entities.refetch()} />
+        ) : !items.length ? (
+          <Empty title="No entities yet">
+            Sync a connection above to pull the current states.
+          </Empty>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Entity</th>
+                <th scope="col">State</th>
+                <th scope="col">Last seen</th>
+                <th scope="col">Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((row) => (
+                <tr key={String(row.id)}>
+                  <th scope="row">{text(row.entity_id)}</th>
+                  <td>{text(row.state)}</td>
+                  <td>{timestamp(row.last_seen)}</td>
+                  <td>
+                    <span className="status pending">Untrusted</span>{" "}
+                    <small>{label(row.trust_level)}</small>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}
+function StoredFiles() {
+  const client = useQueryClient();
+  const [kind, setKind] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [notice, setNotice] = useState("");
+  const stored = useQuery({
+    queryKey: ["stored-files", kind],
+    queryFn: () =>
+      api<{ items: RecordData[] }>(
+        `/files${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`,
+      ),
+  });
+  const send = useMutation({
+    mutationFn: (picked: File) => {
+      const form = new FormData();
+      form.append("file", picked, picked.name);
+      return api<RecordData>(
+        `/files/import?filename=${encodeURIComponent(picked.name || "upload.bin")}`,
+        { method: "POST", body: form },
+      );
+    },
+    onSuccess: (data) => {
+      setFile(null);
+      setNotice(
+        data.quarantined
+          ? `Stored ${text(data.name)} — held for review as untrusted content.`
+          : `Stored ${text(data.name)}.`,
+      );
+      client.invalidateQueries({ queryKey: ["stored-files"] });
+    },
+  });
+  const items = stored.data?.items ?? [];
+  return (
+    <div className="panel">
+      <h2>Stored files</h2>
+      <p>
+        <small>
+          Anything you import here is treated as untrusted. Orbit reads it
+          when you ask, and anything that looks like an instruction to the
+          assistant is held for review first.
+        </small>
+      </p>
+      <form
+        aria-label="Import file"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (file) {
+            setNotice("");
+            send.mutate(file);
+          }
+        }}
+      >
+        <Input
+          label="File to import"
+          type="file"
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+        />
+        {send.error && (
+          <ErrorNotice error={send.error} retry={() => send.reset()} />
+        )}
+        {notice && <p role="status">{notice}</p>}
+        <div className="actions">
+          <button type="submit" disabled={!file || send.isPending}>
+            {send.isPending ? "Importing…" : "Import file"}
+          </button>
+        </div>
+      </form>
+      <Select
+        label="Show only"
+        value={kind}
+        onChange={(e) => setKind(e.target.value)}
+      >
+        <option value="">Everything</option>
+        <option value="image/">Images</option>
+        <option value="video/">Video</option>
+        <option value="audio/">Audio</option>
+        <option value="text/">Text</option>
+        <option value="application/pdf">PDF documents</option>
+      </Select>
+      {stored.isPending ? (
+        <p role="status">Loading stored files…</p>
+      ) : stored.error ? (
+        <ErrorNotice error={stored.error} retry={() => stored.refetch()} />
+      ) : !items.length ? (
+        <Empty title="No stored files yet">
+          Import a file above to keep it with your Orbit.
+        </Empty>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Type</th>
+              <th scope="col">Size</th>
+              <th scope="col">Safety</th>
+              <th scope="col">Source</th>
+              <th scope="col">Added</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((row) => (
+              <tr key={String(row.id)}>
+                <th scope="row">{text(row.name)}</th>
+                <td>{text(row.mime_type)}</td>
+                <td>{text(row.size)}</td>
+                <td>
+                  {row.quarantined ? (
+                    <span className="status pending">Held for review</span>
+                  ) : (
+                    <span className="status good">Clear</span>
+                  )}
+                </td>
+                <td>
+                  <small>{label(row.trust_level)}</small>
+                </td>
+                <td>{timestamp(row.created_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

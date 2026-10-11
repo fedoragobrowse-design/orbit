@@ -729,6 +729,8 @@ type SettingsData = {
   installation_mode: string;
   autonomy_mode: string;
   allow_private_cloud: boolean;
+  agent_backend: string;
+  inbox_enabled: boolean;
   revision: number;
 };
 function PushToggle() {
@@ -857,6 +859,24 @@ export function Settings() {
             Off means cloud services only see the bare minimum. Your most
             private notes stay on this machine either way, and secrets never
             enter a model.
+          </p>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.inbox_enabled ?? false}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  inbox_enabled: e.target.checked,
+                })
+              }
+            />
+            Turn on the AI Inbox
+          </label>
+          <p className="muted">
+            Off keeps the inbox hidden and nothing is collected. Turn it on
+            to gather items in the AI Inbox tab; treat everything there as
+            untrusted until you have checked it.
           </p>
           <button disabled={save.isPending}>Save</button>
         </form>
