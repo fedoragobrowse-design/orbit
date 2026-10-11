@@ -757,6 +757,15 @@ pub async fn post_message(
         json!({"conversation_id":conversation,"task_id":task,"agent_id":agent}),
     ))
 }
+#[utoipa::path(get,path="/api/v1/chat/conversations",responses((status=200,body=Value)))]
+pub async fn chat_conversations(
+    State(s): State<ApiState>,
+    h: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&s, &h, false).await?;
+    let rows: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',c.id,'title',c.title,'agent_id',c.agent_id,'created_at',c.created_at,'last_at',(SELECT max(created_at) FROM chat_messages m WHERE m.owner_id=c.owner_id AND m.conversation_id=c.id)) FROM conversations c WHERE c.owner_id=$1 ORDER BY (SELECT max(created_at) FROM chat_messages m WHERE m.owner_id=c.owner_id AND m.conversation_id=c.id) DESC NULLS LAST,c.created_at DESC LIMIT 50").bind(a.scope.owner_id).fetch_all(&s.pool).await?;
+    Ok(Json(json!({"items": rows})))
+}
 #[utoipa::path(get,path="/api/v1/chat/messages",responses((status=200,body=Value)))]
 pub async fn chat_messages(
     State(s): State<ApiState>,
@@ -851,6 +860,7 @@ pub async fn download_attachment(
         agent_detail,
         update_agent,
         post_message,
+        chat_conversations,
         chat_messages,
         chat_stream,
         upload_attachment,
@@ -871,6 +881,7 @@ pub fn router() -> Router<ApiState> {
             "/api/v1/chat/messages",
             get(chat_messages).post(post_message),
         )
+        .route("/api/v1/chat/conversations", get(chat_conversations))
         .route("/api/v1/chat/stream", get(chat_stream))
         .route("/api/v1/chat/attachments", post(upload_attachment))
         .route("/api/v1/chat/attachments/{id}", get(download_attachment))

@@ -14,7 +14,6 @@ import { useDraft } from "./nav";
 import {
   Empty,
   ErrorNotice,
-  Evidence,
   Input,
   PageHeader,
   Resource,
@@ -23,223 +22,146 @@ import {
   Textarea,
 } from "./ui";
 
-function payloadOf(row: RecordData): RecordData {
-  return (row.payload ?? {}) as RecordData;
-}
-
-function conversationTitle(row: RecordData): string {
-  const payload = payloadOf(row);
-  const titled = text(payload.title);
-  if (titled) return titled;
-  const body = text(payload.text).trim();
-  if (!body) return "Message";
-  return body.length > 80 ? `${body.slice(0, 80)}…` : body;
-}
-
-function messageTitle(draft: string): string {
-  const firstLine = draft.trim().split("\n")[0] ?? "";
-  return firstLine.length > 80 ? `${firstLine.slice(0, 80)}…` : firstLine;
-}
-
-function relatedTo(
-  rows: RecordData[],
-  eventId: string,
-  correlationId: string,
-): RecordData[] {
-  return rows.filter(
-    (t) =>
-      text(t.event_id) === eventId ||
-      (!!correlationId && !!text(t.correlation_id) && text(t.correlation_id) === correlationId),
-  );
-}
-
-function RelatedTasks({
-  eventId,
-  correlationId,
-}: {
-  eventId: string;
-  correlationId: string;
-}) {
-  return (
-    <Resource
-      path="/tasks"
-      empty={
-        <p>
-          No tasks recorded for this message yet. The backend queues a
-          notification task for each message; check back shortly.
-        </p>
+function renderRich(content: string, attachments: unknown): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  const files = Array.isArray(attachments) ? (attachments as unknown[]) : [];
+  const fence = /```(\w*)\n([\s\S]*?)```/g;
+  let last = 0;
+  let i = 0;
+  let m: RegExpExecArray | null;
+  const pushText = (t: string) => {
+    if (!t) return;
+    const lines = t.split("\n");
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+      const tool = line.match(/^\u{1F527}\s*(`?)([^`\n]+)\1\s*[-—–]\s*(.+)$/u) ?? line.match(/^(?:Used|Called|Ran)\s+(tool|MCP|code)\s+[`"“”']?([^`"“”'\n]+)[`"“”']?\s*[-—–:]\s*(.+)$/i);
+      if (tool) {
+        const kind = tool[1].includes("\u{1F527}") || /tool/i.test(tool[1]) ? "tool" : /mcp/i.test(tool[1] ?? tool[2] ?? "") ? "mcp" : "code";
+        parts.push(
+          <p key={`t-${i++}`} className={`rich-run rich-${kind}`}>
+            <span className="rich-badge">{kind === "tool" ? "Tool" : kind === "mcp" ? "MCP" : "Code"}</span>
+            <code>{(tool[2] ?? "").trim()}</code>
+            <span className="rich-note">{(tool[3] ?? "").trim()}</span>
+          </p>,
+        );
+        continue;
       }
-    >
-      {(rows) => {
-        const related = relatedTo(rows, eventId, correlationId);
-        if (!related.length)
-          return (
-            <p>
-              No tasks recorded for this message yet. The backend queues a
-              notification task for each message; check back shortly.
-            </p>
-          );
-        return related.map((t) => (
-          <article className="row" key={t.id}>
-            <div className="row-main">
-              <Link to={`/tasks/${t.id}`}>{text(t.title) || "Task"}</Link>
-              <div className="row-meta">
-                <Status value={t.state} />
-                <span>{timestamp(t.updated_at)}</span>
-              </div>
-              {!!t.wait_reason && <p>{label(t.wait_reason)}</p>}
-              <Evidence
-                correlationId={text(t.correlation_id)}
-                evidence={t.evidence}
-              />
-            </div>
-          </article>
-        ));
-      }}
-    </Resource>
+      if (/^\s*[-*]\s+\[[ xX]\]/.test(line)) {
+        parts.push(
+          <p key={`c-${i++}`} className="rich-check">
+            <span aria-hidden="true">{/\[xX\]/.test(line.slice(0, 8)) ? "☑" : "☐"}</span> {line.replace(/^\s*[-*]\s+\[[ xX]\]\s*/, "")}
+          </p>,
+        );
+        continue;
+      }
+      parts.push(<span key={`p-${i++}`}>{line}{li < lines.length - 1 ? <br /> : null}</span>);
+    }
+  };
+  while ((m = fence.exec(content)) !== null) {
+    pushText(content.slice(last, m.index));
+    parts.push(
+      <pre key={`f-${i++}`} className="rich-code">
+        {!!m[1] && <span className="rich-lang">{m[1]}</span>}
+        <code>{m[2].replace(/\n$/, "")}</code>
+      </pre>,
+    );
+    last = m.index + m[0].length;
+  }
+  pushText(content.slice(last));
+  if (!files.length) return <>{parts}</>;
+  return (
+    <>
+      {parts}
+      <ul className="rich-files">
+        {files.map((f, fi) => (
+          <li key={fi}>📎 {typeof f === "string" ? f : text((f as RecordData).name ?? f)}</li>
+        ))}
+      </ul>
+    </>
   );
 }
-function LiveReply({ eventId }: { eventId: string }) {
-  const reply = useQuery({
-    queryKey: ["live-reply", eventId],
-    queryFn: () =>
-      api<{ items: RecordData[] }>(`/events?limit=50`).then((r) =>
-        r.items.find(
-          (row) =>
-            text(row.event_type) === "AGENT_MESSAGE" &&
-            text(payloadOf(row).reply_to) === eventId,
-        ),
-      ),
-    refetchInterval: (q) => {
-      const row = q.state.data;
-      if (!row) return 1500;
-      const status = text(payloadOf(row).status);
-      return status === "QUEUED_REPLY" ||
-        (!status && !text(payloadOf(row).text))
-        ? 1500
-        : false;
-    },
-  });
-  const row = reply.data;
-  if (!row)
-    return (
-      <article className="message assistant" aria-live="polite">
-        <div className="assistant-typing" role="status">
-          <span className="typing-dot" />
-          <span className="typing-dot" />
-          <span className="typing-dot" />
-          <span className="typing-label">Responding…</span>
-        </div>
-      </article>
-    );
-  const payload = payloadOf(row);
-  const status = text(payload.status);
-  const body = text(payload.text);
+
+type ChatMsg = {
+  id: string;
+  task_id?: unknown;
+  role: string;
+  content: string;
+  created_at?: unknown;
+};
+function TypingBubble() {
   return (
     <article className="message assistant" aria-live="polite">
-      {status === "REPLIED" && body ? (
-        <div className="assistant-streamed">{body}</div>
-      ) : status === "FAILED_REPLY" ? (
-        <div className="assistant-failed">
-          Couldn&apos;t get a reply: {text(payload.error) || "model unavailable"}. Check Models — a FAST model must be enabled.
-        </div>
-      ) : (
-        <div className="assistant-typing" role="status">
-          <span className="typing-dot" />
-          <span className="typing-dot" />
-          <span className="typing-dot" />
-          <span className="typing-label">Responding…</span>
-        </div>
-      )}
-      <span className="chat-time">
-        {timestamp(row.timestamp)}
-        {!!text(payload.model) && (
-          <span className="assistant-model"> · {text(payload.model)}</span>
-        )}
-      </span>
+      <div className="assistant-typing" role="status">
+        <span className="typing-dot" />
+        <span className="typing-dot" />
+        <span className="typing-dot" />
+        <span className="typing-label">Responding…</span>
+      </div>
     </article>
   );
 }
-function ThreadReplies({
-  eventId,
-  correlationId,
-}: {
-  eventId: string;
-  correlationId: string;
-}) {
+function ConversationStream({ conversation, taskId }: { conversation: string; taskId: string | null }) {
+  const [streamed, setStreamed] = useState<ChatMsg[]>([]);
+  const [done, setDone] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const history = useQuery({
+    queryKey: ["chat-history", conversation],
+    queryFn: () => api<{ items: ChatMsg[] }>(`/chat/messages?conversation_id=${conversation}&limit=100`),
+    enabled: !!conversation,
+  });
+  useEffect(() => {
+    setStreamed([]);
+    setDone(null);
+    setFailed(false);
+    if (!conversation) return;
+    const src = new EventSource(`/api/v1/chat/stream?conversation_id=${conversation}`);
+    src.addEventListener("message", (e) => {
+      try {
+        const m = JSON.parse((e as MessageEvent).data) as ChatMsg;
+        setStreamed((prev) => (prev.some((p) => p.id === m.id) ? prev : [...prev, m]));
+      } catch { /* partial frame */ }
+    });
+    src.addEventListener("done", (e) => {
+      try {
+        const d = JSON.parse((e as MessageEvent).data) as { state: string };
+        setDone(d.state);
+        if (d.state === "FAILED" || d.state === "TIMED_OUT") setFailed(true);
+      } catch {
+        setDone("DONE");
+      }
+      src.close();
+    });
+    src.onerror = () => {
+      src.close();
+    };
+    return () => src.close();
+  }, [conversation, taskId]);
+  const seen: Record<string, true> = {};
+  for (const m of streamed) seen[m.id] = true;
+  const older = (history.data?.items ?? []).filter((m) => !seen[m.id]).reverse();
+  const all = [...older, ...streamed];
+  const waiting = !done && (taskId !== null || all.length === 0 || all[all.length - 1]?.role === "user");
   return (
     <>
-      <Resource
-        path="/events"
-        empty={<span className="muted">Thinking…</span>}
-      >
-        {(rows) => {
-          const replies = rows.filter(
-            (r) =>
-              text(r.event_type) === "AGENT_MESSAGE" &&
-              (text(payloadOf(r).reply_to) === eventId ||
-                (!!correlationId &&
-                  !!text(r.correlation_id) &&
-                  text(r.correlation_id) === correlationId)),
-          );
-          if (!replies.length) return null;
-          return replies.map((r) => {
-            const payload = payloadOf(r);
-            const status = text(payload.status);
-            const body = text(payload.text);
-            return (
-              <article className="message assistant" key={r.id}>
-                {status === "REPLIED" && body ? (
-                  <div>{body}</div>
-                ) : status === "FAILED_REPLY" ? (
-                  <div className="assistant-failed">
-                    Couldn&apos;t get a reply: {text(payload.error) || "model unavailable"}. Check Models — a FAST model must be enabled.
-                  </div>
-                ) : (
-                  <div className="muted">Thinking…</div>
-                )}
-                <span className="chat-time">
-                  {timestamp(r.timestamp)}
-                  {!!text(payload.model) && (
-                    <span className="assistant-model"> · {text(payload.model)}</span>
-                  )}
-                </span>
-              </article>
-            );
-          });
-        }}
-      </Resource>
-      <Resource
-        path="/tasks"
-        empty={<span className="muted">Working on it — replies appear here.</span>}
-      >
-        {(rows) => {
-          const related = relatedTo(rows, eventId, correlationId);
-          if (!related.length) return null;
-          return related.map((t) => {
-            const outcome = text(t.outcome);
-            const waiting = text(t.wait_reason);
-            return (
-              <article className="message assistant" key={t.id}>
-                <div>
-                  {outcome ||
-                    (waiting
-                      ? `Waiting: ${label(waiting)} — approve under Approvals.`
-                      : `${text(t.title) || "Task"} (${label(t.state)})`)}
-                </div>
-                <span className="chat-time">
-                  {timestamp(t.updated_at)}{" "}
-                  <Link to={`/tasks/${t.id}`}>task</Link>
-                </span>
-                <Evidence
-                  correlationId={text(t.correlation_id)}
-                  evidence={t.evidence}
-                />
-              </article>
-            );
-          });
-        }}
-      </Resource>
+      {history.isPending && <p role="status">Loading conversation…</p>}
+      {history.error && <ErrorNotice error={history.error} retry={() => history.refetch()} />}
+      {all.map((m) => (
+        <article className={m.role === "user" ? "message user" : "message assistant"} key={m.id}>
+          <div className={m.role === "assistant" ? "assistant-streamed" : undefined}>{renderRich(m.content, (m as unknown as RecordData).attachments)}</div>
+          <span className="chat-time">
+            {timestamp(m.created_at)}{" "}
+            {!!m.task_id && <Link to={`/tasks/${text(m.task_id)}`}>task</Link>}
+          </span>
+        </article>
+      ))}
+      {waiting && !failed && <TypingBubble />}
+      {failed && (
+        <article className="message assistant">
+          <div className="assistant-failed">
+            Couldn&apos;t get a reply — the run failed. Check Models (a FAST model must be enabled) or retry.
+          </div>
+        </article>
+      )}
     </>
   );
 }
@@ -248,98 +170,73 @@ export function Chat() {
   const conversation = params.get("conversation");
   const [chatModel, setChatModel] = useState(() => localStorage.getItem("orbit.chat.model") ?? "");
   const [chatRole, setChatRole] = useState(() => localStorage.getItem("orbit.chat.role") ?? "FAST");
+  const [agentId, setAgentId] = useState(() => localStorage.getItem("orbit.chat.agent") ?? "");
   const [draft, setDraft] = useDraft(`chat-${conversation ?? "new"}`);
-  const detail = useQuery({
-    queryKey: ["event", conversation],
-    queryFn: () => api<RecordData>(`/events/${conversation}`),
-    enabled: !!conversation,
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const convos = useQuery({
+    queryKey: ["chat-convos"],
+    queryFn: () => api<{ items: RecordData[] }>("/chat/conversations"),
   });
-
   const send = useMutation({
     mutationFn: () =>
-      post<{ id: string }>("/events", {
-        event_type: "USER_MESSAGE",
-        payload: { text: draft.trim(), title: messageTitle(draft), ...(chatModel ? { model_id: chatModel } : {}), model_role: chatRole },
-        source_event_key: `web-chat-${crypto.randomUUID()}`,
-        privacy_class: "PRIVATE",
+      post<{ conversation_id: string; task_id: string }>("/chat/messages", {
+        ...(conversation ? { conversation_id: conversation } : {}),
+        ...(agentId ? { agent_id: agentId } : {}),
+        message: draft.trim(),
       }),
     onSuccess: (r) => {
       setDraft("");
-      setParams({ conversation: r.id });
-      queryClient.invalidateQueries();
+      setTaskId(r.task_id);
+      setParams({ conversation: r.conversation_id });
+      void queryClient.invalidateQueries({ queryKey: ["chat-convos"] });
     },
   });
-
-  const correlationId = text(detail.data?.correlation_id);
-  const payload = detail.data ? payloadOf(detail.data) : null;
   const logRef = useRef<HTMLDivElement>(null);
+  const log = logRef.current;
   useEffect(() => {
-    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
-  }, [conversation, detail.data, correlationId]);
-
+    log?.scrollTo({ top: log.scrollHeight });
+  }, [conversation, taskId, log]);
   return (
     <div className="chat-shell">
       <aside className="chat-sidebar">
         <Link className="safe-link chat-new" to="/chat">
           + New chat
         </Link>
-        <Resource path="/events" empty={<p>No chats yet.</p>}>
-          {(rows) => {
-            const conversations = rows.filter(
-              (r) => text(r.event_type) === "USER_MESSAGE",
-            );
-            if (!conversations.length) return <p>No chats yet.</p>;
-            return conversations.slice(0, 30).map((r) => (
-              <div
-                className={
-                  r.id === conversation
-                    ? "summary-line chat-active"
-                    : "summary-line"
-                }
-                key={r.id}
-              >
-                <Link to={`/chat?conversation=${r.id}`}>
-                  {conversationTitle(r)}
-                </Link>
-              </div>
-            ));
-          }}
-        </Resource>
+        {convos.isPending && <p role="status">Loading…</p>}
+        {convos.error && <ErrorNotice error={convos.error} retry={() => convos.refetch()} />}
+        {(convos.data?.items ?? []).slice(0, 30).map((r) => (
+          <div
+            className={r.id === conversation ? "summary-line chat-active" : "summary-line"}
+            key={String(r.id)}
+          >
+            <Link to={`/chat?conversation=${r.id}`}>
+              {text(r.title) || "Conversation"}
+            </Link>
+          </div>
+        ))}
+        {convos.data && !(convos.data.items ?? []).length && <p>No chats yet.</p>}
       </aside>
       <section className="chat-main">
         <div className="chat-log" aria-live="polite" ref={logRef}>
-          {!conversation && (
+          {!conversation ? (
             <Empty title="What can I do for you?">
-              Just talk — questions get answered straight away. When you ask
-              Orbit to do something (send, schedule, remind, write, fix), it
-              starts a task and reports back here.
+              Just talk — the thread keeps context, so follow-ups build on
+              what came before. When you ask Orbit to do something (send,
+              schedule, remind, write, fix), it starts a task and reports
+              back here.
             </Empty>
-          )}
-          {detail.isPending && conversation && (
-            <p role="status">Loading conversation…</p>
-          )}
-          {detail.error && (
-            <ErrorNotice error={detail.error} retry={() => detail.refetch()} />
-          )}
-          {detail.data && payload && (
-            <article className="message user">
-              <div>{text(payload.text)}</div>
-              <span className="chat-time">
-                {timestamp(detail.data.timestamp)}
-              </span>
-            </article>
-          )}
-          {conversation && (
-            <>
-              <LiveReply eventId={conversation} />
-              <ThreadReplies
-                eventId={conversation}
-                correlationId={correlationId}
-              />
-            </>
+          ) : (
+            <ConversationStream conversation={conversation} taskId={taskId} />
           )}
         </div>
-        <ChatPickers chatModel={chatModel} setChatModel={(v) => { setChatModel(v); localStorage.setItem("orbit.chat.model", v); }} chatRole={chatRole} setChatRole={(v) => { setChatRole(v); localStorage.setItem("orbit.chat.role", v); }} />
+        <ChatPickers
+          chatModel={chatModel}
+          setChatModel={(v) => { setChatModel(v); localStorage.setItem("orbit.chat.model", v); }}
+          chatRole={chatRole}
+          setChatRole={(v) => { setChatRole(v); localStorage.setItem("orbit.chat.role", v); }}
+          agentId={agentId}
+          setAgentId={(v) => { setAgentId(v); localStorage.setItem("orbit.chat.agent", v); }}
+        />
         <form
           className="composer chat-composer"
           onSubmit={(e) => {
@@ -370,7 +267,8 @@ export function Chat() {
     </div>
   );
 }
-function ChatPickers({ chatModel, setChatModel, chatRole, setChatRole }: { chatModel: string; setChatModel: (v: string) => void; chatRole: string; setChatRole: (v: string) => void }) {
+function ChatPickers({ chatModel, setChatModel, chatRole, setChatRole, agentId, setAgentId }: { chatModel: string; setChatModel: (v: string) => void; chatRole: string; setChatRole: (v: string) => void; agentId: string; setAgentId: (v: string) => void }) {
+  const agents = useQuery({ queryKey: ["chat-agents"], queryFn: () => api<{ items: RecordData[] }>("/agents?limit=100").then((r) => r.items ?? []) });
   const models = useQuery({ queryKey: ["models"], queryFn: () => api<{ items: RecordData[] }>("/models?limit=100").then((r) => r.items ?? []) });
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api<{ items: RecordData[] }>("/providers?limit=100").then((r) => r.items ?? []) });
   const providerOf = (id: string) => (providers.data ?? []).find((r) => String(r.id) === id);
@@ -389,6 +287,12 @@ function ChatPickers({ chatModel, setChatModel, chatRole, setChatRole }: { chatM
         <option value="">Auto (role default)</option>
         {items.slice(0, 100).map((m) => (
           <option key={String(m.id)} value={String(m.id)}>{`${providerName(String(m.provider_id ?? ""))} — ${String(m.name ?? m.model ?? m.id)} (${keyBadge(m)})`}</option>
+        ))}
+      </Select>
+      <Select label="Agent (optional — default when blank)" value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+        <option value="">Default agent</option>
+        {(agents.data ?? []).slice(0, 100).map((a) => (
+          <option key={String(a.id)} value={String(a.id)}>{text(a.name) || "Agent"}</option>
         ))}
       </Select>
       <Select label="Function" value={chatRole} onChange={(e) => setChatRole(e.target.value)}>

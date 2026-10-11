@@ -653,6 +653,140 @@ dd {
   border-left: 3px solid var(--warning, #b45309);
   padding-left: 12px;
 }
+.rich-run {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 8px 0;
+  font-size: 14px;
+}
+p.rich-tool {
+  border-left-color: var(--action);
+}
+p.rich-mcp {
+  border-left-color: #7c3aed;
+}
+p.rich-code {
+  border-left-color: #0e7490;
+}
+.rich-badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--secondary);
+  flex-shrink: 0;
+}
+.rich-run code {
+  font-weight: 600;
+}
+.rich-note {
+  color: var(--secondary);
+}
+pre.rich-code {
+  background: var(--ground);
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: 13px;
+  margin: 8px 0;
+}
+.rich-lang {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--secondary);
+  margin-bottom: 4px;
+}
+.rich-check {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 4px 0;
+}
+.rich-files {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 13px;
+  color: var(--secondary);
+}
+.boot-screen {
+  text-align: center;
+  padding-top: 18vh;
+}
+.boot-screen h1 {
+  font-size: 40px;
+  letter-spacing: -0.03em;
+  margin: 20px 0 8px;
+}
+.boot-screen p {
+  color: var(--secondary);
+}
+.boot-mark {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto;
+}
+.boot-core {
+  position: absolute;
+  inset: 26px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+.boot-orbit {
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  border: 2px solid var(--action);
+  border-top-color: transparent;
+  animation: boot-spin 1.1s linear infinite;
+}
+.boot-orbit-2 {
+  inset: 16px;
+  border-color: var(--line);
+  border-bottom-color: transparent;
+  animation-duration: 1.7s;
+  animation-direction: reverse;
+}
+@keyframes boot-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-orbit,
+  .boot-orbit-2 {
+    animation: none;
+  }
+}
+.route-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 32px 8px;
+  color: var(--secondary);
+}
+.route-spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  border-top-color: var(--action);
+  animation: boot-spin 0.9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .route-spinner {
+    animation: none;
+  }
+}
 .message .assistant-typing {
   display: flex;
   align-items: center;

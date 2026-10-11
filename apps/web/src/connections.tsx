@@ -587,12 +587,12 @@ function Calendars() {
   const from = new Date(year, month, 1).toISOString();
   const to = new Date(year, month + 1, 1).toISOString();
   const sources = useQuery({ queryKey: ["calendar-sources"], queryFn: () => api<{ items: RecordData[] }>("/calendar/sources") });
-  const events = useQuery({ queryKey: ["calendar-month", year, month], queryFn: () => api<{ items: RecordData[] }>(`/api/v1/calendar/events?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=200`) });
+  const events = useQuery({ queryKey: ["calendar-month", year, month], queryFn: () => api<{ items: RecordData[] }>(`/calendar/events?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=200`) });
   const invalidate = () => { client.invalidateQueries({ queryKey: ["calendar-sources"] }); client.invalidateQueries({ queryKey: ["calendar-month", year, month] }); client.invalidateQueries({ queryKey: ["calendar-today"] }); };
   const sync = useMutation({ mutationFn: (id: string) => post<RecordData>(`/calendar/sources/${id}/sync`), onSuccess: invalidate });
   const removeSource = useMutation({ mutationFn: (id: string) => remove(`/calendar/sources/${id}`), onSuccess: invalidate });
   const addEvent = useMutation({
-    mutationFn: () => post<RecordData>("/api/v1/calendar/events", {
+    mutationFn: () => post<RecordData>("/calendar/events", {
       title: form.title,
       starts_at: new Date(form.starts).toISOString(),
       ends_at: form.ends ? new Date(form.ends).toISOString() : undefined,
@@ -906,12 +906,12 @@ function MailReader({ accounts }: { accounts: RecordData[] }) {
   const [selected, setSelected] = useState<string | null>(null);
   const list = useQuery({
     queryKey: ["mail-list", account],
-    queryFn: () => api<{ items: RecordData[] }>(`/api/v1/email/messages?limit=50${account ? `&account_id=${account}` : ""}`),
+    queryFn: () => api<{ items: RecordData[] }>(`/email/messages?limit=50${account ? `&account_id=${account}` : ""}`),
     enabled: accounts.length > 0,
   });
   const detail = useQuery({
     queryKey: ["mail-detail", selected],
-    queryFn: () => api<RecordData>(`/api/v1/email/messages/${selected}`),
+    queryFn: () => api<RecordData>(`/email/messages/${selected}`),
     enabled: !!selected,
   });
   if (!accounts.length) return null;

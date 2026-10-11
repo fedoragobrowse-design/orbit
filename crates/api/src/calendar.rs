@@ -61,11 +61,15 @@ pub struct EventsQuery { pub from: Option<String>, pub to: Option<String>, pub l
 pub async fn list_events(State(state): State<ApiState>, headers: HeaderMap, Query(q): Query<EventsQuery>) -> Result<Json<Value>, ApiError> {
     let a = authenticate(&state, &headers, false).await?;
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
-    let rows: Vec<Value> = if q.from.is_some() || q.to.is_some() {
-        sqlx::query_scalar("SELECT to_jsonb(t)-'owner_id'-'raw' FROM calendar_events t WHERE owner_id=$1 AND ($2::timestamptz IS NULL OR starts_at>=$2) AND ($3::timestamptz IS NULL OR starts_at<$3) ORDER BY starts_at NULLS LAST,id LIMIT $4").bind(a.scope.owner_id).bind(q.from.as_deref()).bind(q.to.as_deref()).bind(limit).fetch_all(&state.pool).await?
-    } else {
-        sqlx::query_scalar("SELECT to_jsonb(t)-'owner_id'-'raw' FROM calendar_events t WHERE owner_id=$1 ORDER BY starts_at NULLS LAST,id LIMIT $2").bind(a.scope.owner_id).bind(limit).fetch_all(&state.pool).await?
+    let parse = |s: &Option<String>| -> Result<Option<chrono::DateTime<chrono::Utc>>, ApiError> {
+        match s {
+            None => Ok(None),
+            Some(v) => v.parse::<chrono::DateTime<chrono::Utc>>().map(Some).map_err(|_| Error::Validation("invalid range timestamp (RFC3339)".into()).into()),
+        }
     };
+    let from = parse(&q.from)?;
+    let to = parse(&q.to)?;
+    let rows: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(t)-'owner_id'-'raw' FROM calendar_events t WHERE owner_id=$1 AND ($2::timestamptz IS NULL OR starts_at>=$2) AND ($3::timestamptz IS NULL OR starts_at<$3) ORDER BY starts_at NULLS LAST,id LIMIT $4").bind(a.scope.owner_id).bind(from).bind(to).bind(limit).fetch_all(&state.pool).await?;
     Ok(Json(json!({"items": rows})))
 }
 #[utoipa::path(get, path = "/api/v1/calendar/today", responses((status = 200, body = Value)))]

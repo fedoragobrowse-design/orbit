@@ -172,7 +172,12 @@ export function App() {
   }, [session.data?.user.id]);
   if (session.isPending)
     return (
-      <main className="auth">
+      <main className="auth boot-screen">
+        <div className="boot-mark" aria-hidden="true">
+          <span className="boot-orbit" />
+          <span className="boot-orbit boot-orbit-2" />
+          <span className="boot-core" />
+        </div>
         <h1>Orbit</h1>
         <p role="status">Opening your workspace…</p>
       </main>
@@ -235,7 +240,7 @@ export function App() {
               remain here.
             </div>
           )}
-          <Suspense fallback={<div role="status">Loading…</div>}>
+          <Suspense fallback={<div className="route-loading" role="status"><span className="route-spinner" aria-hidden="true" /><span>Loading…</span></div>}>
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/chat" element={<Chat />} />
