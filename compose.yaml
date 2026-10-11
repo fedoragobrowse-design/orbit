@@ -27,6 +27,7 @@ services:
       DATABASE_URL: postgres://orbit_runtime:${ORBIT_APP_DB_PASSWORD}@postgres:5432/orbit
       ORBIT_MIGRATION_DATABASE_URL: postgres://orbit:${ORBIT_DB_PASSWORD}@postgres:5432/orbit
       ORBIT_BIND: 0.0.0.0:3000
+      ORBIT_PUBLIC_ORIGIN: ${ORBIT_PUBLIC_ORIGIN:-http://127.0.0.1:8080}
       ORBIT_KEY_DIR: /var/lib/orbit/keys
       ORBIT_ARTIFACT_DIR: /var/lib/orbit/artifacts
       # Pi has no KVM: run the server with ORBIT_AIEC_RUNTIME=docker so sandbox
@@ -49,6 +50,24 @@ services:
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       server: {condition: service_healthy}
+    restart: unless-stopped
+    networks: [orbit]
+  gateway:
+    image: caddy:2.10.2-alpine
+    profiles: [tls]
+    mem_limit: 64m
+    cpus: 0.5
+    ports: ["${ORBIT_TLS_BIND:-0.0.0.0}:443:443", "${ORBIT_TLS_BIND:-0.0.0.0}:80:80"]
+    environment:
+      ORBIT_HOST: ${ORBIT_HOST:-localhost}
+      ORBIT_TLS_POLICY: ${ORBIT_TLS_POLICY:-}
+    volumes:
+      - ./deploy/docker/Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - prod-tls:/tls:ro
+      - tls-data:/data
+      - tls-config:/config
+    depends_on:
+      web: {condition: service_started}
     restart: unless-stopped
     networks: [orbit]
   ollama:
@@ -80,3 +99,6 @@ volumes:
   artifacts: {}
   models: {}
   hass: {}
+  tls-data: {}
+  tls-config: {}
+  prod-tls: {}

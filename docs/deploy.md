@@ -23,15 +23,27 @@ docker compose up -d --build
   acceptance-only: `/var/snap/ollama/common/models:ro` (see
   `compose.acceptance-model.yaml`).
 
-## TLS overlay (`deploy/examples/compose.tls.yaml`)
+## TLS front (`gateway`, profile `tls`)
+
+`compose.yaml` ships a Caddy `gateway` (image `caddy:2.10.2-alpine`) that
+terminates TLS on 443/80 using `deploy/docker/Caddyfile.prod` and fronts
+`web:8080`. It is off by default: plain `docker compose up` keeps the
+existing `127.0.0.1:8080` plain-HTTP path untouched. Enable it with:
 
 ```sh
 export ORBIT_HOST=orbit.example ORBIT_PUBLIC_ORIGIN=https://orbit.example
-docker compose -f compose.yaml -f deploy/examples/compose.tls.yaml up -d --build
+docker compose --profile tls up -d --build
 ```
 
-Caddy `gateway` terminates TLS on 443/80 and fronts `web`. Set
-`ORBIT_TLS_BIND` to bind a LAN IP instead of `0.0.0.0`.
+Set `ORBIT_TLS_BIND` to bind a LAN IP instead of `0.0.0.0`. ACME issues
+automatically for a public domain (leave `ORBIT_TLS_POLICY` empty). ACME
+cannot issue for LAN IPs: issue a leaf from a local CA with the
+`deploy/docker/test-ca.sh` pattern into the `prod-tls` volume and set
+`ORBIT_TLS_POLICY` to `tls /tls/web.crt /tls/web.key`.
+
+The older `deploy/examples/compose.tls.yaml` overlay (same Caddy image,
+`ORBIT_HOST`/`ORBIT_TLS_POLICY`/`ORBIT_TLS_BIND`) still works as an
+equivalent alternative.
 
 ## GPU (`deploy/examples/compose.gpu.yaml`)
 

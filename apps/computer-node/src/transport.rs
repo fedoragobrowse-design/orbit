@@ -39,6 +39,7 @@ pub struct Node {
     pub config: NodeConfig,
     key: SigningKey,
     index: Index,
+    watches: std::collections::HashMap<String, serde_json::Value>,
 }
 
 impl Node {
@@ -52,7 +53,7 @@ impl Node {
         );
         std::fs::create_dir_all(&config.state_dir)?;
         let index = Index::open(&config.state_dir.join("index.sqlite"))?;
-        Ok(Self { config, key, index })
+        Ok(Self { config, key, index, watches: std::collections::HashMap::new() })
     }
 
     pub fn save(&self) -> Result<()> {
@@ -347,6 +348,15 @@ impl Node {
                 Ok(
                     json!({"root_id":root.id,"relative_path":path,"kind":metadata.kind,"size":metadata.size,"version":metadata.version(),"sha256":metadata.digest,"privacy_class":"PRIVATE"}),
                 )
+            }
+            "files.watch" => {
+                let path = match arguments["relative_path"].as_str() {
+                    None | Some("") | Some(".") => String::new(),
+                    Some(p) => normalize_path(p)?,
+                };
+                let watch_id = uuid::Uuid::new_v4().to_string();
+                self.watches.insert(watch_id.clone(), json!({"root_id": root.id, "relative_path": path}));
+                Ok(json!({"watch_id": watch_id, "status": "ACTIVE"}))
             }
             _ => Err(Error::Unsupported),
         }

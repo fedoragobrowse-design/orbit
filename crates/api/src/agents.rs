@@ -563,6 +563,7 @@ impl AgentDispatcher {
             _ => Ok(orbit_tools::SafeTools {
                 pool: self.pool.clone(),
                 artifact_dir: self.artifact_dir.clone(),
+                key_dir: self.key_dir.clone(),
             }
             .execute(scope, action)
             .await?
@@ -812,7 +813,11 @@ pub async fn chat_messages(
         }
         None => (chrono::DateTime::<chrono::Utc>::MAX_UTC, Uuid::nil()),
     };
-    let rows=sqlx::query("SELECT id,task_id,role,content,attachments,created_at FROM chat_messages WHERE owner_id=$1 AND conversation_id=$2 AND (created_at,id)<($3,$4) ORDER BY created_at DESC,id DESC LIMIT $5").bind(a.scope.owner_id).bind(p.conversation_id).bind(since).bind(since_id).bind(limit+1).fetch_all(&s.pool).await?;
+    // Chain order: newest task first; inside a task the user row sorts
+    // before its assistant sisters, then by time. created_at ties on
+    // same-ms inserts used to scramble long threads; task creation time
+    // keeps each reply glued to its own message.
+    let rows=sqlx::query("SELECT m.id,m.task_id,m.role,m.content,m.attachments,m.created_at FROM chat_messages m LEFT JOIN tasks t ON t.owner_id=m.owner_id AND t.id=m.task_id WHERE m.owner_id=$1 AND m.conversation_id=$2 AND (m.created_at,m.id)<($3,$4) ORDER BY t.created_at DESC NULLS LAST,m.created_at,m.id LIMIT $5").bind(a.scope.owner_id).bind(p.conversation_id).bind(since).bind(since_id).bind(limit+1).fetch_all(&s.pool).await?;
     let mut items:Vec<Value>=rows.iter().map(|r|json!({"id":r.get::<Uuid,_>("id"),"task_id":r.get::<Option<Uuid>,_>("task_id"),"role":r.get::<String,_>("role"),"content":r.get::<String,_>("content"),"attachments":r.get::<Value,_>("attachments"),"created_at":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at")})).collect();
     let next = if items.len() as i64 > limit {
         items.pop();

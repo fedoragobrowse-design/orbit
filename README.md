@@ -69,15 +69,18 @@ brokered-egress origins only, untrusted-source taint, shared spend caps.
 Computer node — the lightweight daemon on your other machines (Linux/macOS):
 
 ```sh
-./install-node.sh --version vX.Y.Z --server https://orbit.example --pair <code>
+scripts/install-node.sh --version vX.Y.Z --server https://orbit.example
 ```
 
-One small binary, no Docker, no database. It calls out to your home over
-verified HTTPS (plain `http://` refused); you pick which folders it may touch
-(`roots add`, read-only unless `--mode WRITE`); anything outside those folders
-is refused before it is opened. Everyday commands: `orbit-computer-node
-status`, `roots add/list/revoke`. Windows via `install-node.ps1`. Details +
-signed dry-run transcripts: `docs/INSTALL.md`, `docs/NODES.md`.
+One command mints its own one-use pairing code (owner API token from
+Settings -> API tokens), pairs over verified HTTPS (plain `http://`
+refused), and installs the service — or pass `--pair <code>` from the
+Computers page instead. One small binary, no Docker, no database; you pick
+which folders it may touch (`roots add`, read-only unless `--mode WRITE`);
+anything outside those folders is refused before it is opened. Everyday
+commands: `orbit-computer-node status`, `roots add/list/revoke`. Windows
+via `install-node.ps1`. Details + dry-run transcripts: `docs/INSTALL.md`,
+`docs/NODES.md`.
 
 Web: `http://127.0.0.1:8080` · API: `http://127.0.0.1:3000` (via web proxy at
 `/api/*`, `/health`, `/ready`).

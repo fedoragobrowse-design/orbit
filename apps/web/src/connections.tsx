@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -460,6 +460,48 @@ export function Connections() {
     </>
   );
 }
+function BuiltInServices() {
+  const ha = useQuery({
+    queryKey: ["builtin-ha"],
+    queryFn: () => api<{ items: RecordData[] }>("/ha/connections"),
+  });
+  const haCount = ha.data?.items?.length ?? -1;
+  const services = [
+    {
+      name: "orbit-control",
+      blurb: "Settings, questions, skills, agent docs. Trusted — owner data only.",
+      state: "Active",
+    },
+    {
+      name: "orbit-data",
+      blurb: "Memory, mail, calendar, file reads. Everything it returns is marked untrusted.",
+      state: "Active",
+    },
+    {
+      name: "ha-control",
+      blurb:
+        haCount > 0
+          ? "Home Assistant actions: read states, call services. Every action needs your confirm."
+          : "Home Assistant actions. Connect Home Assistant first — this service stays off until then.",
+      state: haCount > 0 ? "Active" : "Off — no Home Assistant",
+    },
+  ];
+  return (
+    <section aria-label="Built-in services">
+      <h3>Built-in services</h3>
+      <ul className="memory-files">
+        {services.map((s) => (
+          <li key={s.name}>
+            <span className="notes-item-title">{s.name}</span>
+            <span className="notes-item-meta">
+              <Status value={s.state.startsWith("Active") ? "Connected" : "Unavailable"} /> {s.state} · {s.blurb}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
 function McpConnections() {
   const client = useQueryClient();
   const [adding, setAdding] = useState(false);
@@ -492,6 +534,8 @@ function McpConnections() {
   return (
     <div className="panel">
       <h2>MCP</h2>
+      <BuiltInServices />
+      <h3>External connections</h3>
       <p>
         <small>
           MCP servers expose tools through a connection Orbit admits first.
@@ -1275,6 +1319,48 @@ export function Computers() {
     mutationFn: (id: string) => post<RecordData>(`/computers/${id}/revoke`),
     onSuccess: invalidate,
   });
+  const items = nodes.data?.items ?? [];
+  const [pairedCodeId, setPairedCodeId] = useState("");
+  const [pairedCount, setPairedCount] = useState<number | null>(null);
+  const [copied, setCopied] = useState("");
+  const [sharePath, setSharePath] = useState("");
+  const code = text(pairing.data?.code ?? "");
+  const codeId = text(pairing.data?.id ?? "");
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const daemonCommand = code
+    ? `orbit-computer-node pair --server ${origin} --code ${code}`
+    : "";
+  const fresh = pairedCount === null ? [] : items.slice(pairedCount);
+  const freshLive = fresh.find((row) => Boolean(row.live)) ?? null;
+  const shareTarget = sharePath.trim() || "Documents";
+  const shareArg =
+    shareTarget.startsWith("/") || shareTarget.startsWith("~")
+      ? shareTarget
+      : `~/${shareTarget}`;
+  const shareCommand = `orbit-computer-node roots add ${shareArg}`;
+  const copyText = async (value: string, which: string) => {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(which);
+    } catch {
+      setCopied(`failed:${which}`);
+    }
+  };
+  useEffect(() => {
+    if (pairing.data && pairedCodeId !== codeId) {
+      setPairedCodeId(codeId);
+      setPairedCount(items.length);
+      setCopied("");
+    }
+  }, [pairing.data, codeId, pairedCodeId, items.length]);
+  useEffect(() => {
+    if (!pairing.data || freshLive) return;
+    const timer = setInterval(() => {
+      void client.invalidateQueries({ queryKey: ["computers-tab"] });
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [pairing.data, freshLive, client]);
   if (nodes.isPending)
     return (
       <>
@@ -1298,8 +1384,7 @@ export function Computers() {
           <ErrorNotice error={nodes.error} retry={() => nodes.refetch()} />
         </div>
       </>
-    );
-  const items = nodes.data?.items ?? [];
+  );
   return (
     <>
       <PageHeader
@@ -1360,7 +1445,7 @@ export function Computers() {
         )}
       </div>
       <div className="panel">
-        <h2>Pair a machine</h2>
+        <h2>Pair this machine</h2>
         <p>
           <small>
             Codes are one-use and expire after ten minutes. The node presents
@@ -1370,7 +1455,14 @@ export function Computers() {
         {pairing.data ? (
           <div>
             <p>
-              Pairing code: <strong>{text(pairing.data.code)}</strong>
+              Pairing code: <strong>{code}</strong>{" "}
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void copyText(code, "code")}
+              >
+                {copied === "code" ? "Copied" : "Copy code"}
+              </button>
             </p>
             <p>
               <small>
@@ -1378,6 +1470,73 @@ export function Computers() {
                 Creating another code invalidates this one.
               </small>
             </p>
+            <p>On the machine, run this one command:</p>
+            <p>
+              <code>{daemonCommand}</code>{" "}
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void copyText(daemonCommand, "command")}
+              >
+                {copied === "command" ? "Copied" : "Copy command"}
+              </button>
+            </p>
+            {copied.startsWith("failed:") && (
+              <p role="status">
+                <small>
+                  Copy did not work in this browser — select the text and copy
+                  it by hand.
+                </small>
+              </p>
+            )}
+            {freshLive ? (
+              <div>
+                <p role="status">
+                  {text(freshLive.display_name)} is paired and live.
+                </p>
+                <Input
+                  label="Folder to share (relative path)"
+                  placeholder="Documents"
+                  value={sharePath}
+                  onChange={(e) => setSharePath(e.target.value)}
+                />
+                <p>
+                  <small>
+                    Sharing stays read-only unless you pick otherwise on the
+                    machine. Nothing is shared until you run the command below
+                    there.
+                  </small>
+                </p>
+                <p>On the machine, share the folder:</p>
+                <p>
+                  <code>{shareCommand}</code>{" "}
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void copyText(shareCommand, "share")}
+                  >
+                    {copied === "share" ? "Copied" : "Copy command"}
+                  </button>
+                </p>
+                <div className="actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={pairing.isPending}
+                    onClick={() => pairing.mutate()}
+                  >
+                    Pair another machine
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p role="status">
+                <small>
+                  Waiting for the machine to pair… this list updates on its
+                  own once the node enrols.
+                </small>
+              </p>
+            )}
           </div>
         ) : (
           <button

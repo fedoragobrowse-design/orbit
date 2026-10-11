@@ -113,19 +113,35 @@ and restarts the stack; `--upgrade` refreshes images.
 
 ## Computer node (Linux/macOS)
 
+One command on the device that will run the node:
+
 ```sh
-./install-node.sh --version vX.Y.Z --server https://orbit.example --pair <code>
+scripts/install-node.sh --version vX.Y.Z --server https://orbit.example
 ```
 
-Pairs over verified HTTPS only (`--server` must be `https://`), writes
-`~/.local/share/orbit-node/node.json` (`0700`), then installs:
+With an owner API token (`--token orb_...`, `ORBIT_API_TOKEN`, or a hidden
+prompt when a terminal is present; minted in the app at Settings -> API
+tokens) it mints its own one-use pairing code
+(`POST /api/v1/computers/pairing-codes`, authed owner), pairs over verified
+HTTPS, installs the service and prints `status`. With `--pair <code>` from
+the Computers page no token is needed and nothing is minted:
 
-- Linux: systemd user unit `~/.config/systemd/user/orbit-node.service`
-  (`systemctl --user enable --now orbit-node`).
-- macOS: launchd plist `~/Library/LaunchAgents/dev.orbit.node.plist`.
+```sh
+scripts/install-node.sh --version vX.Y.Z --server https://orbit.example --pair <code>
+```
 
-Prints `status` at the end. `--ca-file` supplies an extra root CA for
-self-signed/fixture setups. The pairing code is never logged.
+What it does, in order: finds the binary (`--bin`, `PATH`, a locked repo
+build, or a checksum-verified release fetch); creates `0700`
+`~/.local/share/orbit-node` (`ORBIT_NODE_STATE_DIR` overrides); pairs into
+`node.json` (code used once, then discarded); installs a systemd user unit
+(Linux, `~/.config/systemd/user/orbit-node.service`,
+`systemctl --user enable --now orbit-node`) or launchd plist (macOS,
+`~/Library/LaunchAgents/dev.orbit.node.plist`); prints `status`.
+Re-running is safe: an already paired node keeps its identity and only the
+service entry is refreshed. The token and code are never printed; `--server`
+must be `https://`. `--ca-file` supplies an extra root CA for
+self-signed/fixture setups. `--dry-run` prints the plan, `--yes` skips
+confirmations.
 
 ## Computer node (Windows)
 
@@ -264,22 +280,29 @@ error: refusing unpinned install: pass --version vX.Y.Z (got 'empty'). GITHUB_RE
 
 ### install-node.sh --dry-run (exit 0, all four distros)
 
-Command (per distro):
+Command (per distro; token path mints its own one-use code):
 
 ```sh
-docker run --rm -v "$PWD/install-node.sh:/t/install-node.sh:ro" ubuntu:24.04 sh /t/install-node.sh --version v9.9.9-test --server https://orbit.example --dry-run
+docker run --rm -v "$PWD/scripts/install-node.sh:/t/install-node.sh:ro" ubuntu:24.04 sh /t/install-node.sh --version v9.9.9-test --server https://orbit.example --dry-run
 ```
 
 Output (state path is `/root/...` because containers run as root):
 
 ```text
-orbit node installer v9.9.9-test (Linux)
-detect: os=Linux bin=<orbit-computer-node from release v9.9.9-test> state=/root/.local/share/orbit-node
+orbit node setup v9.9.9-test (Linux)
+detect: bin=<orbit-computer-node from release v9.9.9-test> state=/root/.local/share/orbit-node
+[dry-run] resolve orbit-computer-node binary (--bin, PATH, locked repo build, or verified release fetch)
 [dry-run] mkdir -p /root/.local/share/orbit-node (0700)
-[dry-run] <orbit-computer-node from release v9.9.9-test> --config /root/.local/share/orbit-node/node.json pair --server https://orbit.example --state /root/.local/share/orbit-node/node.json --code '<redacted>'
+[dry-run] mint one-use code via POST https://orbit.example/api/v1/computers/pairing-codes (never shown), pair, then discard it
 [dry-run] install service: systemd user unit ~/.config/systemd/user/orbit-node.service
 [dry-run] enable + start service; '<orbit-computer-node from release v9.9.9-test> --config /root/.local/share/orbit-node/node.json status'
 ```
 
-No secrets appear in any transcript (pairing code redacted, passwords
-never echoed).
+With a code from the Computers page the mint line reads instead:
+
+```text
+[dry-run] pair with the provided --pair code (never shown), then discard it
+```
+
+No secrets appear in any transcript (token and pairing code never shown,
+passwords never echoed).

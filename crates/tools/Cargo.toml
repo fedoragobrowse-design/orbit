@@ -19,3 +19,7 @@ sha2.workspace = true
 hex.workspace = true
 chrono.workspace = true
 orbit-agent-backend = { path = "../agent-backend" }
+orbit-audit = { path = "../audit" }
+orbit-secrets = { path = "../secrets" }
+orbit-model-router = { path = "../model-router" }
+reqwest.workspace = true

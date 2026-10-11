@@ -204,8 +204,12 @@ function ConversationStream({ conversation, taskId }: { conversation: string; ta
   }, [conversation, taskId]);
   const seen: Record<string, true> = {};
   for (const m of streamed) seen[m.id] = true;
-  const older = (history.data?.items ?? []).filter((m) => !seen[m.id]).reverse();
-  const all = [...older, ...streamed];
+  const older = (history.data?.items ?? []).filter((m) => !seen[m.id]);
+  // Chronological backstop: history arrives newest-task-first and the SSE
+  // row lands before its history twin; sort by time so a long reply can
+  // never sit above the message it answers.
+  const byTime = (m: ChatMsg) => String(m.created_at ?? "");
+  const all = [...older, ...streamed].sort((a, b) => (byTime(a) < byTime(b) ? -1 : byTime(a) > byTime(b) ? 1 : a.id < b.id ? -1 : 1));
   const waiting = !done && (taskId !== null || all.length === 0 || all[all.length - 1]?.role === "user");
   return (
     <>

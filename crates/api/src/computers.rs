@@ -1715,15 +1715,14 @@ pub async fn search_files(
             Error::Validation("search mode must be FILENAME, TEXT or SEMANTIC".into()).into(),
         );
     }
+    // Schema-shaped: node_id + root_ids + query (+mode). root_id/limit are
+    // gateway conveniences the descriptor rejects (additionalProperties
+    // false) — the node derives them from root_ids[0] and its own paging.
     let arguments = json!({
-        // Every node request names one anchor root; a search additionally carries
-        // the full span so the node can widen it to roots it already holds.
-        "root_id": q.root_ids[0],
         "node_id": q.node_id,
         "root_ids": q.root_ids,
         "query": q.query.trim(),
         "mode": mode,
-        "limit": q.limit.unwrap_or(50).clamp(1, 50),
     });
     Ok(Json(
         node_read(&state, &a.scope, "files.search", arguments).await?,

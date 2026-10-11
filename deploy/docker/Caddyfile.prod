@@ -1,0 +1,11 @@
+# Prod TLS front (compose.yaml `gateway`, profile `tls`).
+#
+# ORBIT_HOST is the reachable name: a public domain gets a public ACME cert
+# automatically (empty ORBIT_TLS_POLICY). ACME cannot issue for LAN IPs, so
+# for those issue a leaf from a local CA with the deploy/docker/test-ca.sh
+# pattern into the prod-tls volume and set ORBIT_TLS_POLICY to:
+# tls /tls/web.crt /tls/web.key
+{$ORBIT_HOST} {
+	{$ORBIT_TLS_POLICY}
+	reverse_proxy web:8080
+}

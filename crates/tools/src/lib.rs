@@ -121,7 +121,29 @@ pub fn descriptors()->Vec<ToolDescriptor>{
    permission_keys: vec!["orbit-data.files_list".into()],
    sandbox_required: false,
   },
-ToolDescriptor{id:Uuid::from_u128(1),name:"notifications.create".into(),version:"1".into(),input_schema:json!({"type":"object","additionalProperties":false,"required":["severity","title","body","related_entity_ids"],"properties":{"severity":{"enum":["INFO","ACTION_REQUIRED","IMPORTANT","URGENT"]},"title":{"type":"string","minLength":1,"maxLength":240},"body":{"type":"string","maxLength":32768},"related_entity_ids":{"type":"array","maxItems":50,"items":{"type":"string","format":"uuid"}}}}),output_schema:json!({"type":"object","additionalProperties":false,"required":["notification_id"],"properties":{"notification_id":{"type":"string","format":"uuid"}}}),effects:effects.clone(),default_risk:RiskLevel::Low,permission_keys:vec!["notifications.create".into()],sandbox_required:false},
+  ToolDescriptor {
+   id: Uuid::from_u128(30),
+   name: "ha-control.entities_list".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":[],"properties":{"limit":{"type":"integer","minimum":1,"maximum":200}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["items","trust"],"properties":{"items":{"type":"array","maxItems":200,"items":{"type":"object"}},"trust":{"type":"string"}}}),
+   effects: ToolEffects{external:true,modifies_data:false,reversible:true,credential_access:false,affected_party:"OWNER".into(),network:true},
+   default_risk: RiskLevel::High,
+   permission_keys: vec!["ha-control.entities_list".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(31),
+   name: "ha-control.call_service".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["domain","service","entity_id"],"properties":{"domain":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9_]+$"},"service":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9_]+$"},"entity_id":{"type":"string","minLength":1,"maxLength":256},"data":{"type":"object"}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["ok","domain","service","entity_id"],"properties":{"ok":{"type":"boolean"},"domain":{"type":"string"},"service":{"type":"string"},"entity_id":{"type":"string"}}}),
+   effects: ToolEffects{external:true,modifies_data:true,reversible:false,credential_access:true,affected_party:"OWNER".into(),network:true},
+   default_risk: RiskLevel::High,
+   permission_keys: vec!["ha-control.call_service".into()],
+   sandbox_required: false,
+  },
+ ToolDescriptor{id:Uuid::from_u128(1),name:"notifications.create".into(),version:"1".into(),input_schema:json!({"type":"object","additionalProperties":false,"required":["severity","title","body","related_entity_ids"],"properties":{"severity":{"enum":["INFO","ACTION_REQUIRED","IMPORTANT","URGENT"]},"title":{"type":"string","minLength":1,"maxLength":240},"body":{"type":"string","maxLength":32768},"related_entity_ids":{"type":"array","maxItems":50,"items":{"type":"string","format":"uuid"}}}}),output_schema:json!({"type":"object","additionalProperties":false,"required":["notification_id"],"properties":{"notification_id":{"type":"string","format":"uuid"}}}),effects:effects.clone(),default_risk:RiskLevel::Low,permission_keys:vec!["notifications.create".into()],sandbox_required:false},
  ToolDescriptor{id:Uuid::from_u128(2),name:"reports.save".into(),version:"1".into(),input_schema:json!({"type":"object","additionalProperties":false,"required":["title","content","source_references"],"properties":{"title":{"type":"string","minLength":1,"maxLength":240},"content":{"type":"string","maxLength":1048576},"source_references":{"type":"array","maxItems":50,"items":{"type":"string","maxLength":2048}}}}),output_schema:json!({"type":"object","additionalProperties":false,"required":["artifact_id","sha256"],"properties":{"artifact_id":{"type":"string","format":"uuid"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}}),effects,default_risk:RiskLevel::Low,permission_keys:vec!["reports.save".into()],sandbox_required:false}]
 }
 /// The execution envelope alone is not authority: callers must match the
@@ -132,7 +154,7 @@ pub async fn verify_submission(pool:&PgPool,scope:&OwnerScope,action:&Authorized
  let row=sqlx::query("SELECT snapshot,action_hash,task_fence,state FROM tool_calls WHERE owner_id=$1 AND id=$2 AND authorization_id=$3 AND task_id=$4").bind(scope.owner_id).bind(s.action_id).bind(action.authorization_id()).bind(s.task_id).fetch_optional(pool).await?.ok_or(Error::Forbidden)?;
  if !matches!(row.get::<String,_>("state").as_str(),"SUBMITTED"|"COMPLETED")||row.get::<i64,_>("task_fence")!=action.task_fence()||row.get::<Value,_>("snapshot")!=serde_json::to_value(s)?||orbit_approvals::canonical_hash(s)?!=row.get::<String,_>("action_hash"){return Err(Error::Forbidden);}Ok(())
 }
-pub struct SafeTools {pub pool:PgPool,pub artifact_dir:PathBuf}
+pub struct SafeTools {pub pool:PgPool,pub artifact_dir:PathBuf,pub key_dir:PathBuf}
 #[async_trait]impl ToolExecutor for SafeTools {
  async fn execute(&self,scope:&OwnerScope,action:AuthorizedAction)->Result<ToolResult>{
   verify_submission(&self.pool,scope,&action).await?;
@@ -200,6 +222,41 @@ pub struct SafeTools {pub pool:PgPool,pub artifact_dir:PathBuf}
     let rows = sqlx::query("SELECT title,starts_at,ends_at,source FROM calendar_events WHERE owner_id=$1 AND starts_at>=$2 AND starts_at<$3 ORDER BY starts_at LIMIT $4").bind(scope.owner_id).bind(s.arguments["from"].as_str().unwrap_or("1970-01-01T00:00:00Z").parse::<chrono::DateTime<chrono::Utc>>().unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC)).bind(s.arguments["to"].as_str().unwrap_or("2100-01-01T00:00:00Z").parse::<chrono::DateTime<chrono::Utc>>().unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC)).bind(s.arguments.get("limit").and_then(Value::as_i64).unwrap_or(50).clamp(1,200)).fetch_all(&self.pool).await?;
     let items: Vec<Value> = rows.iter().map(|r| json!({"title":r.get::<String,_>("title"),"starts_at":r.get::<chrono::DateTime<chrono::Utc>,_>("starts_at"),"source":r.get::<String,_>("source")})).collect();
     json!({"items":items,"trust":"UNTRUSTED_EXTERNAL"})
+   },"ha-control.entities_list"=>{
+    let conns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ha_connections WHERE owner_id=$1").bind(scope.owner_id).fetch_one(&self.pool).await?;
+    if conns == 0 {return Err(Error::Validation("connect Home Assistant first under Connections".into()));}
+    let limit = s.arguments.get("limit").and_then(Value::as_i64).unwrap_or(50).clamp(1,200);
+    let rows = sqlx::query("SELECT entity_id,state,attributes,connection_id,last_seen FROM ha_entities WHERE owner_id=$1 ORDER BY last_seen DESC NULLS LAST LIMIT $2").bind(scope.owner_id).bind(limit).fetch_all(&self.pool).await?;
+    let items: Vec<Value> = rows.iter().map(|r| json!({"entity_id":r.get::<String,_>("entity_id"),"state":r.get::<String,_>("state"),"attributes":r.get::<Value,_>("attributes"),"connection_id":r.get::<Option<Uuid>,_>("connection_id"),"last_seen":r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_seen"),"tainted":true,"trust_level":"UNTRUSTED_EXTERNAL"})).collect();
+    json!({"items":items,"trust":"UNTRUSTED_EXTERNAL"})
+   },"ha-control.call_service"=>{
+    let domain = s.arguments["domain"].as_str().unwrap_or("");
+    let service = s.arguments["service"].as_str().unwrap_or("");
+    let entity = s.arguments["entity_id"].as_str().unwrap_or("");
+    if domain.is_empty() || service.is_empty() || entity.is_empty() {return Err(Error::Validation("domain, service, and entity_id are required".into()));}
+    let row = sqlx::query("SELECT base_url,credential_id FROM ha_connections WHERE owner_id=$1 AND enabled ORDER BY created_at LIMIT 1").bind(scope.owner_id).fetch_optional(&self.pool).await?.ok_or(Error::Validation("connect Home Assistant first under Connections".into()))?;
+    let base: String = row.try_get("base_url").map_err(|_| Error::Validation("connect Home Assistant first under Connections".into()))?;
+    let cred: Option<Uuid> = row.try_get("credential_id").map_err(|_| Error::Validation("connect Home Assistant first under Connections".into()))?;
+    let Some(cred) = cred else {return Err(Error::Validation("connect Home Assistant first under Connections".into()));};
+    let store = orbit_secrets::SecretStore::open(self.pool.clone(), &self.key_dir).await?;
+    let token = String::from_utf8(store.get(scope, cred).await?.to_vec()).map_err(|_| Error::Validation("stored Home Assistant token unreadable".into()))?;
+    let ep = orbit_model_router::endpoint::AdmittedEndpoint{origin:base,local:false,admitted_addresses:vec![]};
+    let url = ep.url(&format!("api/services/{domain}/{service}")).map_err(|e| match e {orbit_core::Error::Validation(m)=>Error::Validation(m),_=>Error::Forbidden})?;
+    let client = ep.client().await.map_err(|e| match e {orbit_core::Error::Validation(m)=>Error::Validation(m),orbit_core::Error::Unavailable(m)=>Error::Unavailable(m),_=>Error::Forbidden})?;
+    let mut body = serde_json::Map::new();
+    body.insert("entity_id".into(), Value::String(entity.to_owned()));
+    if let Some(extra) = s.arguments.get("data").and_then(Value::as_object) {for (k,v) in extra {body.insert(k.clone(), v.clone());}}
+    let send = client.post(url).bearer_auth(&token).json(&Value::Object(body));
+    let sent = tokio::time::timeout(std::time::Duration::from_secs(20), send.send()).await.map_err(|_| Error::Unavailable("home assistant unreachable (timeout)".into()))?.map_err(|_| Error::Unavailable("home assistant unreachable".into()))?;
+    if sent.status().is_redirection() {return Err(Error::Unavailable("home assistant rejected the request (redirect refused)".into()));}
+    sent.error_for_status().map_err(|_| Error::Unavailable("home assistant rejected the request".into()))?;
+    let output = json!({"ok":true,"domain":domain,"service":service,"entity_id":entity});
+    let cid: Uuid = sqlx::query_scalar("SELECT correlation_id FROM tasks WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(s.task_id).fetch_optional(&self.pool).await?.unwrap_or_else(Uuid::new_v4);
+    let mut tx = self.pool.begin().await?;
+    sqlx::query("UPDATE tool_calls SET state='COMPLETED',result=$3,completed_at=now() WHERE owner_id=$1 AND id=$2 AND state='SUBMITTED'").bind(scope.owner_id).bind(s.action_id).bind(&output).execute(&mut *tx).await?;
+    orbit_audit::append(&mut tx, scope, cid, None, Some(s.task_id), "HA_SERVICE_CALLED", "owner-approved Home Assistant service call", json!({"domain":domain,"service":service,"entity_id":entity,"call_id":s.action_id})).await?;
+    tx.commit().await?;
+    output
    },"orbit-data.files_list"=>{
     let limit = s.arguments.get("limit").and_then(Value::as_i64).unwrap_or(50).clamp(1,100);
     let rows = sqlx::query("SELECT id,title,mime_type,size FROM artifacts WHERE owner_id=$1 ORDER BY created_at DESC LIMIT $2").bind(scope.owner_id).bind(limit).fetch_all(&self.pool).await?;
@@ -234,4 +291,5 @@ fn orbit_tools_doc(path: &str) -> Option<&'static str> {
 #[cfg(test)]mod tests{use super::*;
  #[test]fn provider_mapping_is_exact(){let mut r=Registry::default();for d in descriptors(){let name=provider_name(d.id);assert_eq!(name.len(),34);r.register(d.clone()).unwrap();assert_eq!(r.from_provider(&name).unwrap().name,d.name);}assert!(r.from_provider("notifications_create").is_err());}
  #[test]fn schema_enforces_no_arbitrary_paths(){let d=descriptors().pop().unwrap();assert!(validate_value(&d.input_schema,&json!({"title":"x","content":"ok","source_references":[],"path":"/etc/passwd"})).is_err());assert!(validate_value(&d.output_schema,&json!({"artifact_id":"bad"})).is_err());}
+ #[test]fn ha_control_is_high_risk_and_confirm_gated(){for name in ["ha-control.entities_list","ha-control.call_service"]{let d=descriptors().into_iter().find(|d|d.name==name).unwrap_or_else(||panic!("missing {name}"));assert_eq!(d.default_risk,RiskLevel::High);assert!(!d.sandbox_required);assert!(d.permission_keys.iter().any(|k|k=="ha-control.*")||d.permission_keys.iter().any(|k|k==name));}}
 }
