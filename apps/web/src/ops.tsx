@@ -72,6 +72,38 @@ export function Ops() {
   </>}
  </>;
 }
+type AboutInfo = {
+  app?: unknown;
+  version?: unknown;
+  arch?: unknown;
+  os?: unknown;
+  hostname?: unknown;
+  cpus?: unknown;
+};
+export function About() {
+  const info = useQuery({ queryKey: ["about"], queryFn: () => api<AboutInfo>("/about") });
+  return (
+    <>
+      <PageHeader title="About" description="What you are running, and where it lives." />
+      {info.isPending && <p role="status">Loading…</p>}
+      {info.error && <ErrorNotice error={info.error} retry={() => info.refetch()} />}
+      {info.data && (
+        <section className="panel">
+          <h2>{text(info.data.app) || "Orbit"}</h2>
+          <table>
+            <tbody>
+              <tr><th scope="row">Version</th><td>v{text(info.data.version)}</td></tr>
+              <tr><th scope="row">Machine</th><td>{text(info.data.hostname)}</td></tr>
+              <tr><th scope="row">System</th><td>{text(info.data.os)} · {text(info.data.arch)}</td></tr>
+              <tr><th scope="row">Processors</th><td>{text(info.data.cpus)}</td></tr>
+            </tbody>
+          </table>
+          <p className="muted">Your data stays on this machine unless you connect it elsewhere.</p>
+        </section>
+      )}
+    </>
+  );
+}
 /// Pause everything: kill-switch freeze plus bulk node revocation in one
 /// red-button press. Reads stay open; revoked nodes need re-enrollment.
 function PauseEverything({ onFrozen }: { onFrozen: () => void }) {

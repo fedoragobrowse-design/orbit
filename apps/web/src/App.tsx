@@ -59,6 +59,7 @@ const Contacts = lazy(() => import("./utility").then((m) => ({ default: m.Contac
 const Bookmarks = lazy(() => import("./utility").then((m) => ({ default: m.Bookmarks })));
 const Clips = lazy(() => import("./utility").then((m) => ({ default: m.Clips })));
 const Ops = lazy(() => import("./ops").then((m) => ({ default: m.Ops })));
+const About = lazy(() => import("./ops").then((m) => ({ default: m.About })));
 const GlobalSearch = lazy(() => import("./ops").then((m) => ({ default: m.GlobalSearch })));
 import { DraftContext, FAMILIES } from "./nav";
 function readHidden(): string[] {
@@ -215,7 +216,7 @@ export function App() {
       </a>
       <header className="mobile-header">
         <Link className="brand" to="/">
-          Orbit
+          <img src="/logo.svg" alt="" width="26" height="26" /> Orbit
         </Link>
         <button
           aria-label={menu ? "Close navigation" : "Open navigation"}
@@ -229,7 +230,7 @@ export function App() {
       <div className="shell">
         <aside className={`rail ${menu ? "open" : ""}`}>
           <Link className="brand" to="/">
-            Orbit
+            <img src="/logo.svg" alt="" width="26" height="26" /> Orbit
           </Link>
           <nav id="navigation" aria-label="Main navigation">
             {FAMILIES.map((family) => (
@@ -279,6 +280,7 @@ export function App() {
             <Route path="/files" element={<Files />} />
             <Route path="/home-assistant" element={<HomeAssistant />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/about" element={<About />} />
             <Route path="/docs/:page" element={<DocPage />} />
             <Route path="/ops" element={<Ops />} />
             <Route

@@ -28,6 +28,7 @@ import {
   Plug,
   Scissors,
   Settings as SettingsIcon,
+  Info as InfoIcon,
   ShieldCheck,
   StickyNote,
   Store,
@@ -90,6 +91,7 @@ export const FAMILIES = [
       ["/activity", "Activity", ActivityIcon],
       ["/ops", "Ops", Wrench],
       ["/settings", "Settings", SettingsIcon],
+      ["/about", "About", InfoIcon],
     ],
   },
 ] as const;

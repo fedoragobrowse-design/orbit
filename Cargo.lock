@@ -1995,7 +1995,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "orbit-agent-backend"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "orbit-core",
@@ -2009,7 +2009,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-agent-runtime"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2030,7 +2030,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-aiec-runtime"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-api"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -2101,7 +2101,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-approvals"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "hex",
@@ -2115,7 +2115,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-audit"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "orbit-core",
  "serde_json",
@@ -2125,7 +2125,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-calendar"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2141,7 +2141,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2149,7 +2149,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-computer-node"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2182,7 +2182,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-computer-node-protocol"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2198,7 +2198,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2211,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-email"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2237,7 +2237,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-event-bus"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2250,7 +2250,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-fixtures"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "hex",
@@ -2265,7 +2265,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-mcp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-memory"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "orbit-audit",
@@ -2309,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-model-router"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2331,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-policy"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "orbit-core",
  "serde",
@@ -2341,7 +2341,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-risk"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "orbit-core",
  "serde",
@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-sandbox-dispatch"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2369,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-scheduler"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "orbit-audit",
@@ -2383,7 +2383,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-secrets"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chacha20poly1305",
  "orbit-core",
@@ -2395,7 +2395,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-server"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-task-runtime"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2419,7 +2419,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-tools"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "chrono",

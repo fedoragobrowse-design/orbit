@@ -52,6 +52,20 @@ pub async fn status(State(state):State<ApiState>,headers:HeaderMap)->Result<Json
  let a=auth::authenticate(&state,&headers,false).await?;
  Ok(Json(json!({"frozen":is_frozen(&state,a.scope.owner_id).await})))
 }
+/// About: running version + machine the owner is talking to. Read-only,
+/// no secrets, no credentials. Version is the server crate version.
+#[utoipa::path(get,path="/api/v1/about",responses((status=200,body=Value)))]
+pub async fn about(State(state):State<ApiState>,headers:HeaderMap)->Result<Json<Value>,ApiError>{
+ let _=auth::authenticate(&state,&headers,false).await?;
+ Ok(Json(json!({
+  "app": "Orbit",
+  "version": env!("CARGO_PKG_VERSION"),
+  "arch": std::env::consts::ARCH,
+  "os": std::env::consts::OS,
+  "hostname": std::env::var("HOSTNAME").unwrap_or_else(|_| "this server".into()),
+  "cpus": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+ })))
+}
 /// Encrypted backup with no schema change: the owner dump is chunked into
 /// `ops-backup` secrets and a small `ops-backup-manifest` secret holds the chunk
 /// ids. The returned artifact id IS the manifest secret id, so restore needs no
@@ -140,4 +154,4 @@ pub async fn revoke_nodes(State(state):State<ApiState>,headers:HeaderMap)->Resul
 }
 #[derive(utoipa::OpenApi)] #[openapi(paths(kill,resume,status,backup,restore,dry_run,revoke_nodes),components(schemas(RestoreRequest)))]
 pub struct OpsApi;
-pub fn router()->Router<ApiState>{Router::new().route("/api/v1/ops/kill",post(kill)).route("/api/v1/ops/resume",post(resume)).route("/api/v1/ops/status",get(status)).route("/api/v1/ops/backup",post(backup)).route("/api/v1/ops/restore",post(restore)).route("/api/v1/ops/revoke-nodes",post(revoke_nodes)).route("/api/v1/automations/{id}/dry-run",post(dry_run))}
+pub fn router()->Router<ApiState>{Router::new().route("/api/v1/ops/kill",post(kill)).route("/api/v1/ops/resume",post(resume)).route("/api/v1/ops/status",get(status)).route("/api/v1/about",get(about)).route("/api/v1/ops/backup",post(backup)).route("/api/v1/ops/restore",post(restore)).route("/api/v1/ops/revoke-nodes",post(revoke_nodes)).route("/api/v1/automations/{id}/dry-run",post(dry_run))}

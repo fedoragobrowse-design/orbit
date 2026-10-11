@@ -214,6 +214,9 @@ dd {
   color: white;
   text-decoration: none;
   margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .rail nav {
   flex: 1;
