@@ -48,10 +48,23 @@ verifies both fail-closed; generates `.env` (`0600`, passwords never echoed);
 runs `docker compose up -d --build`; pulls the embedding model (`ollama pull`,
 offline-safe with notice); waits for `/ready`, then prints the URL + bootstrap
 step. Flags: `--dry-run` (plan only), `--yes`, `--upgrade`, `--uninstall`,
-`--with-keys`/`--with-oauth` (optional first-boot credential import).
-ARM64 included: `install.sh` maps `aarch64→arm64` (`install.sh:49-50`) —
-Raspberry Pi 5 (8GB, USB SSD, 64-bit OS) is a documented reference tier
-(`docs/PARITY.md`).
+`--with-keys`/`--with-oauth` (optional first-boot credential import),
+`--profile pi|full` (default: `pi` on ARM, `full` elsewhere; `ORBIT_PROFILE`
+overrides).
+Profiles: `pi` runs lean for small boards (sandbox in Docker, no bundled
+services — point chat at a hosted model); `full` starts Home Assistant +
+containerized Ollama and runs the sandbox in Firecracker. ARM64 included:
+`install.sh` maps `aarch64→arm64`; Raspberry Pi 5 (8GB, USB SSD, 64-bit OS)
+is a documented reference tier (`docs/PARITY.md`).
+
+Everyday tabs (all owner-scoped, all import-friendly): Computers (live/dead
+badges + pairing), Files (upload/import with injection screen + quarantine),
+Home Assistant entity states (always tainted `UNTRUSTED_EXTERNAL`, never
+actuated without a Confirm-gated approval), Notes, AI-Inbox (gated on
+`inbox_enabled`), Reminders, Contacts, Bookmarks, Clipper. Agent errands run
+through a choosable backend (`agent_backend`: Orbit's own sandboxed planner
+or the Claude tool) under one risk gate — Jev-classified command floor,
+brokered-egress origins only, untrusted-source taint, shared spend caps.
 
 Computer node — the lightweight daemon on your other machines (Linux/macOS):
 
@@ -95,17 +108,20 @@ named gaps. **UNAVAILABLE** = names the exact missing prerequisite.
 Milestones 1–10 are live in the API router (`crates/api/src/lib.rs::router()`
 merges auth, foundation, models, gateway, memory, automations, runtimes,
 email, mcp, marketplace, computers, agents, push, ops, updates, brief,
-calendar, connectors, uploads, tokens) and wired in the web workspace:
-setup/login, settings, events, tasks with recovery, activity, notifications,
+calendar, connectors, uploads, tokens, utility_tabs, notes, inbox) and wired
+in the web workspace: setup/login, settings (incl. `agent_backend` +
+`inbox_enabled`), events, tasks with recovery, activity, notifications,
 live stream, provider/model catalog (M2), agent runtime and chat (M3),
-approvals (M4), computers and files with pairing (M6), memory and retention
-(M7), automations (M8), email (M9), MCP (M10), plus the growth batch: global
+approvals (M4), computers tab with live/dead + files import/quarantine +
+Home Assistant entities/sync (P4), memory and retention (M7), automations
+(M8), email (M9), MCP (M10), plus the growth batch: global
 search + morning-brief shortcut + notification routing + inbox triage +
 automation templates + provider budgets + why-timeline + kill-switch gap
 close (A/B), calendar + connectors + doc ingestion (C), API tokens + CLI +
-local model manager + browser sandbox agent (D).
-Golden journeys J1–J10 run live in `tests/e2e/golden.ts`. No mock routes, no
-fake success.
+local model manager + browser sandbox agent (D), notes/inbox (P5),
+reminders/contacts/bookmarks/clips (P6), own-sandbox dispatch + OMP/Claude
+backends + governance (P1–P3), Pi efficiency: mem limits + Postgres tuning +
+docker runtime + lazy tab bundles (P7).
 
 LIVE-PROVEN (each names its test path): marketplace self-asserted installs
 (digest recompute + embedded-key ed25519 check, owner consent, sandbox-only, recorded self-asserted; `crates/api/tests/marketplace.rs` — tamper/unsigned/capability); encrypted
@@ -125,7 +141,11 @@ inbox triage (`crates/api/tests/triage.rs`); provider budgets
 CLI in `apps/cli` + `docs/CLI.md`); local models
 (`crates/api/tests/local_models.rs`); browser sandbox gate
 (`crates/api/tests/browser_tools.rs`); pentest regression
-(`crates/api/tests/ssrf.rs` + `authz.rs` + `injection.rs`, `docs/PENTEST.md`).
+(`crates/api/tests/ssrf.rs` + `authz.rs` + `injection.rs`, `docs/PENTEST.md`);
+P4 tab surfaces (`crates/api/tests/p4_tabs.rs`, 3 hermetic tests:
+computers live/dead, files quarantine round-trip, HA tainted + loopback
+reject); own-sandbox dispatch lifecycle (`orbit-sandbox-dispatch`, 7 tests)
++ backend event folding (`orbit-agent-backend` adapter test).
 
 PARTIAL: Firecracker worker — no schedulable worker on this machine (Docker
 worker proven live; `docs/AIEC.md`); semantic search — embedder installs via

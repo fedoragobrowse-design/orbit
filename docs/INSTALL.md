@@ -72,6 +72,40 @@ Package installs: the installer never calls bare sudo; apt-get/dnf package insta
 ./install.sh --version vX.Y.Z --uninstall  # stop containers (volumes + .env kept)
 ./install.sh --version vX.Y.Z --with-keys  # also prompt for OpenAI/Anthropic/Gemini keys (hidden, staged 0600)
 ./install.sh --version vX.Y.Z --with-oauth google,github  # also prompt for OAuth client-id/secret per connector
+./install.sh --version vX.Y.Z --profile pi   # lean box: Docker sandbox, no bundled Ollama/HA
+./install.sh --version vX.Y.Z --profile full # home server: Firecracker sandbox + Ollama + Home Assistant
+```
+
+## Profiles (`--profile pi|full`, or `ORBIT_PROFILE`)
+
+Two setups, one installer. Default when omitted: `pi` on ARM, `full`
+elsewhere. Unknown values fail closed (`unknown --profile`).
+
+- `pi` — small boards (Raspberry Pi 2GB+): sandbox runs in Docker (no KVM
+  on a Pi), so the server starts with `ORBIT_AIEC_RUNTIME=docker`; the
+  bundled Ollama and Home Assistant services stay off (`COMPOSE_PROFILES`
+  unset). Point chat at a hosted model or a bigger box's Ollama. Memory
+  caps (`compose.yaml`: postgres 512m, server 512m, web 256m + Postgres
+  `shared_buffers=128MB max_connections=20`) keep the whole stack inside
+  ~1.3 GB.
+- `full` — home server: sandbox runs in Firecracker
+  (`ORBIT_AIEC_RUNTIME=firecracker`), `COMPOSE_PROFILES=full,ollama`
+  starts Home Assistant (`full`) and containerized Ollama (`ollama`,
+  `OLLAMA_KEEP_ALIVE=5m` keeps the model warm across chat calls).
+
+Transcripts (`ORBIT_VERSION` set so no network is touched):
+
+```console
+$ ORBIT_VERSION=v9.9.9 ./install.sh --dry-run --profile pi
+profile: pi (sandbox runtime docker; extra services: none)
+[dry-run] profile pi: sandbox runtime ORBIT_AIEC_RUNTIME=docker; compose profiles none
+[dry-run] docker compose --profile none -f compose.yaml up -d --build
+$ ORBIT_VERSION=v9.9.9 ./install.sh --dry-run --profile full
+profile: full (sandbox runtime firecracker; extra services: full,ollama)
+[dry-run] profile full: sandbox runtime ORBIT_AIEC_RUNTIME=firecracker; compose profiles full,ollama
+[dry-run] docker compose --profile full,ollama -f compose.yaml up -d --build
+$ ORBIT_VERSION=v9.9.9 ./install.sh --dry-run --profile bogus
+error: unknown --profile: 'bogus' (expected pi or full)
 ```
 
 Idempotent: re-running with the same `--version` keeps the existing `.env`

@@ -1,9 +1,9 @@
 #!/bin/sh
 # Orbit installer: pinned tagged releases only. POSIX sh.
-# Usage: ./install.sh --version vX.Y.Z [--yes] [--dry-run] [--upgrade] [--uninstall] [--with-keys] [--with-oauth LIST]
+# Usage: ./install.sh --version vX.Y.Z [--yes] [--dry-run] [--upgrade] [--uninstall] [--with-keys] [--with-oauth LIST] [--profile pi|full]
 set -euo pipefail
 VERSION="${ORBIT_VERSION:-${GITHUB_REF_NAME:-${GITHUB_REF:-}}}"
-DRY_RUN=0; ASSUME_YES=0; UPGRADE=0; UNINSTALL=0; WITH_KEYS=0; WITH_OAUTH=""; STAGED=0; PROV_JSON=""; OAUTH_JSON=""; KEY_VAL=""; OAUTH_ID=""; OAUTH_SEC=""
+DRY_RUN=0; ASSUME_YES=0; UPGRADE=0; UNINSTALL=0; WITH_KEYS=0; WITH_OAUTH=""; PROFILE="${ORBIT_PROFILE:-}"; RUNTIME=""; PROFILES=""; STAGED=0; PROV_JSON=""; OAUTH_JSON=""; KEY_VAL=""; OAUTH_ID=""; OAUTH_SEC=""
 REPO="${ORBIT_RELEASE_REPO:-fedoragobrowse-design/orbit}"
 EMBED_MODEL="${ORBIT_EMBED_MODEL:-nomic-embed-text}"
 OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-5m}"; export OLLAMA_KEEP_ALIVE
@@ -14,7 +14,7 @@ CRED_IMPORT="${ORBIT_CREDENTIALS_IMPORT:-credentials.import}"
 RELEASE_PUB="untrusted comment: orbit release signing key
 RWRbX/orbCAdDXCoz8nH2+cEkQo0FUMTaBkOCPHu3+0UyF2wEJwcperQ"
 usage() { cat <<'USAGE'
-Usage: install.sh (--version vX.Y.Z | --latest) [--yes] [--dry-run] [--upgrade] [--uninstall] [--with-keys] [--with-oauth google[,outlook][,github]]
+Usage: install.sh (--version vX.Y.Z | --latest) [--yes] [--dry-run] [--upgrade] [--uninstall] [--with-keys] [--with-oauth google[,outlook][,github]] [--profile pi|full]
   --version vX.Y.Z   pinned release tag (or set GITHUB_REF / ORBIT_VERSION).
   --latest           resolve newest vX.Y.Z release tag from GitHub, then install it (needs network).
   --yes              skip confirmation prompts
@@ -23,10 +23,11 @@ Usage: install.sh (--version vX.Y.Z | --latest) [--yes] [--dry-run] [--upgrade] 
   --uninstall        stop containers, keep named volumes and .env (asks unless --yes)
   --with-keys        prompt for OpenAI/Anthropic/Gemini API keys (hidden input; staged 0600, never logged)
   --with-oauth LIST  prompt for OAuth client-id/secret for LIST (google, outlook, github; hidden, staged 0600)
+  --profile pi|full   pi: lean box (Raspberry Pi) — sandbox runs in Docker, no extra services; full: home server — starts Home Assistant + containerized Ollama
   --help             this text
 Env: ORBIT_RELEASE_REPO (default fedoragobrowse-design/orbit),
      ORBIT_EMBED_MODEL (default nomic-embed-text), ORBIT_READY_TIMEOUT (default 180s),
-     ORBIT_COMPOSE_FILE, ORBIT_ENV_FILE, ORBIT_PUBLIC_ORIGIN,
+     ORBIT_COMPOSE_FILE, ORBIT_ENV_FILE, ORBIT_PUBLIC_ORIGIN, ORBIT_PROFILE (pi|full),
      ORBIT_CREDENTIALS_IMPORT (default credentials.import).
 USAGE
 }
@@ -74,6 +75,8 @@ while [ $# -gt 0 ]; do
     --uninstall) UNINSTALL=1; shift;;
     --with-keys) WITH_KEYS=1; shift;;
     --with-oauth) [ $# -ge 2 ] || die "--with-oauth needs a value (google, outlook and/or github)"; WITH_OAUTH="$2"; shift 2;;
+    --profile) [ $# -ge 2 ] || die "--profile needs a value (pi or full)"; PROFILE="$2"; shift 2;;
+    --profile=*) PROFILE="${1#--profile=}"; shift;;
     --with-oauth=*) WITH_OAUTH="${1#--with-oauth=}"; shift;;
     --help|-h) usage; exit 0;;
     *) die "unknown flag: $1 (see --help)";;
@@ -81,10 +84,14 @@ while [ $# -gt 0 ]; do
 done
 if [ "${LATEST:-0}" -eq 1 ]; then [ -z "$VERSION" ] || die "--latest and --version are exclusive; pass one"; need curl; RELEASE_JSON="$(curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null)" || die "--latest needs network to api.github.com; offline: pass --version vX.Y.Z"; VERSION="$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"; [ -n "$VERSION" ] || die "--latest could not read tag_name from releases API"; log "latest release: ${VERSION}"; fi
 case "$VERSION" in v[0-9]*.[0-9]*.[0-9]*) ;; *) die "refusing unpinned install: pass --version vX.Y.Z (got '${VERSION:-empty}'). GITHUB_REF / ORBIT_VERSION accepted when they name a tag.";; esac
+case "${PROFILE:-}" in ""|pi|full) ;; *) die "unknown --profile: '${PROFILE}' (expected pi or full)";; esac
 validate_oauth
 OS="$(uname -s)"; ARCH="$(uname -m)"
 case "$OS" in Linux) OS_ID=linux;; Darwin) OS_ID=darwin;; *) die "unsupported OS: $OS";; esac
 case "$ARCH" in x86_64|amd64) ARCH_ID=amd64;; aarch64|arm64) ARCH_ID=arm64;; *) die "unsupported arch: $ARCH";; esac
+if [ -z "${PROFILE:-}" ]; then if [ "${ARCH_ID}" = "arm64" ]; then PROFILE="pi"; else PROFILE="full"; fi; fi
+case "$PROFILE" in pi) RUNTIME="docker"; PROFILES="";; full) RUNTIME="firecracker"; PROFILES="full,ollama";; esac
+log "profile: ${PROFILE} (sandbox runtime ${RUNTIME}; extra services: ${PROFILES:-none})"
 TARBALL="orbit-${VERSION}.tar.gz"
 BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 log "orbit installer ${VERSION} (${OS_ID}/${ARCH_ID})"
@@ -107,7 +114,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
 [dry-run] verify minisign/cosign signature with key deploy/keys/release.pub (fail closed if key or tool missing)
 [dry-run] extract pinned server/web images or build from pinned tag ${VERSION}
 [dry-run] generate ${ENV_FILE} (0600, ORBIT_DB_PASSWORD + ORBIT_APP_DB_PASSWORD via openssl rand, never echoed)
-[dry-run] docker compose -f ${COMPOSE_FILE} up -d --build
+[dry-run] profile ${PROFILE}: sandbox runtime ORBIT_AIEC_RUNTIME=${RUNTIME}; compose profiles ${PROFILES:-none}
+[dry-run] docker compose --profile ${PROFILES:-none} -f ${COMPOSE_FILE} up -d --build
 [dry-run] offer optional Ollama install on confirm (https://ollama.com/install.sh on linux, brew on darwin); pull embedding model '${EMBED_MODEL}' via 'ollama pull', skip offline with notice
 [dry-run] local-model efficiency: OLLAMA_KEEP_ALIVE='${OLLAMA_KEEP_ALIVE}' keeps the ollama profile service warm across chat calls (override via OLLAMA_KEEP_ALIVE env)
 [dry-run] wait up to ${READY_TIMEOUT}s for http://127.0.0.1:8080/ready, then print URL + bootstrap-token steps
@@ -160,10 +168,12 @@ if [ -f "$ENV_FILE" ] && [ "$UPGRADE" -eq 0 ]; then log "keeping existing ${ENV_
   fi
 fi
 collect_keys; collect_oauth; write_import
+ORBIT_AIEC_RUNTIME="$RUNTIME"; export ORBIT_AIEC_RUNTIME
+if [ -n "$PROFILES" ]; then COMPOSE_PROFILES="$PROFILES"; export COMPOSE_PROFILES; else unset COMPOSE_PROFILES; fi
 if [ "$UPGRADE" -eq 1 ]; then docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull || die "compose pull failed"; fi
 # shellcheck disable=SC2086
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build || die "compose up failed"
-maybe_install_ollama
+if [ "$PROFILE" != "pi" ]; then maybe_install_ollama; else log "profile pi: skipping bundled Ollama/Home Assistant; point chat at a hosted model or run 'ollama pull $EMBED_MODEL' on a bigger box"; fi
 if command -v ollama >/dev/null 2>&1; then
   if ollama list >/dev/null 2>&1; then
     if ollama list 2>/dev/null | grep -q "$EMBED_MODEL"; then log "embedding model present: $EMBED_MODEL"; else
