@@ -561,53 +561,155 @@ function McpConnections() {
   );
 }
 
+function monthCells(year: number, month: number): (Date | null)[] {
+  const first = new Date(year, month, 1);
+  const startPad = (first.getDay() + 6) % 7;
+  const daysIn = new Date(year, month + 1, 0).getDate();
+  const cells: (Date | null)[] = [];
+  for (let i = 0; i < startPad; i++) cells.push(null);
+  for (let d = 1; d <= daysIn; d++) cells.push(new Date(year, month, d));
+  while (cells.length % 7 !== 0) cells.push(null);
+  return cells;
+}
+function toLocalInput(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 function Calendars() {
   const client = useQueryClient();
   const [adding, setAdding] = useState(false);
+  const [showFeeds, setShowFeeds] = useState(false);
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth());
+  const [day, setDay] = useState<string | null>(null);
+  const [form, setForm] = useState({ title: "", starts: "", ends: "" });
+  const from = new Date(year, month, 1).toISOString();
+  const to = new Date(year, month + 1, 1).toISOString();
   const sources = useQuery({ queryKey: ["calendar-sources"], queryFn: () => api<{ items: RecordData[] }>("/calendar/sources") });
-  const today = useQuery({ queryKey: ["calendar-today"], queryFn: () => api<{ items: RecordData[] }>("/calendar/today") });
-  const invalidate = () => { client.invalidateQueries({ queryKey: ["calendar-sources"] }); client.invalidateQueries({ queryKey: ["calendar-today"] }); };
+  const events = useQuery({ queryKey: ["calendar-month", year, month], queryFn: () => api<{ items: RecordData[] }>(`/api/v1/calendar/events?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=200`) });
+  const invalidate = () => { client.invalidateQueries({ queryKey: ["calendar-sources"] }); client.invalidateQueries({ queryKey: ["calendar-month", year, month] }); client.invalidateQueries({ queryKey: ["calendar-today"] }); };
   const sync = useMutation({ mutationFn: (id: string) => post<RecordData>(`/calendar/sources/${id}/sync`), onSuccess: invalidate });
   const removeSource = useMutation({ mutationFn: (id: string) => remove(`/calendar/sources/${id}`), onSuccess: invalidate });
+  const addEvent = useMutation({
+    mutationFn: () => post<RecordData>("/api/v1/calendar/events", {
+      title: form.title,
+      starts_at: new Date(form.starts).toISOString(),
+      ends_at: form.ends ? new Date(form.ends).toISOString() : undefined,
+    }),
+    onSuccess: () => { setForm({ title: "", starts: "", ends: "" }); setDay(null); invalidate(); },
+  });
   if (sources.isPending) return (<div className="panel"><p role="status">Loading calendars…</p></div>);
   if (sources.error) return (<div className="panel"><ErrorNotice error={sources.error} retry={() => sources.refetch()} /></div>);
   const items = sources.data?.items ?? [];
-  const upcoming = today.data?.items ?? [];
+  const rows = events.data?.items ?? [];
+  const byDay: Record<string, RecordData[]> = {};
+  for (const r of rows) {
+    const s = text(r.starts_at);
+    if (!s) continue;
+    const d = new Date(s);
+    const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    byDay[k] = [...(byDay[k] ?? []), r];
+  }
+  const cells = monthCells(year, month);
+  const monthName = new Date(year, month, 1).toLocaleString(undefined, { month: "long", year: "numeric" });
+  const step = (d: number) => {
+    const n = new Date(year, month + d, 1);
+    setYear(n.getFullYear());
+    setMonth(n.getMonth());
+    setDay(null);
+  };
+  const openDay = (d: Date) => {
+    setDay(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`);
+    setForm((f) => ({ ...f, starts: f.starts || toLocalInput(new Date(d.getFullYear(), d.getMonth(), d.getDate(), 9, 0)) }));
+  };
+  const dayRows = day ? (byDay[day] ?? []) : [];
   return (
     <div className="panel">
-      <h2>Calendars</h2>
-      <p><small>Orbit polls public calendar feeds (ICS) and calendar servers you name (CalDAV). Events are read-only — Orbit never writes back.</small></p>
-      {!items.length ? (<Empty title="No calendars yet">Add a calendar feed to see what is on today.</Empty>) : (
-        <table>
-          <thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Enabled</th><th scope="col">Last sync</th><th scope="col">Actions</th></tr></thead>
-          <tbody>
-            {items.map((row) => (
-              <tr key={String(row.id)}>
-                <th scope="row">{text(row.name)}</th>
-                <td>{text((row.configuration as RecordData | undefined)?.kind)}</td>
-                <td><Status value={row.enabled} /></td>
-                <td>{timestamp(row.last_sync_at)}</td>
-                <td>
-                  <div className="actions">
-                    <button className="secondary" disabled={sync.isPending} onClick={() => sync.mutate(String(row.id))}>Sync</button>
-                    <button className="danger" disabled={removeSource.isPending} onClick={() => removeSource.mutate(String(row.id))}>Remove</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <h2>Calendar</h2>
+      <p><small>Your own events plus anything synced from feeds. Local events stay here — feed events are read-only.</small></p>
+      <div className="cal-head">
+        <button type="button" className="secondary" onClick={() => step(-1)} aria-label="Previous month">‹</button>
+        <strong>{monthName}</strong>
+        <button type="button" className="secondary" onClick={() => step(1)} aria-label="Next month">›</button>
+        <button type="button" className="secondary" onClick={() => { const t = new Date(); setYear(t.getFullYear()); setMonth(t.getMonth()); setDay(null); }}>Today</button>
+      </div>
+      {events.isPending && <p role="status">Loading events…</p>}
+      {events.error && <ErrorNotice error={events.error} retry={() => events.refetch()} />}
+      <div className="cal-grid" role="grid" aria-label={monthName}>
+        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (<span key={d} className="cal-dow">{d}</span>))}
+        {cells.map((d, i) => {
+          if (!d) return <span key={i} className="cal-empty" />;
+          const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+          const evs = byDay[k] ?? [];
+          const isToday = d.toDateString() === new Date().toDateString();
+          return (
+            <button type="button" key={i} className={`cal-day${isToday ? " cal-today" : ""}${day === k ? " cal-selected" : ""}`} onClick={() => openDay(d)}>
+              <span className="cal-num">{d.getDate()}</span>
+              {evs.slice(0, 3).map((r) => (<span key={String(r.id)} className="cal-chip">{text(r.title) || "Untitled"}</span>))}
+              {evs.length > 3 && <span className="cal-more">+{evs.length - 3} more</span>}
+            </button>
+          );
+        })}
+      </div>
+      {day && (
+        <section className="cal-day-panel" aria-label="Selected day">
+          <h3>{dayRows.length ? `${dayRows.length} event${dayRows.length === 1 ? "" : "s"}` : "No events this day"}</h3>
+          {dayRows.length > 0 && (
+            <ul className="cal-day-list">
+              {dayRows.map((r) => (
+                <li key={String(r.id)}>
+                  <strong>{text(r.title) || "Untitled"}</strong>
+                  <span className="muted"> {timestamp(r.starts_at)}{text(r.ends_at) ? ` – ${timestamp(r.ends_at)}` : ""}{text(r.source) && text(r.source) !== "local" ? ` · from ${text(r.source)}` : ""}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form
+            className="grid"
+            onSubmit={(e) => { e.preventDefault(); addEvent.mutate(); }}
+          >
+            <Input label="Event title" required value={form.title} maxLength={280} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Dentist" />
+            <Input label="Starts" type="datetime-local" required value={form.starts} onChange={(e) => setForm({ ...form, starts: e.target.value })} />
+            <Input label="Ends (optional)" type="datetime-local" value={form.ends} onChange={(e) => setForm({ ...form, ends: e.target.value })} />
+            <div className="actions">
+              <button disabled={addEvent.isPending || !form.title.trim() || !form.starts}>{addEvent.isPending ? "Adding…" : "Add event"}</button>
+              <button type="button" className="secondary" onClick={() => setDay(null)}>Close</button>
+            </div>
+          </form>
+          {addEvent.error && <ErrorNotice error={addEvent.error} retry={() => addEvent.reset()} />}
+        </section>
       )}
-      {(sync.error ?? removeSource.error) && (<ErrorNotice error={(sync.error ?? removeSource.error) as Error} retry={() => { sync.reset(); removeSource.reset(); }} />)}
-      {adding ? (<NewCalendarSource onDone={() => setAdding(false)} />) : (<button className="secondary" onClick={() => setAdding(true)}>Add calendar</button>)}
-      <h3>Today</h3>
-      {!upcoming.length ? (<Empty title="Nothing on today">Sync a calendar to see upcoming events here.</Empty>) : (
-        <table>
-          <thead><tr><th scope="col">When</th><th scope="col">What</th></tr></thead>
-          <tbody>
-            {upcoming.map((row) => (<tr key={String(row.id)}><td>{timestamp(row.starts_at)} – {timestamp(row.ends_at)}</td><th scope="row">{text(row.title)}</th></tr>))}
-          </tbody>
-        </table>
+      <p>
+        <button type="button" className="secondary" onClick={() => setShowFeeds((v) => !v)}>
+          {showFeeds ? "Hide feeds" : `Feeds (${items.length})`}
+        </button>
+      </p>
+      {showFeeds && (
+        <>
+          {!items.length ? (<Empty title="No feeds yet">Add an ICS feed or CalDAV server to pull shared events in.</Empty>) : (
+            <table>
+              <thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Enabled</th><th scope="col">Actions</th></tr></thead>
+              <tbody>
+                {items.map((row) => (
+                  <tr key={String(row.id)}>
+                    <th scope="row">{text(row.name)}</th>
+                    <td>{text((row.configuration as RecordData | undefined)?.kind)}</td>
+                    <td><Status value={row.enabled} /></td>
+                    <td>
+                      <div className="actions">
+                        <button className="secondary" disabled={sync.isPending} onClick={() => sync.mutate(String(row.id))}>Sync</button>
+                        <button className="danger" disabled={removeSource.isPending} onClick={() => removeSource.mutate(String(row.id))}>Remove</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {(sync.error ?? removeSource.error) && (<ErrorNotice error={(sync.error ?? removeSource.error) as Error} retry={() => { sync.reset(); removeSource.reset(); }} />)}
+          {adding ? (<NewCalendarSource onDone={() => { setAdding(false); invalidate(); }} />) : (<button className="secondary" onClick={() => setAdding(true)}>Add feed</button>)}
+        </>
       )}
     </div>
   );
@@ -791,6 +893,89 @@ function NewMcpConnection({ onDone }: { onDone: () => void }) {
     </form>
   );
 }
+function mailSubject(m: RecordData): string {
+  const meta = (m.metadata ?? {}) as RecordData;
+  return text(meta.subject) || "(no subject)";
+}
+function mailFrom(m: RecordData): string {
+  const meta = (m.metadata ?? {}) as RecordData;
+  return text(meta.from) || text(meta.sender) || "Unknown sender";
+}
+function MailReader({ accounts }: { accounts: RecordData[] }) {
+  const [account, setAccount] = useState<string>("");
+  const [selected, setSelected] = useState<string | null>(null);
+  const list = useQuery({
+    queryKey: ["mail-list", account],
+    queryFn: () => api<{ items: RecordData[] }>(`/api/v1/email/messages?limit=50${account ? `&account_id=${account}` : ""}`),
+    enabled: accounts.length > 0,
+  });
+  const detail = useQuery({
+    queryKey: ["mail-detail", selected],
+    queryFn: () => api<RecordData>(`/api/v1/email/messages/${selected}`),
+    enabled: !!selected,
+  });
+  if (!accounts.length) return null;
+  const items = list.data?.items ?? [];
+  const row = detail.data ?? null;
+  const rowMeta = row ? ((row.metadata ?? {}) as RecordData & { to?: unknown }) : null;
+  const attachments = Array.isArray(row?.attachments) ? (row.attachments as RecordData[]) : [];
+  return (
+    <section className="mail-shell" aria-label="Inbox">
+      <div className="mail-toolbar">
+        <Select label="Account" value={account} onChange={(e) => { setAccount(e.target.value); setSelected(null); }}>
+          <option value="">All accounts</option>
+          {accounts.map((a) => (<option key={String(a.id)} value={String(a.id)}>{text(a.name)}</option>))}
+        </Select>
+      </div>
+      <div className="mail-panes">
+        <aside className="mail-list" aria-label="Messages">
+          {list.isPending && <p role="status">Loading mail…</p>}
+          {list.error && <ErrorNotice error={list.error} retry={() => list.refetch()} />}
+          {list.data && items.length === 0 && (
+            <Empty title="Inbox zero — or never synced">Hit Sync on the account above, then come back.</Empty>
+          )}
+          <ul>
+            {items.map((m) => {
+              const id = String(m.id);
+              return (
+                <li key={id}>
+                  <button type="button" className={selected === id ? "mail-active" : ""} onClick={() => setSelected(id)}>
+                    <span className="mail-subject">{mailSubject(m)}</span>
+                    <span className="mail-meta">{mailFrom(m)} · {text(m.mailbox)} · {timestamp(m.received_at)}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </aside>
+        <article className="mail-reader" aria-label={row ? "Message" : "No message selected"}>
+          {!selected ? (
+            <Empty title="Pick a message">The reading pane lives here — plain text only, never remote images.</Empty>
+          ) : detail.isPending ? (
+            <p role="status">Loading message…</p>
+          ) : detail.error ? (
+            <ErrorNotice error={detail.error} retry={() => detail.refetch()} />
+          ) : row ? (
+            <>
+              <h3>{mailSubject(row)}</h3>
+              <p className="muted">
+                From {mailFrom(row)} · {timestamp(row.received_at)} · {text(row.mailbox)}
+                {text(row.trust_level) && text(row.trust_level) !== "OWNER_AUTHENTICATED" && (<> · <Status value={row.trust_level} /></>)}
+              </p>
+              {rowMeta && text(rowMeta.to) && <p className="muted">To {text(rowMeta.to)}</p>}
+              <pre className="mail-body">{text(row.body_text) || "(empty body)"}</pre>
+              {attachments.length > 0 && (
+                <ul className="mail-attachments">
+                  {attachments.map((a, i) => (<li key={i}>{text(a.name)} · {text(a.mime)}</li>))}
+                </ul>
+              )}
+            </>
+          ) : null}
+        </article>
+      </div>
+    </section>
+  );
+}
 
 function Email() {
   const client = useQueryClient();
@@ -859,6 +1044,7 @@ function Email() {
         </Confirm>
       )}
       {adding ? (<NewEmailAccount onDone={() => setAdding(false)} />) : (<button className="secondary" onClick={() => setAdding(true)}>Add mail account</button>)}
+      <MailReader accounts={items} />
       <TriageRules />
     </div>
   );

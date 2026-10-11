@@ -74,14 +74,39 @@ pub async fn today(State(state): State<ApiState>, headers: HeaderMap) -> Result<
     let rows: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(t)-'owner_id'-'raw' FROM calendar_events t WHERE owner_id=$1 AND starts_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND starts_at<date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'+interval '1 day' ORDER BY starts_at NULLS LAST,id LIMIT 100").bind(a.scope.owner_id).fetch_all(&state.pool).await?;
     Ok(Json(json!({"items": rows})))
 }
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EventCreate { pub title: String, pub starts_at: String, pub ends_at: Option<String> }
+#[utoipa::path(post, path = "/api/v1/calendar/events", request_body = EventCreate, responses((status = 200, body = Value)))]
+pub async fn create_event(State(state): State<ApiState>, headers: HeaderMap, Json(input): Json<EventCreate>) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, true).await?;
+    let title = input.title.trim();
+    if title.is_empty() || title.len() > 280 || title.chars().any(char::is_control) {
+        return Err(Error::Validation("invalid event title".into()).into());
+    }
+    let starts = input.starts_at.parse::<chrono::DateTime<chrono::Utc>>().map_err(|_| Error::Validation("invalid starts_at (RFC3339)".into()))?;
+    let ends = match input.ends_at {
+        Some(s) => Some(s.parse::<chrono::DateTime<chrono::Utc>>().map_err(|_| Error::Validation("invalid ends_at (RFC3339)".into()))?),
+        None => None,
+    };
+    if let Some(e) = ends {
+        if e < starts {
+            return Err(Error::Validation("ends_at before starts_at".into()).into());
+        }
+    }
+    let id = Uuid::new_v4();
+    let uid = format!("local-{id}");
+    sqlx::query("INSERT INTO calendar_events(id,owner_id,source,uid,title,starts_at,ends_at) VALUES($1,$2,'local',$3,$4,$5,$6)").bind(id).bind(a.scope.owner_id).bind(&uid).bind(title).bind(starts).bind(ends).execute(&state.pool).await?;
+    Ok(Json(json!({"id": id, "title": title})))
+}
 #[derive(utoipa::OpenApi)]
-#[openapi(paths(list_sources, create_source, remove_source, sync_source, list_events, today))]
+#[openapi(paths(list_sources, create_source, remove_source, sync_source, list_events, today, create_event))]
 pub struct CalendarApi;
 pub fn router() -> Router<ApiState> {
     Router::new()
         .route("/api/v1/calendar/sources", get(list_sources).post(create_source))
         .route("/api/v1/calendar/sources/{id}", delete(remove_source))
         .route("/api/v1/calendar/sources/{id}/sync", post(sync_source))
-        .route("/api/v1/calendar/events", get(list_events))
+        .route("/api/v1/calendar/events", get(list_events).post(create_event))
         .route("/api/v1/calendar/today", get(today))
 }

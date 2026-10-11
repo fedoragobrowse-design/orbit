@@ -1099,6 +1099,230 @@ dialog::backdrop {
   font-size: 13px;
   color: var(--secondary);
 }
+.notes-shell {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .notes-shell {
+    grid-template-columns: 1fr;
+  }
+}
+.notes-list {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--ground);
+}
+.notes-list > button {
+  width: 100%;
+  margin-bottom: 8px;
+}
+.notes-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.notes-list li button {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+  color: var(--ink);
+}
+.notes-list li button:hover {
+  border-color: var(--line);
+}
+.notes-active {
+  background: white;
+  border-color: var(--line);
+}
+.notes-item-title {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.notes-item-meta {
+  font-size: 12px;
+  color: var(--secondary);
+}
+.cal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.cal-head strong {
+  font-size: 17px;
+  margin-right: auto;
+}
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+.cal-dow {
+  font-size: 12px;
+  color: var(--secondary);
+  text-align: center;
+  padding: 4px 0;
+}
+.cal-empty {
+  min-height: 64px;
+}
+.cal-day {
+  min-height: 64px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink);
+}
+.cal-day:hover {
+  border-color: var(--action);
+}
+.cal-today {
+  outline: 2px solid var(--action);
+  outline-offset: -2px;
+}
+.cal-selected {
+  background: var(--ground);
+}
+.cal-num {
+  font-size: 13px;
+  font-weight: 600;
+}
+.cal-chip {
+  font-size: 11px;
+  background: var(--ground);
+  border-radius: 4px;
+  padding: 1px 4px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cal-more {
+  font-size: 11px;
+  color: var(--secondary);
+}
+.cal-day-panel {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-top: 12px;
+  background: var(--ground);
+}
+.cal-day-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mail-shell {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.mail-toolbar {
+  max-width: 320px;
+  margin-bottom: 8px;
+}
+.mail-panes {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .mail-panes {
+    grid-template-columns: 1fr;
+  }
+}
+.mail-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.mail-list li button {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+  color: var(--ink);
+}
+.mail-list li button:hover {
+  border-color: var(--line);
+}
+.mail-active {
+  background: var(--ground);
+  border-color: var(--line);
+}
+.mail-subject {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-meta {
+  font-size: 12px;
+  color: var(--secondary);
+}
+.mail-reader {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: white;
+  min-height: 200px;
+}
+.mail-body {
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 14px;
+  margin: 12px 0;
+}
+.mail-attachments {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 13px;
+  color: var(--secondary);
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

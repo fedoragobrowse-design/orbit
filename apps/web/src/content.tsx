@@ -112,21 +112,21 @@ export function Notes() {
     queryKey: ["notes"],
     queryFn: () => api<ItemList>("/api/v1/notes?limit=100"),
   });
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [editing, setEditing] = useState<RecordData | null>(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [editBody, setEditBody] = useState("");
+  const [selected, setSelected] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftBody, setDraftBody] = useState("");
   const [deleting, setDeleting] = useState<RecordData | null>(null);
+  const [showImport, setShowImport] = useState(false);
   function refresh() {
     void client.invalidateQueries({ queryKey: ["notes"] });
   }
   const create = useMutation({
     mutationFn: (input: { title: string; body: string }) =>
       post<RecordData>("/api/v1/notes", input),
-    onSuccess: () => {
-      setTitle("");
-      setBody("");
+    onSuccess: (row) => {
+      setDraftTitle("");
+      setDraftBody("");
+      setSelected(String(row.id));
       refresh();
     },
   });
@@ -136,25 +136,35 @@ export function Notes() {
         method: "PATCH",
         body: JSON.stringify({ title: input.title, body: input.body }),
       }),
-    onSuccess: () => {
-      setEditing(null);
-      refresh();
-    },
+    onSuccess: refresh,
   });
   const destroy = useMutation({
     mutationFn: (id: string) => remove(`/api/v1/notes/${id}`),
     onSuccess: (_data, id) => {
       setDeleting(null);
-      if (editing && String(editing.id) === id) setEditing(null);
+      if (selected === id) {
+        setSelected(null);
+        setDraftTitle("");
+        setDraftBody("");
+      }
       refresh();
     },
   });
-  function startEdit(row: RecordData) {
-    setEditing(row);
-    setEditTitle(text(row.title));
-    setEditBody(text(row.body));
-  }
   const items = list.data?.items ?? [];
+  const active = items.find((r) => String(r.id) === selected) ?? null;
+  function pick(row: RecordData) {
+    setSelected(String(row.id));
+    setDraftTitle(text(row.title));
+    setDraftBody(text(row.body));
+  }
+  function newNote() {
+    setSelected(null);
+    setDraftTitle("");
+    setDraftBody("");
+  }
+  const dirty =
+    active !== null &&
+    (draftTitle !== text(active.title) || draftBody !== text(active.body));
   return (
     <>
       <PageHeader
@@ -162,128 +172,83 @@ export function Notes() {
         description="Short notes to yourself. They stay on this machine unless you share them."
       />
       {list.error && <ErrorNotice error={list.error} retry={() => list.refetch()} />}
-      <section className="panel form section" aria-label="New note">
-        <h2>New note</h2>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate({ title, body });
-          }}
-        >
-          <Input
-            label="Title"
-            value={title}
-            maxLength={256}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-          <Textarea
-            label="Body"
-            rows={4}
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-          />
-          <button disabled={create.isPending}>
-            {create.isPending ? "Saving…" : "Save note"}
-          </button>
-        </form>
-        {create.error && <ErrorNotice error={create.error} />}
-      </section>
-      <section className="section" aria-label="Saved notes">
-        <div className="panel">
-          <h2>Saved notes</h2>
+      <div className="notes-shell">
+        <aside className="notes-list" aria-label="All notes">
+          <button onClick={newNote}>+ New note</button>
           {list.isPending && <p role="status">Loading…</p>}
-          {list.data &&
-            (items.length ? (
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col">Title</th>
-                    <th scope="col">Updated</th>
-                    <th scope="col">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((row) => (
-                    <tr key={String(row.id)}>
-                      <th scope="row">{text(row.title) || "Untitled"}</th>
-                      <td>{timestamp(row.updated_at)}</td>
-                      <td>
-                        <div className="actions">
-                          <button
-                            className="secondary"
-                            onClick={() => startEdit(row)}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            className="danger"
-                            onClick={() => setDeleting(row)}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <Empty title="No notes yet">
-                Write one above, or import a batch below.
-              </Empty>
-            ))}
-        </div>
-      </section>
-      {editing && (
-        <section className="panel form section" aria-label="Edit note">
-          <h2>Edit note</h2>
+          {items.length === 0 && !list.isPending ? (
+            <Empty title="No notes yet">Start one on the right.</Empty>
+          ) : (
+            <ul>
+              {items.map((row) => {
+                const id = String(row.id);
+                return (
+                  <li key={id}>
+                    <button
+                      type="button"
+                      className={selected === id ? "notes-active" : ""}
+                      onClick={() => pick(row)}
+                    >
+                      <span className="notes-item-title">{text(row.title) || "Untitled"}</span>
+                      <span className="notes-item-meta">{timestamp(row.updated_at)}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </aside>
+        <section className="panel form notes-editor" aria-label={active ? "Edit note" : "New note"}>
+          <h2>{active ? "Edit note" : "New note"}</h2>
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              saveEdit.mutate({
-                id: String(editing.id),
-                title: editTitle,
-                body: editBody,
-              });
+              if (active) saveEdit.mutate({ id: String(active.id), title: draftTitle, body: draftBody });
+              else create.mutate({ title: draftTitle, body: draftBody });
             }}
           >
             <Input
               label="Title"
-              value={editTitle}
+              value={draftTitle}
               maxLength={256}
-              onChange={(e) => setEditTitle(e.target.value)}
+              onChange={(e) => setDraftTitle(e.target.value)}
             />
             <Textarea
               label="Body"
-              rows={6}
-              value={editBody}
-              onChange={(e) => setEditBody(e.target.value)}
+              rows={12}
+              value={draftBody}
+              onChange={(e) => setDraftBody(e.target.value)}
             />
             <div className="actions">
-              <button disabled={saveEdit.isPending}>
-                {saveEdit.isPending ? "Saving…" : "Save changes"}
+              <button disabled={create.isPending || saveEdit.isPending || (!active && !draftTitle.trim() && !draftBody.trim())}>
+                {active ? (saveEdit.isPending ? "Saving…" : dirty ? "Save changes" : "Saved") : create.isPending ? "Saving…" : "Save note"}
               </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => setEditing(null)}
-              >
-                Cancel
-              </button>
+              {active && (
+                <button type="button" className="danger" onClick={() => setDeleting(active)}>
+                  Delete
+                </button>
+              )}
             </div>
           </form>
-          {saveEdit.error && <ErrorNotice error={saveEdit.error} />}
+          {(create.error ?? saveEdit.error) && <ErrorNotice error={(create.error ?? saveEdit.error) as Error} />}
         </section>
+      </div>
+      <p>
+        <button type="button" className="secondary" onClick={() => setShowImport((v) => !v)}>
+          {showImport ? "Hide import" : "Import a batch"}
+        </button>
+      </p>
+      {showImport && (
+        <ImportForm
+          heading="Import notes"
+          description="Paste a JSON array. Each entry needs a title and a body."
+          placeholder='[{"title":"Shopping","body":"milk, eggs"}]'
+          actionLabel="Import notes"
+          payloadKey="notes"
+          endpoint="/api/v1/notes/import"
+          queryKey={["notes"]}
+        />
       )}
-      <ImportForm
-        heading="Import notes"
-        description="Paste a JSON array. Each entry needs a title and a body."
-        placeholder='[{"title":"Shopping","body":"milk, eggs"}]'
-        actionLabel="Import notes"
-        payloadKey="notes"
-        endpoint="/api/v1/notes/import"
-        queryKey={["notes"]}
-      />
       {deleting && (
         <Confirm
           title="Delete this note?"
