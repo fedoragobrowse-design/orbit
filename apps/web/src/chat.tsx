@@ -99,6 +99,57 @@ function RelatedTasks({
     </Resource>
   );
 }
+function LiveReply({ eventId }: { eventId: string }) {
+  const reply = useQuery({
+    queryKey: ["live-reply", eventId],
+    queryFn: () =>
+      api<{ items: RecordData[] }>(`/events?limit=50`).then((r) =>
+        r.items.find(
+          (row) =>
+            text(row.event_type) === "AGENT_MESSAGE" &&
+            text(payloadOf(row).reply_to) === eventId,
+        ),
+      ),
+    refetchInterval: (q) => {
+      const row = q.state.data;
+      if (!row) return 1500;
+      const status = text(payloadOf(row).status);
+      return status === "QUEUED_REPLY" ||
+        (!status && !text(payloadOf(row).text))
+        ? 1500
+        : false;
+    },
+  });
+  const row = reply.data;
+  if (!row) return null;
+  const payload = payloadOf(row);
+  const status = text(payload.status);
+  const body = text(payload.text);
+  return (
+    <article className="message assistant" aria-live="polite">
+      {status === "REPLIED" && body ? (
+        <div className="assistant-streamed">{body}</div>
+      ) : status === "FAILED_REPLY" ? (
+        <div className="assistant-failed">
+          Couldn&apos;t get a reply: {text(payload.error) || "model unavailable"}. Check Models — a FAST model must be enabled.
+        </div>
+      ) : (
+        <div className="assistant-typing" role="status">
+          <span className="typing-dot" />
+          <span className="typing-dot" />
+          <span className="typing-dot" />
+          <span className="typing-label">Responding…</span>
+        </div>
+      )}
+      <span className="chat-time">
+        {timestamp(row.timestamp)}
+        {!!text(payload.model) && (
+          <span className="assistant-model"> · {text(payload.model)}</span>
+        )}
+      </span>
+    </article>
+  );
+}
 function ThreadReplies({
   eventId,
   correlationId,
@@ -270,10 +321,13 @@ export function Chat() {
             </article>
           )}
           {conversation && (
-            <ThreadReplies
-              eventId={conversation}
-              correlationId={correlationId}
-            />
+            <>
+              <LiveReply eventId={conversation} />
+              <ThreadReplies
+                eventId={conversation}
+                correlationId={correlationId}
+              />
+            </>
           )}
         </div>
         <ChatPickers chatModel={chatModel} setChatModel={(v) => { setChatModel(v); localStorage.setItem("orbit.chat.model", v); }} chatRole={chatRole} setChatRole={(v) => { setChatRole(v); localStorage.setItem("orbit.chat.role", v); }} modelFilter={modelFilter} setModelFilter={setModelFilter} />
