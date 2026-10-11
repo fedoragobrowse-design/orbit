@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.1 — 2026-10-11 — Fixes wave: layout, chat order, modals, daemon setup
+
+- Layout: pages left-align like the homepage (`.main` auto-margin
+  removed); grouped sidebar uses quiet caps labels (Talk · Organize ·
+  Do · Connect · System).
+- Chat: role-aware tiebreak keeps each user message above its own
+  reply on same-ms ties; Model/Agent/Function pickers in one row;
+  rich tool/MCP/code/file rendering + source chips (Saved memory /
+  Attached file / Your message).
+- Add-forms to modals: Reminders, Contacts, Bookmarks, Clips, and
+  Calendar add-event are now button + native dialog (Escape closes,
+  focus restored); stale "Add one above" copy fixed.
+- Memory: detail route + version fix, family-redact Delete,
+  lightweight extractor auto-saves self-statements (live-proven).
+- Marketplace: tile grid with per-package manifest descriptions,
+  `plugins/example-hello` fixture + `docs/marketplace.md`, custom
+  marketplace registry (add/remove/validate, same manifest format).
+- Computers: loopback on-device harness; files.search schema-shaped
+  args (500 fixed); files.watch node arm (ACTIVE watch registry);
+  TLS gateway profile, `scripts/install-node.sh` one-command daemon
+  (systemd/launchd), Computers "Pair this machine" UI flow.
+- MCP services in Connectors: orbit-control + orbit-data Active,
+  ha-control (entities_list tainted, Confirm-gated call_service)
+  off until Home Assistant connects.
+
 ## v1.0 — 2026-10-11 — First stable: control plane, real chat, panes
 
 - Control plane: `orbit-control.*` tools (consent-gated settings
