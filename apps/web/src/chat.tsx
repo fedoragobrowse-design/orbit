@@ -10,7 +10,7 @@ import {
   timestamp,
   type RecordData,
 } from "./api";
-import { useDraft } from "./App";
+import { useDraft } from "./nav";
 import {
   Empty,
   ErrorNotice,

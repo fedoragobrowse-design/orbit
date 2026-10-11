@@ -219,26 +219,34 @@ dd {
   flex: 1;
 }
 .nav-group {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
-.nav-group p {
-  font-size: 14px;
-  color: #d9d0e5;
-  margin: 0 12px 8px;
-}
-.nav-group-toggle {
+.nav-group-label {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
-  width: calc(100% - 24px);
-  background: none;
-  border: none;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
-  color: #d9d0e5;
-  margin: 0 12px 8px;
-  padding: 0;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a99ec2;
+  margin: 0 12px 6px;
   cursor: pointer;
+  user-select: none;
+}
+.nav-group-label:hover {
+  color: #f4f2f7;
+}
+.nav-group-label:focus-visible {
+  outline: 2px solid #f4f2f7;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.nav-group-caret {
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0;
+  opacity: 0.6;
 }
 .rail nav a {
   display: flex;

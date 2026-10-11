@@ -30,7 +30,7 @@ import {
   type Session,
 } from "./api";
 import { enablePush } from "./push";
-import { useDraft } from "./App";
+import { FAMILIES, useDraft } from "./nav";
 const TERMINAL_TASK_STATES: Record<string, true> = {
   COMPLETED: true,
   FAILED: true,
@@ -881,29 +881,11 @@ type SettingsData = {
   inbox_enabled: boolean;
   revision: number;
 };
-const HIDEABLE_TABS: [string, string][] = [
-  ["Talk", "/chat"],
-  ["Talk", "/inbox"],
-  ["Organize", "/notes"],
-  ["Organize", "/reminders"],
-  ["Organize", "/calendar"],
-  ["Organize", "/contacts"],
-  ["Organize", "/bookmarks"],
-  ["Organize", "/clips"],
-  ["Organize", "/files"],
-  ["Organize", "/memory"],
-  ["Do", "/tasks"],
-  ["Do", "/approvals"],
-  ["Do", "/automations"],
-  ["Do", "/agents"],
-  ["Connect", "/computers"],
-  ["Connect", "/home-assistant"],
-  ["Connect", "/connections"],
-  ["Connect", "/models"],
-  ["Connect", "/marketplace"],
-  ["System", "/activity"],
-  ["System", "/ops"],
-];
+const HIDEABLE_TABS: [string, string, string][] = FAMILIES.flatMap((f) =>
+  f.links
+    .filter(([path]) => path !== "/" && path !== "/settings")
+    .map(([path, name]) => [f.title, path, name] as [string, string, string]),
+);
 function TabVisibility() {
   const [hidden, setHidden] = useState<string[]>(() => {
     try {
@@ -929,14 +911,14 @@ function TabVisibility() {
         Hide tabs you never open. Home and Settings always stay. Changes
         apply the moment you tick the box.
       </p>
-      {HIDEABLE_TABS.map(([group, path]) => (
+      {HIDEABLE_TABS.map(([group, path, name]) => (
         <label className="check" key={path}>
           <input
             type="checkbox"
             checked={!hidden.includes(path)}
             onChange={() => toggle(path)}
           />
-          {group} · {path.slice(1)}
+          {group} · {name}
         </label>
       ))}
     </section>

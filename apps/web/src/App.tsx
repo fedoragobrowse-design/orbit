@@ -1,8 +1,6 @@
 import {
-  createContext,
   lazy,
   Suspense,
-  useContext,
   useEffect,
   useState,
   type ReactNode,
@@ -21,6 +19,7 @@ import {
   Home as HomeIcon,
   HousePlug,
   ListTodo,
+  Mail,
   Menu,
   MessageSquare,
   Monitor,
@@ -60,69 +59,7 @@ const Bookmarks = lazy(() => import("./utility").then((m) => ({ default: m.Bookm
 const Clips = lazy(() => import("./utility").then((m) => ({ default: m.Clips })));
 const Ops = lazy(() => import("./ops").then((m) => ({ default: m.Ops })));
 const GlobalSearch = lazy(() => import("./ops").then((m) => ({ default: m.GlobalSearch })));
-const DraftContext = createContext<{
-  drafts: Record<string, string>;
-  save: (key: string, value: string) => void;
-}>({ drafts: {}, save: () => {} });
-export function useDraft(key: string, initial = "") {
-  const { drafts, save } = useContext(DraftContext);
-  return [drafts[key] ?? initial, (value: string) => save(key, value)] as const;
-}
-const FAMILIES = [
-  {
-    id: "talk",
-    title: "Talk",
-    links: [
-      ["/", "Home", HomeIcon],
-      ["/chat", "Chat", MessageSquare],
-      ["/inbox", "AI Inbox", BellRing],
-    ],
-  },
-  {
-    id: "organize",
-    title: "Organize",
-    links: [
-      ["/notes", "Notes", StickyNote],
-      ["/reminders", "Reminders", AlarmClock],
-      ["/calendar", "Calendar", CalendarDays],
-      ["/contacts", "Contacts", Contact],
-      ["/bookmarks", "Bookmarks", Bookmark],
-      ["/clips", "Clips", Scissors],
-      ["/files", "Files", Folder],
-      ["/memory", "Memory", BookOpen],
-    ],
-  },
-  {
-    id: "do",
-    title: "Do",
-    links: [
-      ["/tasks", "Tasks", ListTodo],
-      ["/approvals", "Approvals", ShieldCheck],
-      ["/automations", "Automations", Workflow],
-      ["/agents", "Agents", Users],
-    ],
-  },
-  {
-    id: "connect",
-    title: "Connect",
-    links: [
-      ["/computers", "Computers", Monitor],
-      ["/home-assistant", "Home Assistant", HousePlug],
-      ["/connections", "Connections", Plug],
-      ["/models", "Models", Cpu],
-      ["/marketplace", "Marketplace", Store],
-    ],
-  },
-  {
-    id: "system",
-    title: "System",
-    links: [
-      ["/activity", "Activity", ActivityIcon],
-      ["/ops", "Ops", Wrench],
-      ["/settings", "Settings", SettingsIcon],
-    ],
-  },
-] as const;
+import { DraftContext, FAMILIES } from "./nav";
 function readHidden(): string[] {
   try {
     return JSON.parse(localStorage.getItem("orbit.nav.hidden") ?? "[]");
@@ -152,10 +89,12 @@ function SidebarFamily({ family }: { family: (typeof FAMILIES)[number] }) {
   if (!visible.length) return null;
   return (
     <div className="nav-group">
-      <button
-        type="button"
-        className="nav-group-toggle"
+      <p
+        className="nav-group-label"
+        role="button"
+        tabIndex={0}
         aria-expanded={open}
+        aria-label={`${open ? "Collapse" : "Expand"} ${family.title}`}
         onClick={() => {
           const next = !open;
           setOpen(next);
@@ -163,10 +102,20 @@ function SidebarFamily({ family }: { family: (typeof FAMILIES)[number] }) {
             localStorage.setItem(`orbit.nav.${family.id}`, next ? "open" : "closed");
           } catch { /* private mode */ }
         }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            const next = !open;
+            setOpen(next);
+            try {
+              localStorage.setItem(`orbit.nav.${family.id}`, next ? "open" : "closed");
+            } catch { /* private mode */ }
+          }
+        }}
       >
         <span>{family.title}</span>
-        <span aria-hidden="true">{open ? "–" : "+"}</span>
-      </button>
+        <span className="nav-group-caret" aria-hidden="true">{open ? "–" : "+"}</span>
+      </p>
       {open &&
         visible.map(([path, name, Icon]) => (
           <NavLink key={path} to={path as string} end={path === "/"}>
@@ -310,6 +259,7 @@ export function App() {
             <Route path="/marketplace" element={<Marketplace />} />
             <Route path="/connections/*" element={<Connections />} />
             <Route path="/calendar" element={<Navigate to="/connections/calendars" replace />} />
+            <Route path="/email" element={<Navigate to="/connections/email" replace />} />
             <Route path="/computers" element={<Computers />} />
             <Route path="/files" element={<Files />} />
             <Route path="/home-assistant" element={<HomeAssistant />} />
