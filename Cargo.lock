@@ -2017,6 +2017,7 @@ dependencies = [
  "orbit-agent-backend",
  "orbit-audit",
  "orbit-core",
+ "orbit-memory",
  "orbit-model-router",
  "serde",
  "serde_json",
@@ -2421,8 +2422,10 @@ name = "orbit-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "hex",
  "jsonschema",
+ "orbit-agent-backend",
  "orbit-approvals",
  "orbit-core",
  "serde",

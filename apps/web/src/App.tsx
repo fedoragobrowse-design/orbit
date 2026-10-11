@@ -45,6 +45,7 @@ import { Chat, Agents } from "./chat";
 const Approvals = lazy(() => import("./approvals").then((m) => ({ default: m.Approvals })));
 const Memory = lazy(() => import("./knowledge").then((m) => ({ default: m.Memory })));
 const Automations = lazy(() => import("./knowledge").then((m) => ({ default: m.Automations })));
+const DocPage = lazy(() => import("./knowledge").then((m) => ({ default: m.DocPage })));
 const Models = lazy(() => import("./models").then((m) => ({ default: m.Models })));
 const Marketplace = lazy(() => import("./marketplace").then((m) => ({ default: m.Marketplace })));
 const Connections = lazy(() => import("./connections").then((m) => ({ default: m.Connections })));
@@ -128,6 +129,15 @@ function SidebarFamily({ family }: { family: (typeof FAMILIES)[number] }) {
 }
 export function App() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  useEffect(() => {
+    try {
+      const vars = JSON.parse(localStorage.getItem("orbit.theme.custom") ?? "{}");
+      const name = localStorage.getItem("orbit.theme") ?? "default";
+      if (name !== "default" || Object.keys(vars).length) {
+        for (const [k, v] of Object.entries(vars)) document.documentElement.style.setProperty(k, v as string);
+      }
+    } catch { /* private mode */ }
+  }, []);
   const [menu, setMenu] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
   const location = useLocation();
@@ -269,6 +279,7 @@ export function App() {
             <Route path="/files" element={<Files />} />
             <Route path="/home-assistant" element={<HomeAssistant />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/docs/:page" element={<DocPage />} />
             <Route path="/ops" element={<Ops />} />
             <Route
               path="*"

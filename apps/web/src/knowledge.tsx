@@ -40,6 +40,22 @@ export function Memory() {
   );
 }
 
+export function DocPage() {
+  const { page } = useParams();
+  const name = (page ?? "").trim();
+  const titles: Record<string, string> = { overview: "What Orbit is", settings: "Settings explained", memory: "How memory works", tools: "What the agent can do" };
+  const q = useQuery({ queryKey: ["doc", name], queryFn: () => api<{ page: string; content: string }>(`/docs/${encodeURIComponent(name)}`), enabled: !!name });
+  return (
+    <>
+      <PageHeader title={titles[name] ?? "Guide"} description="The same words the agent reads. Plain text, no surprises." />
+      {q.isPending && <p role="status">Loading guide…</p>}
+      {q.error && <ErrorNotice error={q.error} retry={() => q.refetch()} />}
+      {q.data && <section className="panel"><pre style={{ whiteSpace: "pre-wrap" }}>{q.data.content}</pre></section>}
+      <p className="muted"><Link to="/settings">Back to Settings</Link></p>
+    </>
+  );
+}
+
 function MemoryList() {
   const [typeFilter, setTypeFilter] = useState("all");
   return (

@@ -51,3 +51,95 @@ pub struct QueryVector {pub provider_id:Uuid,pub model_id:Uuid,pub values:Vec<f3
 #[derive(Debug,Clone,Serialize,Deserialize)]
 pub struct RetentionSettings {pub event_body_days:i32,pub conversation_body_days:i32,pub runtime_artifact_days:i32,pub connector_cache_days:i32}
 impl Default for RetentionSettings {fn default()->Self{Self{event_body_days:30,conversation_body_days:90,runtime_artifact_days:30,connector_cache_days:30}}}
+
+pub fn extract_owner_facts(user_text: &str) -> Vec<(orbit_core::MemoryType, String, String)> {
+    fn clean(raw: &str) -> Option<String> {
+        let mut s = raw.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`').trim().to_string();
+        while s.ends_with(['.', '!', '?', ',', ';', ':']) {
+            s.pop();
+            s = s.trim_end().to_string();
+        }
+        let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if s.is_empty() || s.chars().count() > 500 || s.chars().any(|c| c.is_control()) {
+            return None;
+        }
+        Some(s)
+    }
+    fn after<'a>(sentence: &'a str, lower: &str, marker: &str) -> Option<&'a str> {
+        let i = lower.find(marker)?;
+        sentence.get(i + marker.len()..).map(|s| s.trim_start())
+    }
+    let mut facts = Vec::new();
+    for sentence in user_text.split(['.', '!', '?', '\n']) {
+        if facts.len() >= 3 {
+            break;
+        }
+        let trimmed = sentence.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_lowercase();
+        if let Some(rest) = after(trimmed, &lower, "my name is") {
+            let head = rest.split(';').next().unwrap_or("").split(',').next().unwrap_or("");
+            let head = head.split(" and ").next().unwrap_or("").split(" but ").next().unwrap_or("");
+            if let Some(name) = clean(&head.split_whitespace().take(4).collect::<Vec<_>>().join(" ")).map(|s| s.chars().take(120).collect::<String>()) {
+                if !name.is_empty() {
+                    facts.push((orbit_core::MemoryType::Person, name.clone(), name));
+                    continue;
+                }
+            }
+        }
+        if let Some(rest) = after(trimmed, &lower, "call me") {
+            let head = rest.split(';').next().unwrap_or("").split(',').next().unwrap_or("");
+            let head = head.split(" and ").next().unwrap_or("").split(" but ").next().unwrap_or("");
+            if let Some(name) = clean(&head.split_whitespace().take(4).collect::<Vec<_>>().join(" ")).map(|s| s.chars().take(120).collect::<String>()) {
+                if !name.is_empty() {
+                    facts.push((orbit_core::MemoryType::Person, name.clone(), name));
+                    continue;
+                }
+            }
+        }
+        if let Some(rest) = after(trimmed, &lower, "my favorite") {
+            let portions: Vec<&str> = rest.splitn(2, " is ").collect();
+            let (thing, liked) = if portions.len() == 2 { (portions[0], portions[1]) } else { (portions[0], "") };
+            if let (Some(subject), Some(value)) = (clean(thing).map(|s| s.chars().take(120).collect::<String>()), clean(liked).map(|s| s.chars().take(500).collect::<String>())) {
+                if !subject.is_empty() && !value.is_empty() {
+                    facts.push((orbit_core::MemoryType::Preference, format!("favorite {subject}"), value));
+                    continue;
+                }
+            }
+        }
+        let before = facts.len();
+        for marker in ["i like ", "i prefer "] {
+            if let Some(rest) = after(trimmed, &lower, marker) {
+                if let Some(liked) = clean(rest).map(|s| (s.chars().take(120).collect::<String>(), s.chars().take(500).collect::<String>())) {
+                    if !liked.0.is_empty() {
+                        facts.push((orbit_core::MemoryType::Preference, liked.0, liked.1));
+                        break;
+                    }
+                }
+            }
+        }
+        if facts.len() > before {
+            continue;
+        }
+        for marker in ["i'm ", "i am "] {
+            if let Some(rest) = after(trimmed, &lower, marker) {
+                let first = rest.split([';', ',', ' ']).next().unwrap_or("").trim();
+                // Only single-token introductions ("I'm Ana"), not moods ("I'm happy").
+                if rest.trim().contains(' ') || first.len() < 2 {
+                    continue;
+                }
+                if let Some(name) = clean(first).map(|s| s.chars().take(120).collect::<String>()) {
+                    if !name.is_empty() {
+                        facts.push((orbit_core::MemoryType::Person, name.clone(), name));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    facts.truncate(3);
+    facts
+}
+

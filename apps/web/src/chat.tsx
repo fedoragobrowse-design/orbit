@@ -22,6 +22,33 @@ import {
   Textarea,
 } from "./ui";
 
+function attachmentId(f: unknown): string | null {
+  if (typeof f === "string") return f;
+  const id = (f as RecordData).id;
+  return typeof id === "string" ? id : null;
+}
+function attachmentName(f: unknown): string {
+  if (typeof f === "string") return f;
+  return text((f as RecordData).name ?? f);
+}
+function looksLikeImage(f: unknown): boolean {
+  if (typeof f !== "object" || f === null) return false;
+  const mime = String((f as RecordData).mime_type ?? "");
+  if (mime.startsWith("image/")) return true;
+  return /\.(png|jpe?g|gif|webp)$/i.test(attachmentName(f));
+}
+function ChatImage({ id, name }: { id: string; name: string }) {
+  return (
+    <figure className="chat-image">
+      <img loading="lazy" src={`/api/v1/files/${id}/content`} alt={name || "Attached image"} />
+      <figcaption>
+        <small>
+          {name || "Attached image"} — untrusted, never runs as code.
+        </small>
+      </figcaption>
+    </figure>
+  );
+}
 function renderRich(content: string, attachments: unknown): React.ReactNode {
   const parts: React.ReactNode[] = [];
   const files = Array.isArray(attachments) ? (attachments as unknown[]) : [];
@@ -69,14 +96,25 @@ function renderRich(content: string, attachments: unknown): React.ReactNode {
   }
   pushText(content.slice(last));
   if (!files.length) return <>{parts}</>;
+  const images = files.filter((f) => attachmentId(f) && looksLikeImage(f));
+  const rest = files.filter((f) => !(attachmentId(f) && looksLikeImage(f)));
   return (
     <>
       {parts}
-      <ul className="rich-files">
-        {files.map((f, fi) => (
-          <li key={fi}>📎 {typeof f === "string" ? f : text((f as RecordData).name ?? f)}</li>
-        ))}
-      </ul>
+      {!!images.length && (
+        <div className="chat-images">
+          {images.map((f, fi) => (
+            <ChatImage key={fi} id={attachmentId(f) ?? ""} name={attachmentName(f)} />
+          ))}
+        </div>
+      )}
+      {!!rest.length && (
+        <ul className="rich-files">
+          {rest.map((f, fi) => (
+            <li key={fi}>📎 {attachmentName(f)}</li>
+          ))}
+        </ul>
+      )}
     </>
   );
 }
@@ -173,6 +211,29 @@ export function Chat() {
   const [agentId, setAgentId] = useState(() => localStorage.getItem("orbit.chat.agent") ?? "");
   const [draft, setDraft] = useDraft(`chat-${conversation ?? "new"}`);
   const [taskId, setTaskId] = useState<string | null>(null);
+  const [images, setImages] = useState<{ id: string; name: string }[]>([]);
+  const [imageError, setImageError] = useState("");
+  const [uploadingImage, setUploadingImage] = useState(false);
+  async function attachImage(picked: File | null) {
+    if (!picked) return;
+    setImageError("");
+    setUploadingImage(true);
+    try {
+      const form = new FormData();
+      form.append("file", picked, picked.name);
+      const stored = await api<RecordData>(
+        `/files/import?kind=image&filename=${encodeURIComponent(picked.name || "image")}`,
+        { method: "POST", body: form },
+      );
+      const id = String(stored.id ?? "");
+      if (!id) throw new Error("Image upload did not return an id.");
+      setImages((prev) => [...prev, { id, name: text(stored.name) || picked.name }]);
+    } catch (e) {
+      setImageError(e instanceof Error ? e.message : "Image upload failed.");
+    } finally {
+      setUploadingImage(false);
+    }
+  }
   const convos = useQuery({
     queryKey: ["chat-convos"],
     queryFn: () => api<{ items: RecordData[] }>("/chat/conversations"),
@@ -183,9 +244,11 @@ export function Chat() {
         ...(conversation ? { conversation_id: conversation } : {}),
         ...(agentId ? { agent_id: agentId } : {}),
         message: draft.trim(),
+        ...(images.length ? { images: images.map((im) => im.id) } : {}),
       }),
     onSuccess: (r) => {
       setDraft("");
+      setImages([]);
       setTaskId(r.task_id);
       setParams({ conversation: r.conversation_id });
       void queryClient.invalidateQueries({ queryKey: ["chat-convos"] });
@@ -257,10 +320,34 @@ export function Chat() {
             }}
           />
           <div className="actions">
+            <label className="attach-image">
+              Attach image
+              <input
+                type="file"
+                accept="image/*"
+                hidden
+                disabled={uploadingImage}
+                onChange={(e) => { void attachImage(e.target.files?.[0] ?? null); e.target.value = ""; }}
+              />
+            </label>
             <button disabled={send.isPending || !draft.trim()}>
               {send.isPending ? "Sending…" : "Send"}
             </button>
           </div>
+          {!!images.length && (
+            <ul className="chat-attached">
+              {images.map((im) => (
+                <li key={im.id}>
+                  🖼 {im.name}{" "}
+                  <button type="button" onClick={() => setImages((prev) => prev.filter((p) => p.id !== im.id))}>
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {uploadingImage && <p role="status">Uploading image…</p>}
+          {imageError && <ErrorNotice error={imageError} retry={() => setImageError("")} />}
           {send.error && <ErrorNotice error={send.error} />}
         </form>
       </section>

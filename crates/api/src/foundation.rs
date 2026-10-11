@@ -13,8 +13,8 @@ pub struct PublishRequest {pub event_type:EventType,pub payload:Value,pub source
 #[derive(Serialize,ToSchema)] pub struct PublishResponse {pub id:Uuid}
 #[derive(Deserialize)] pub struct Page {pub cursor:Option<i64>,pub limit:Option<i64>,pub correlation_id:Option<Uuid>}
 #[derive(Serialize,ToSchema)] pub struct ListResponse {pub items:Vec<Value>,pub next_cursor:Option<i64>}
-#[derive(Serialize,Deserialize,ToSchema)] #[serde(deny_unknown_fields)] pub struct Settings {pub installation_mode:String,pub autonomy_mode:AutonomyMode,pub allow_private_cloud:bool,pub agent_backend:String,#[serde(default)] pub inbox_enabled:bool,pub revision:i64}
-#[derive(Deserialize,ToSchema)] #[serde(deny_unknown_fields)] pub struct SettingsUpdate {pub installation_mode:String,pub autonomy_mode:AutonomyMode,pub allow_private_cloud:bool,pub agent_backend:String,#[serde(default)] pub inbox_enabled:bool,pub expected_revision:i64}
+#[derive(Serialize,Deserialize,ToSchema)] #[serde(deny_unknown_fields)] pub struct Settings {pub installation_mode:String,pub autonomy_mode:AutonomyMode,pub allow_private_cloud:bool,pub agent_backend:String,#[serde(default)] pub inbox_enabled:bool,#[serde(default)] pub sandbox_enabled:bool,#[serde(default)] pub agent_may_change_settings:bool,#[serde(default)] pub agent_may_manage_mcp:bool,pub revision:i64}
+#[derive(Deserialize,ToSchema)] #[serde(deny_unknown_fields)] pub struct SettingsUpdate {pub installation_mode:String,pub autonomy_mode:AutonomyMode,pub allow_private_cloud:bool,pub agent_backend:String,#[serde(default)] pub inbox_enabled:bool,#[serde(default)] pub sandbox_enabled:bool,#[serde(default)] pub agent_may_change_settings:bool,#[serde(default)] pub agent_may_manage_mcp:bool,pub expected_revision:i64}
 #[derive(Deserialize,ToSchema)] #[serde(deny_unknown_fields)] pub struct RecoveryRequest {pub expected_revision:i64}
 #[derive(Deserialize,ToSchema)] #[serde(deny_unknown_fields)] pub struct ReconcileRequest {pub call_id:Uuid,pub expected_revision:i64,pub resolution:String,pub evidence_reference:String}
 #[derive(Serialize,ToSchema)] pub struct TaskDetail {pub id:Uuid,pub title:String,pub state:String,pub revision:i64,pub fence:i64,pub event_id:Option<Uuid>,pub correlation_id:Uuid,pub checkpoint:Value,pub wait_reason:Option<String>,pub unresolved_call_ids:Value,pub evidence:Value,pub allowed_recovery_actions:Vec<String>,pub retry_of:Option<Uuid>,pub created_at:chrono::DateTime<chrono::Utc>,pub expires_at:chrono::DateTime<chrono::Utc>}
@@ -29,12 +29,12 @@ pub async fn update_settings(State(state):State<ApiState>,headers:HeaderMap,Json
  let a=authenticate(&state,&headers,true).await?;if !matches!(input.installation_mode.as_str(),"LOCAL_ONLY"|"HYBRID"|"CLOUD_ONLY"){return Err(Error::Validation("unknown installation mode".into()).into())}
  orbit_agent_backend::BackendKind::parse(&input.agent_backend).map_err(|e| -> ApiError { e.into() })?;
  let mut tx=state.pool.begin().await?;sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE").bind(a.scope.owner_id).fetch_one(&mut *tx).await?;
- let value=json!({"installation_mode":input.installation_mode,"autonomy_mode":input.autonomy_mode,"allow_private_cloud":input.allow_private_cloud,"agent_backend":input.agent_backend,"inbox_enabled":input.inbox_enabled});
+ let value=json!({"installation_mode":input.installation_mode,"autonomy_mode":input.autonomy_mode,"allow_private_cloud":input.allow_private_cloud,"agent_backend":input.agent_backend,"inbox_enabled":input.inbox_enabled,"sandbox_enabled":input.sandbox_enabled,"agent_may_change_settings":input.agent_may_change_settings,"agent_may_manage_mcp":input.agent_may_manage_mcp});
  let revision:Option<i64>=sqlx::query_scalar("UPDATE settings SET value=$2,revision=revision+1 WHERE owner_id=$1 AND revision=$3 RETURNING revision").bind(a.scope.owner_id).bind(&value).bind(input.expected_revision).fetch_optional(&mut *tx).await?;
  let revision=revision.ok_or(Error::Conflict("settings revision changed".into()))?;
  sqlx::query("UPDATE authorization_epochs SET revision=revision+1 WHERE owner_id=$1").bind(a.scope.owner_id).execute(&mut *tx).await?;
  orbit_audit::append(&mut tx,&a.scope,Uuid::new_v4(),None,None,"SETTINGS_UPDATED","owner updated settings",json!({"revision":revision})).await?;tx.commit().await?;
- Ok(Json(Settings{installation_mode:input.installation_mode,autonomy_mode:input.autonomy_mode,allow_private_cloud:input.allow_private_cloud,agent_backend:input.agent_backend,inbox_enabled:input.inbox_enabled,revision}))
+ Ok(Json(Settings{installation_mode:input.installation_mode,autonomy_mode:input.autonomy_mode,allow_private_cloud:input.allow_private_cloud,agent_backend:input.agent_backend,inbox_enabled:input.inbox_enabled,sandbox_enabled:input.sandbox_enabled,agent_may_change_settings:input.agent_may_change_settings,agent_may_manage_mcp:input.agent_may_manage_mcp,revision}))
 }
 #[utoipa::path(post,path="/api/v1/events",request_body=PublishRequest,responses((status=200,body=PublishResponse)))]
 pub async fn publish(State(state):State<ApiState>,headers:HeaderMap,Json(input):Json<PublishRequest>)->Result<Json<PublishResponse>,ApiError>{
@@ -56,12 +56,32 @@ async fn detail(state:ApiState,headers:HeaderMap,id:Uuid,table:&str)->Result<Jso
 #[utoipa::path(get,path="/api/v1/events/{id}",params(("id"=Uuid,Path)),responses((status=200,body=Value)))] pub async fn event_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{detail(s,h,id,"events").await}
 #[utoipa::path(get,path="/api/v1/activity/{id}",params(("id"=Uuid,Path)),responses((status=200,body=Value)))] pub async fn activity_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{detail(s,h,id,"audit_events").await}
 #[utoipa::path(get,path="/api/v1/notifications/{id}",params(("id"=Uuid,Path)),responses((status=200,body=Value)))] pub async fn notification_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{detail(s,h,id,"notifications").await}
-#[utoipa::path(get,path="/api/v1/tasks/{id}",params(("id"=Uuid,Path)),responses((status=200,body=TaskDetail)))]
-pub async fn task_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{
- let Json(mut v)=detail(s,h,id,"tasks").await?;let state=v["state"].as_str().unwrap_or("");let clear=v["unresolved_call_ids"].as_array().is_some_and(Vec::is_empty);let mut actions=vec![];
- if matches!(state,"QUEUED"|"RUNNING"|"WAITING_FOR_APPROVAL"|"WAITING_FOR_RESOURCE"){actions.push("CANCEL")}
- if !clear {actions.push("RECONCILE")} else if matches!(state,"FAILED"|"TIMED_OUT"|"CANCELLED"){actions.push("RETRY")} else if state=="WAITING_FOR_RESOURCE"&&v["consumer"]=="foundation"{actions.push("RESUME")}
- v["allowed_recovery_actions"]=json!(actions);Ok(Json(v))
+#[derive(Serialize, ToSchema)] pub struct TaskRunItem {pub task_id: Uuid,pub phase: String,pub model_calls: i32,pub model_retries: i32,pub turn: i32,pub depth: i32,pub tool_calls: i32,pub tokens: i64}
+#[derive(Serialize, ToSchema)] pub struct TaskRuns {pub items: Vec<TaskRunItem>}
+ #[utoipa::path(get,path="/api/v1/tasks/{id}",params(("id"=Uuid,Path)),responses((status=200,body=TaskDetail)))]
+ pub async fn task_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{
+  let Json(mut v)=detail(s,h,id,"tasks").await?;let state=v["state"].as_str().unwrap_or("");let clear=v["unresolved_call_ids"].as_array().is_some_and(Vec::is_empty);let mut actions=vec![];
+  if matches!(state,"QUEUED"|"RUNNING"|"WAITING_FOR_APPROVAL"|"WAITING_FOR_RESOURCE"){actions.push("CANCEL")}
+  if !clear {actions.push("RECONCILE")} else if matches!(state,"FAILED"|"TIMED_OUT"|"CANCELLED"){actions.push("RETRY")} else if state=="WAITING_FOR_RESOURCE"&&v["consumer"]=="foundation"{actions.push("RESUME")}
+  v["allowed_recovery_actions"]=json!(actions);Ok(Json(v))
+ }
+/// Live subagent view: the run row for this task plus sibling runs sharing
+/// the same correlation id (subagent tasks, when present). Owner-scoped;
+/// depth falls back to the task checkpoint JSON when no subagent table row
+/// exists. Empty items when no agent run was recorded (foundation tasks).
+#[utoipa::path(get,path="/api/v1/tasks/{id}/runs",params(("id"=Uuid,Path)),responses((status=200,body=TaskRuns)))]
+pub async fn task_runs(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<TaskRuns>,ApiError>{
+ let a=authenticate(&s,&h,false).await?;
+ let correlation:Option<Uuid>=sqlx::query_scalar("SELECT correlation_id FROM tasks WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).fetch_optional(&s.pool).await?.ok_or(Error::NotFound)?;
+ let correlation=correlation.ok_or(Error::NotFound)?;
+ let rows=sqlx::query("SELECT r.task_id,r.phase,r.model_calls,r.model_retries,r.turn,r.depth,r.tool_calls,r.tokens,t.checkpoint FROM agent_runs r JOIN tasks t ON t.owner_id=r.owner_id AND t.id=r.task_id WHERE r.owner_id=$1 AND (r.task_id=$2 OR t.correlation_id=$3) ORDER BY r.depth,r.task_id").bind(a.scope.owner_id).bind(id).bind(correlation).fetch_all(&s.pool).await?;
+ let mut items=Vec::with_capacity(rows.len());
+ for r in &rows{
+  let checkpoint:Value=r.get("checkpoint");
+  let checkpoint_depth=checkpoint.get("depth").and_then(Value::as_i64).and_then(|d|i32::try_from(d).ok()).unwrap_or_else(||r.get("depth"));
+  items.push(TaskRunItem{task_id:r.get("task_id"),phase:r.get("phase"),model_calls:r.get("model_calls"),model_retries:r.get("model_retries"),turn:r.get("turn"),depth:checkpoint_depth,tool_calls:r.get("tool_calls"),tokens:r.get("tokens")});
+ }
+ Ok(Json(TaskRuns{items}))
 }
 /// Why-timeline: every row sharing one correlation_id — the triggering
 /// event, the tasks it spawned, the audit trail, and the notifications the
@@ -110,7 +130,7 @@ pub async fn stream(State(state):State<ApiState>,headers:HeaderMap)->Result<Sse<
  }};Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 #[derive(utoipa::OpenApi)]
-#[openapi(paths(health,ready,settings,update_settings,publish,events,tasks,activity,notifications,event_detail,task_detail,activity_detail,notification_detail,why_timeline,read_notification,acknowledge,dismiss,cancel,resume,retry,reconcile,stream,crate::auth::setup,crate::auth::login,crate::auth::current,crate::auth::logout),components(schemas(PublishRequest,PublishResponse,Settings,SettingsUpdate,TaskDetail,ListResponse,RecoveryRequest,ReconcileRequest,crate::auth::SetupRequest,crate::auth::LoginRequest,crate::auth::User,crate::auth::SessionResponse,orbit_core::Event,orbit_core::PrivacyClass,orbit_core::EventType,orbit_core::TaskState)))]
+#[openapi(paths(health,ready,settings,update_settings,publish,events,tasks,activity,notifications,event_detail,task_detail,task_runs,activity_detail,notification_detail,why_timeline,read_notification,acknowledge,dismiss,cancel,resume,retry,reconcile,stream,crate::auth::setup,crate::auth::login,crate::auth::current,crate::auth::logout),components(schemas(PublishRequest,PublishResponse,Settings,SettingsUpdate,TaskDetail,TaskRunItem,TaskRuns,ListResponse,RecoveryRequest,ReconcileRequest,crate::auth::SetupRequest,crate::auth::LoginRequest,crate::auth::User,crate::auth::SessionResponse,orbit_core::Event,orbit_core::PrivacyClass,orbit_core::EventType,orbit_core::TaskState)))]
 pub struct OpenApi;
 pub async fn openapi()->Json<Value>{use utoipa::OpenApi as _;Json(serde_json::to_value(OpenApi::openapi()).expect("OpenAPI serializes"))}
-pub fn router()->Router<ApiState>{Router::new().route("/health",get(health)).route("/ready",get(ready)).route("/api/v1/openapi.json",get(openapi)).route("/api/v1/settings",get(settings).put(update_settings)).route("/api/v1/events",get(events).post(publish)).route("/api/v1/events/{id}",get(event_detail)).route("/api/v1/tasks",get(tasks)).route("/api/v1/tasks/{id}",get(task_detail)).route("/api/v1/tasks/{id}/cancel",post(cancel)).route("/api/v1/tasks/{id}/resume",post(resume)).route("/api/v1/tasks/{id}/retry",post(retry)).route("/api/v1/tasks/{id}/reconcile",post(reconcile)).route("/api/v1/activity",get(activity)).route("/api/v1/activity/{id}",get(activity_detail)).route("/api/v1/notifications",get(notifications)).route("/api/v1/notifications/{id}",get(notification_detail)).route("/api/v1/notifications/{id}/read",post(read_notification)).route("/api/v1/notifications/{id}/acknowledge",post(acknowledge)).route("/api/v1/notifications/{id}/dismiss",post(dismiss)).route("/api/v1/stream",get(stream)).route("/api/v1/why/{correlation_id}",get(why_timeline))}
+pub fn router()->Router<ApiState>{Router::new().route("/health",get(health)).route("/ready",get(ready)).route("/api/v1/openapi.json",get(openapi)).route("/api/v1/settings",get(settings).put(update_settings)).route("/api/v1/events",get(events).post(publish)).route("/api/v1/events/{id}",get(event_detail)).route("/api/v1/tasks",get(tasks)).route("/api/v1/tasks/{id}",get(task_detail)).route("/api/v1/tasks/{id}/runs",get(task_runs)).route("/api/v1/tasks/{id}/cancel",post(cancel)).route("/api/v1/tasks/{id}/resume",post(resume)).route("/api/v1/tasks/{id}/retry",post(retry)).route("/api/v1/tasks/{id}/reconcile",post(reconcile)).route("/api/v1/activity",get(activity)).route("/api/v1/activity/{id}",get(activity_detail)).route("/api/v1/notifications",get(notifications)).route("/api/v1/notifications/{id}",get(notification_detail)).route("/api/v1/notifications/{id}/read",post(read_notification)).route("/api/v1/notifications/{id}/acknowledge",post(acknowledge)).route("/api/v1/notifications/{id}/dismiss",post(dismiss)).route("/api/v1/stream",get(stream)).route("/api/v1/why/{correlation_id}",get(why_timeline))}

@@ -17,9 +17,12 @@ use uuid::Uuid;
 use crate::{ApiError, ApiState, authenticate};
 const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_FILES_LIST: i64 = 200;
+const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 /// Shared files-tab row shape: artifact rows plus the injection-screen flag.
+/// Every row is third-party bytes: `tainted` is always true and `trust_level`
+/// is always UNTRUSTED_EXTERNAL. Bytes are never executed.
 fn file_view(id: Uuid, name: &str, mime: &str, size: i64, sha: &str, quarantined: bool, created_at: Option<chrono::DateTime<chrono::Utc>>) -> Value {
-    json!({"id": id, "name": name, "mime_type": mime, "size": size, "sha256": sha, "quarantined": quarantined, "trust_level": "UNTRUSTED_EXTERNAL", "created_at": created_at})
+    json!({"id": id, "name": name, "mime_type": mime, "size": size, "sha256": sha, "quarantined": quarantined, "tainted": true, "trust_level": "UNTRUSTED_EXTERNAL", "created_at": created_at})
 }
 /// Decode a byte slice for the injection screen only: lossy UTF-8, bounded.
 fn screen_text(bytes: &[u8]) -> String {
@@ -64,16 +67,47 @@ pub async fn get_file_tab(State(state): State<ApiState>, headers: HeaderMap, Pat
 /// raw body with `?filename=`. Stores via `attachments::upload` (sealed
 /// bytes under `artifact_dir`, 10 MiB cap), screened by
 /// `ContextBlock::looks_like_injection` into the `quarantined` flag.
+/// With `?kind=image` only PNG/JPEG/WebP/GIF at 5 MiB or less are accepted;
+/// the sniffed image MIME is stored so the Files tab can filter on it.
+/// Every stored row is third-party bytes: `tainted` is always true, trust is
+/// always UNTRUSTED_EXTERNAL, and the bytes are never executed.
 #[utoipa::path(post, path = "/api/v1/files/import", responses((status = 200, body = Value)))]
 pub async fn import_file_tab(State(state): State<ApiState>, headers: HeaderMap, Query(q): Query<ImportQuery>, req: axum::http::Request<Body>) -> Result<Json<Value>, ApiError> {
     let a = authenticate(&state, &headers, true).await?;
     let (name, bytes) = read_import_body(req, q.filename.as_deref()).await?;
-    store_import(&state, &a.scope, &name, &bytes).await.map(|v| Json(v))
+    let image_mime = if q.kind.as_deref().unwrap_or("").eq_ignore_ascii_case("image") {
+        Some(check_image(&name, &bytes)?)
+    } else {
+        None
+    };
+    store_import(&state, &a.scope, &name, &bytes, image_mime.as_deref()).await.map(|v| Json(v))
+}
+/// Image gate for `?kind=image`: sniffed magic (never the claimed name or
+/// content type) must be PNG/JPEG/GIF/WebP and the bytes must fit 5 MiB.
+/// Returns the sniffed MIME for storage. Anything else is rejected.
+fn check_image(name: &str, bytes: &[u8]) -> Result<String, ApiError> {
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(Error::Validation("image exceeds 5 MiB".into()).into());
+    }
+    let mut sniffed = orbit_email::sniff_mime(name, bytes);
+    if sniffed == "application/octet-stream" && is_webp(bytes) {
+        sniffed = "image/webp".to_string();
+    }
+    match sniffed.as_str() {
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" => Ok(sniffed),
+        _ => Err(Error::Validation("kind=image accepts only PNG, JPEG, WebP or GIF images".into()).into()),
+    }
+}
+/// RIFF....WEBP magic, which the shared MIME sniffer does not cover.
+fn is_webp(bytes: &[u8]) -> bool {
+    bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP"
 }
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileListQuery { pub node: Option<String>, pub kind: Option<String> }
 #[derive(Deserialize)]
-pub struct ImportQuery { pub filename: Option<String>, pub content_type: Option<String> }
+#[serde(deny_unknown_fields)]
+pub struct ImportQuery { pub filename: Option<String>, pub content_type: Option<String>, pub kind: Option<String> }
 /// Read the import payload: multipart `file` part wins when the content type
 /// is multipart, otherwise the whole body with `?filename=` naming it.
 async fn read_import_body(req: axum::http::Request<Body>, fallback_name: Option<&str>) -> Result<(String, Vec<u8>), ApiError> {
@@ -105,20 +139,24 @@ async fn read_import_body(req: axum::http::Request<Body>, fallback_name: Option<
 }
 /// Screen + seal one import: quarantine-store guard, injection screen into
 /// the quarantined flag, sealed artifact write with the flag in metadata.
-async fn store_import(state: &ApiState, scope: &orbit_core::OwnerScope, name: &str, bytes: &[u8]) -> Result<Value, ApiError> {
+/// `image_mime` carries the sniffed image MIME from the `?kind=image` gate so
+/// it is stored (never the claimed content type); otherwise the sniffed MIME
+/// from quarantine-store is kept. Response always carries `tainted: true`.
+async fn store_import(state: &ApiState, scope: &orbit_core::OwnerScope, name: &str, bytes: &[u8], image_mime: Option<&str>) -> Result<Value, ApiError> {
     if bytes.is_empty() {
         return Err(Error::Validation("import is empty".into()).into());
     }
     let quarantined_blob = orbit_email::quarantine_store(name, "application/octet-stream", bytes)?;
     let quarantined = orbit_core::ContextBlock::looks_like_injection(&screen_text(bytes));
-    let stored = orbit_agent_runtime::attachments::upload(&state.pool, &state.artifact_dir, scope, &quarantined_blob.name, &quarantined_blob.mime, bytes).await?;
+    let mime = image_mime.unwrap_or(&quarantined_blob.mime);
+    let stored = orbit_agent_runtime::attachments::upload(&state.pool, &state.artifact_dir, scope, &quarantined_blob.name, mime, bytes).await?;
     let id: Uuid = serde_json::from_value::<Uuid>(stored["id"].clone()).map_err(|_| Error::Unavailable("upload identity unavailable".to_string()))?;
     if quarantined {
         let marker = json!([{"kind": "OWNER_UPLOAD", "attachment_id": id, "quarantined": true}]);
         sqlx::query("UPDATE artifacts SET source_references=$3 WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(id).bind(&marker).execute(&state.pool).await?;
         sqlx::query("UPDATE chat_attachments SET source_reference=$3 WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(id).bind(&marker).execute(&state.pool).await?;
     }
-    Ok(json!({"id": id, "name": stored["name"], "mime_type": stored["mime_type"], "size": stored["size"], "sha256": stored["sha256"], "quarantined": quarantined, "trust_level": "UNTRUSTED_EXTERNAL"}))
+    Ok(json!({"id": id, "name": stored["name"], "mime_type": stored["mime_type"], "size": stored["size"], "sha256": stored["sha256"], "quarantined": quarantined, "tainted": true, "trust_level": "UNTRUSTED_EXTERNAL"}))
 }
 const MAX_TEXT_CHARS: usize = 200_000;
 /// Extract printable text runs from a PDF byte stream. This is a bounded
@@ -207,6 +245,34 @@ pub async fn download_upload(State(state): State<ApiState>, headers: HeaderMap, 
     head.insert(axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"").parse().unwrap());
     Ok((head, body).into_response())
 }
+/// P4 image bytes: owner-scoped immutable render of a stored image artifact.
+/// Only image/* rows are served, sniffed again at read time; the bytes are
+/// third-party content rendered with an untrusted badge in the UI and are
+/// never executed. Served inline with no-store so browsers render the image.
+#[utoipa::path(get, path = "/api/v1/files/{id}/content", responses((status = 200)))]
+pub async fn get_file_content(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Response, ApiError> {
+    let a = authenticate(&state, &headers, false).await?;
+    let row = sqlx::query("SELECT mime_type FROM artifacts WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).fetch_optional(&state.pool).await?.ok_or(Error::NotFound)?;
+    let stored_mime: String = row.try_get::<String, _>("mime_type").unwrap_or_default();
+    if !stored_mime.starts_with("image/") {
+        return Err(Error::Validation("only stored images can be rendered".into()).into());
+    }
+    let (_name, bytes, _source) = orbit_agent_runtime::attachments::read(&state.pool, &state.artifact_dir, &a.scope, id).await?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(Error::Validation("image exceeds 5 MiB".into()).into());
+    }
+    let sniffed = orbit_email::sniff_mime("", &bytes);
+    let sniffed = if sniffed == "application/octet-stream" && is_webp(&bytes) { "image/webp".to_string() } else { sniffed };
+    if !matches!(sniffed.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp") {
+        return Err(Error::Validation("stored bytes are not a supported image".into()).into());
+    }
+    let mut head = axum::http::HeaderMap::new();
+    head.insert(axum::http::header::CONTENT_TYPE, sniffed.parse().unwrap());
+    head.insert(axum::http::header::CONTENT_DISPOSITION, "inline".parse().unwrap());
+    head.insert(axum::http::header::CACHE_CONTROL, "private, no-store".parse().unwrap());
+    head.insert("X-Content-Type-Options", "nosniff".parse().unwrap());
+    Ok((head, axum::body::Body::from(bytes)).into_response())
+}
 pub fn router() -> Router<ApiState> {
     Router::new()
         .route("/api/v1/uploads", post(upload_doc).get(list_uploads))
@@ -214,4 +280,5 @@ pub fn router() -> Router<ApiState> {
         .route("/api/v1/files", get(list_files_tab))
         .route("/api/v1/files/import", post(import_file_tab))
         .route("/api/v1/files/{id}", get(get_file_tab))
+        .route("/api/v1/files/{id}/content", get(get_file_content))
 }

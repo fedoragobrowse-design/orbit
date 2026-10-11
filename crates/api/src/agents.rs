@@ -129,7 +129,7 @@ impl AgentDispatcher {
             None => (1, vec![]),
         };
         let empty_revisions: BTreeMap<String, i64> = BTreeMap::new();
-        let decision = orbit_policy::PolicyEngine {
+        let mut decision = orbit_policy::PolicyEngine {
             revision,
             autonomy,
             rules,
@@ -138,6 +138,13 @@ impl AgentDispatcher {
         .evaluate(scope, name, args, &descriptor, risk, &empty_revisions);
         if decision.policy_revision != revision {
             return Err(Error::Conflict("policy changed during evaluation".into()));
+        }
+        // Sandbox opt-out (default off): when the owner disabled the sandbox,
+        // the journaled decision carries SANDBOX_DISABLED so every admitted
+        // interaction records the gate state. Admission itself is unchanged:
+        // still Jev-gated on command text plus policy-checked, without AIec.
+        if !settings.get("sandbox_enabled").and_then(Value::as_bool).unwrap_or(false) && !decision.reason_codes.iter().any(|c| c == "SANDBOX_DISABLED") {
+            decision.reason_codes.push("SANDBOX_DISABLED".into());
         }
         Ok((descriptor, serde_json::to_value(&decision)?, risk))
     }
@@ -371,11 +378,16 @@ impl orbit_agent_runtime::Dispatcher for AgentDispatcher {
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or(Error::NotFound)?;
+        // Sandbox opt-out (default off): the per-owner sandbox_enabled setting
+        // gates AIec use per interaction. When off, admitted tools run direct
+        // (still Jev-gated at admission plus policy-checked); when on,
+        // requires_sandbox snapshots stay parked for the out-of-band executor
+        // that owns its sandbox. Consent never removes the sandbox requirement.
         // Gateway-approved resume: `approve` parks the task at DISPATCH with a fresh
         // authorization, so SUBMITTED in-app calls execute here under the same lease
-        // and fence checks. Consent never removes the sandbox requirement, and only
-        // IN_APP_TOOLS run inside the agent worker; anything else stays parked for
-        // the out-of-band executor that owns its sandbox or node session.
+        // and fence checks. Only IN_APP_TOOLS run inside the agent worker;
+        // anything else stays parked for the out-of-band executor that owns
+        // its sandbox or node session.
         let mut resumed = vec![];
         for call in sqlx::query("SELECT id,authorization_id,snapshot->>'tool_name' AS tool,snapshot FROM tool_calls WHERE owner_id=$1 AND task_id=$2 AND state='SUBMITTED' AND authorization_id IS NOT NULL ORDER BY submitted_at FOR UPDATE").bind(scope.owner_id).bind(task).fetch_all(&mut *tx).await?{
    let id:Uuid=call.get("id");let authorization:Uuid=call.get("authorization_id");let name:String=call.get("tool");
@@ -508,7 +520,13 @@ impl AgentDispatcher {
                 ),
             ),
         };
-        sqlx::query("UPDATE tool_calls SET state=$4,result=$5,error_code=$6,completed_at=now() WHERE owner_id=$1 AND id=$2 AND authorization_id=$3 AND state='SUBMITTED'").bind(scope.owner_id).bind(id).bind(authorization).bind(state).bind(&result).bind(&code).execute(&self.pool).await?;
+        let sandboxed: bool = sqlx::query_scalar("SELECT COALESCE((value->>'sandbox_enabled')::boolean, false) FROM settings WHERE owner_id=$1").bind(scope.owner_id).fetch_optional(&self.pool).await?.unwrap_or(false);
+        if !sandboxed {
+            let cid: Uuid = sqlx::query_scalar("SELECT correlation_id FROM tasks WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(task).fetch_one(&self.pool).await?;
+            let mut tx = self.pool.begin().await?;
+            orbit_audit::append(&mut tx, scope, cid, None, Some(task), "TOOL_EXECUTED", &format!("UNSANDBOXED tool {id} ran without a sandbox (sandbox off); Jev-gated and policy-checked"), serde_json::json!({"call_id": id, "sandboxed": false})).await?;
+            tx.commit().await?;
+        }
         Ok(json!({"call_id":id,"state":state}))
     }
     async fn execute_authorized(
@@ -681,6 +699,8 @@ pub struct ChatPost {
     pub agent_id: Option<Uuid>,
     pub message: String,
     pub attachments: Option<Vec<Uuid>>,
+    #[serde(default)]
+    pub images: Option<Vec<Uuid>>,
 }
 #[derive(Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
 pub struct ChatPage {
@@ -736,7 +756,12 @@ pub async fn post_message(
         .bind(agent)
         .fetch_one(&s.pool)
         .await?;
-    let files = input.attachments.clone().unwrap_or_default();
+    let mut files = input.attachments.clone().unwrap_or_default();
+    for image in input.images.clone().unwrap_or_default() {
+        if !files.contains(&image) {
+            files.push(image);
+        }
+    }
     for file in &files {
         orbit_agent_runtime::attachments::read(&s.pool, &s.artifact_dir, &a.scope, *file).await?;
     }

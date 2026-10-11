@@ -5,6 +5,7 @@ pub mod brief;
 pub mod calendar;
 pub mod computers;
 pub mod connectors;
+pub mod control;
 pub mod email;
 pub mod foundation;
 pub mod gateway;
@@ -103,6 +104,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(utility_tabs::router())
         .merge(notes::router())
         .merge(inbox::router())
+        .merge(control::router())
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
 }
@@ -190,6 +192,10 @@ pub async fn worker(state: ApiState) {
 /// Chat replies: AGENT_MESSAGE rows parked as QUEUED_REPLY get one FAST-role
 /// model call each, then store text. Failures park as FAILED_REPLY with the
 /// error, never a faked answer. No tools, no tasks, no permissions.
+/// Owner-stated facts worth remembering, pulled from one chat message.
+/// Plain substring patterns only (no regex): names become Person memories,
+/// likes and favorites become Preference memories. Best-effort by design;
+/// anything odd is skipped, never stored.
 async fn run_chat_replies(state: &ApiState) -> orbit_core::Result<()> {
     use sqlx::Row;
     let queued = sqlx::query("SELECT owner_id,id,principal_id,correlation_id,payload FROM events WHERE event_type='AGENT_MESSAGE' AND payload->>'status'='QUEUED_REPLY' ORDER BY timestamp LIMIT 5").fetch_all(&state.pool).await?;
@@ -208,7 +214,7 @@ async fn run_chat_replies(state: &ApiState) -> orbit_core::Result<()> {
         let role = user_payload.get("model_role").and_then(serde_json::Value::as_str).map(|s| match s { "PRIVATE" => orbit_core::ModelRole::Private, "REASONING" => orbit_core::ModelRole::Reasoning, "CODING" => orbit_core::ModelRole::Coding, "VISION" => orbit_core::ModelRole::Vision, "EMBEDDING" => orbit_core::ModelRole::Embedding, _ => orbit_core::ModelRole::Fast }).unwrap_or(orbit_core::ModelRole::Fast);
         let request = orbit_model_router::RoutedRequest {
             role,
-            chat: orbit_model_router::ChatRequest { messages: vec![orbit_model_router::ChatMessage { role: "user".into(), content: user_text, tool_call_id: None, tool_calls: vec![], images: vec![] }], tools: vec![], output_schema: None, max_output_tokens: 1024, reasoning: false },
+            chat: orbit_model_router::ChatRequest { messages: vec![orbit_model_router::ChatMessage { role: "user".into(), content: user_text.clone(), tool_call_id: None, tool_calls: vec![], images: vec![] }], tools: vec![], output_schema: None, max_output_tokens: 1024, reasoning: false },
             context: vec![],
             privacy: orbit_core::PrivacyClass::Private,
             task_id: None,
@@ -222,6 +228,11 @@ async fn run_chat_replies(state: &ApiState) -> orbit_core::Result<()> {
             Ok(Ok(answer)) => {
                 let clipped = answer.response.text.chars().take(32768).collect::<String>();
                 sqlx::query("UPDATE events SET payload=payload||$3 WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(id).bind(serde_json::json!({"status":"REPLIED","text":clipped,"model":answer.route.model,"finish_reason":answer.response.finish_reason})).execute(&state.pool).await?;
+                for (memory_type, subject, value) in orbit_memory::extract_owner_facts(&user_text) {
+                    let candidate = orbit_memory::Candidate { memory_type, subject, value: serde_json::json!({"text": value}), source_references: vec![], related_entities: vec![], privacy_class: orbit_core::PrivacyClass::Private, confidence: 0.8, valid_until: None, entity_id: None };
+                    let provenance = orbit_memory::owner_provenance(&scope, &candidate);
+                    let _ = orbit_memory::ingest(&state.pool, &scope, candidate, provenance, None, None).await;
+                }
             }
             Ok(Err(e)) => {
                 let msg = e.to_string();

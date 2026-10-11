@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-11 — Sandbox opt-out (OFF by default)
+
+Sandbox OFF by default per owner: `sandbox_enabled` on Settings/SettingsUpdate (migration 0031 backfills `{"sandbox_enabled":false}`, column default extended, fresh owners inherit off). `AgentDispatcher::admission` journals `SANDBOX_DISABLED` in the policy decision when off (still Jev-gated on command text plus policy-checked, no AIec); `submit` keeps `requires_sandbox` snapshots parked when the owner enabled the sandbox, and `execute_call` writes `TOOL_EXECUTED` `UNSANDBOXED` in the audit reason for direct runs. AIec create stays fail-closed when unavailable. Web Settings gains a `Run tools inside a sandbox (AIec)` checkbox with a plain-words hint.
+
+## 2026-10-11 — Live subagent run view on task detail
+
+Live subagent view on task detail: `GET /api/v1/tasks/{id}/runs` in `crates/api/src/foundation.rs` (`task_runs`, router + OpenAPI `TaskRunItem`/`TaskRuns`) returns the owner-scoped `agent_runs` row for the task plus sibling runs sharing the task correlation id, each shaped `{task_id, phase, model_calls, model_retries, turn, depth, tool_calls, tokens}`. No subagent table exists, so depth comes from `agent_runs.depth` with a task-checkpoint `depth` fallback; foundation tasks return empty items. Tasks detail (`apps/web/src/workspace.tsx`, `LiveRun`) gains a "Live run" section polling every 2s while the task state is active and stopping on terminal states, with a plain-words phase timeline, per-depth indent with helper-level labels, and model-call/retry/tool/token counters.
+
 ## 2026-10-11 — Runtime upserts, prod key-dir, settled task detail
 
 - Agent runtime: invalid `ON CONFLICT` upserts on `notifications` +

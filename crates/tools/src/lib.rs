@@ -32,7 +32,96 @@ impl Registry {
 }
 pub fn descriptors()->Vec<ToolDescriptor>{
  let effects=ToolEffects{external:false,modifies_data:true,reversible:true,credential_access:false,affected_party:"OWNER".into(),network:false};
- vec![ToolDescriptor{id:Uuid::from_u128(1),name:"notifications.create".into(),version:"1".into(),input_schema:json!({"type":"object","additionalProperties":false,"required":["severity","title","body","related_entity_ids"],"properties":{"severity":{"enum":["INFO","ACTION_REQUIRED","IMPORTANT","URGENT"]},"title":{"type":"string","minLength":1,"maxLength":240},"body":{"type":"string","maxLength":32768},"related_entity_ids":{"type":"array","maxItems":50,"items":{"type":"string","format":"uuid"}}}}),output_schema:json!({"type":"object","additionalProperties":false,"required":["notification_id"],"properties":{"notification_id":{"type":"string","format":"uuid"}}}),effects:effects.clone(),default_risk:RiskLevel::Low,permission_keys:vec!["notifications.create".into()],sandbox_required:false},
+ vec![
+  ToolDescriptor {
+   id: Uuid::from_u128(10),
+   name: "orbit-control.settings_update".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["settings"],"properties":{"settings":{"type":"object","minProperties":1,"maxProperties":16},"expected_revision":{"type":"integer"}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["revision"],"properties":{"revision":{"type":"integer"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::High,
+   permission_keys: vec!["orbit-control.settings_update".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(11),
+   name: "orbit-control.ask_owner".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["question"],"properties":{"question":{"type":"string","minLength":1,"maxLength":2000},"options":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":200}}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["question_id"],"properties":{"question_id":{"type":"string","format":"uuid"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Medium,
+   permission_keys: vec!["orbit-control.ask_owner".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(12),
+   name: "orbit-control.skills_list".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":[],"properties":{}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["items"],"properties":{"items":{"type":"array","items":{"type":"object"}}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Low,
+   permission_keys: vec!["orbit-control.skills_list".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(13),
+   name: "orbit-control.docs_read".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","minLength":1,"maxLength":256}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["content"],"properties":{"content":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Low,
+   permission_keys: vec!["orbit-control.docs_read".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(20),
+   name: "orbit-data.memory_search".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1,"maxLength":500},"limit":{"type":"integer","minimum":1,"maximum":20}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["items","trust"],"properties":{"items":{"type":"array","items":{"type":"object"}},"trust":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Low,
+   permission_keys: vec!["orbit-data.memory_search".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(21),
+   name: "orbit-data.mail_read".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["message_id"],"properties":{"message_id":{"type":"string","format":"uuid"}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["subject","from","body","trust"],"properties":{"subject":{"type":"string"},"from":{"type":"string"},"body":{"type":"string"},"trust":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Medium,
+   permission_keys: vec!["orbit-data.mail_read".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(22),
+   name: "orbit-data.calendar_list".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["from","to"],"properties":{"from":{"type":"string"},"to":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["items","trust"],"properties":{"items":{"type":"array","items":{"type":"object"}},"trust":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Low,
+   permission_keys: vec!["orbit-data.calendar_list".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(23),
+   name: "orbit-data.files_list".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":[],"properties":{"limit":{"type":"integer","minimum":1,"maximum":100}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["items","trust"],"properties":{"items":{"type":"array","items":{"type":"object"}},"trust":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Low,
+   permission_keys: vec!["orbit-data.files_list".into()],
+   sandbox_required: false,
+  },
+ToolDescriptor{id:Uuid::from_u128(1),name:"notifications.create".into(),version:"1".into(),input_schema:json!({"type":"object","additionalProperties":false,"required":["severity","title","body","related_entity_ids"],"properties":{"severity":{"enum":["INFO","ACTION_REQUIRED","IMPORTANT","URGENT"]},"title":{"type":"string","minLength":1,"maxLength":240},"body":{"type":"string","maxLength":32768},"related_entity_ids":{"type":"array","maxItems":50,"items":{"type":"string","format":"uuid"}}}}),output_schema:json!({"type":"object","additionalProperties":false,"required":["notification_id"],"properties":{"notification_id":{"type":"string","format":"uuid"}}}),effects:effects.clone(),default_risk:RiskLevel::Low,permission_keys:vec!["notifications.create".into()],sandbox_required:false},
  ToolDescriptor{id:Uuid::from_u128(2),name:"reports.save".into(),version:"1".into(),input_schema:json!({"type":"object","additionalProperties":false,"required":["title","content","source_references"],"properties":{"title":{"type":"string","minLength":1,"maxLength":240},"content":{"type":"string","maxLength":1048576},"source_references":{"type":"array","maxItems":50,"items":{"type":"string","maxLength":2048}}}}),output_schema:json!({"type":"object","additionalProperties":false,"required":["artifact_id","sha256"],"properties":{"artifact_id":{"type":"string","format":"uuid"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}}),effects,default_risk:RiskLevel::Low,permission_keys:vec!["reports.save".into()],sandbox_required:false}]
 }
 /// The execution envelope alone is not authority: callers must match the
@@ -68,9 +157,79 @@ pub struct SafeTools {pub pool:PgPool,pub artifact_dir:PathBuf}
     }
     sqlx::query("INSERT INTO artifacts(id,owner_id,task_id,authorization_id,title,safe_name,mime_type,size,sha256,source_references,storage_key) VALUES($1,$2,$3,$4,$5,'report.txt','text/plain; charset=utf-8',$6,$7,$8,$9) ON CONFLICT(authorization_id) DO NOTHING").bind(id).bind(scope.owner_id).bind(s.task_id).bind(action.authorization_id()).bind(s.arguments["title"].as_str().unwrap()).bind(content.len() as i64).bind(&digest).bind(&s.arguments["source_references"]).bind(storage_key).execute(&self.pool).await?;
     json!({"artifact_id":id,"sha256":digest})
+   },"orbit-control.settings_update"=>{
+    // Consent-gated: owner must have flipped agent_may_change_settings, else Forbidden.
+    let row: Option<Value> = sqlx::query_scalar("SELECT value FROM settings WHERE owner_id=$1").bind(scope.owner_id).fetch_optional(&self.pool).await?;
+    let v = row.unwrap_or(json!({}));
+    if v.get("agent_may_change_settings").and_then(Value::as_bool) != Some(true) {return Err(Error::Forbidden);}
+    let patch = &s.arguments["settings"];
+    if !patch.is_object() {return Err(Error::Validation("settings must be an object".into()));}
+    let merged = orbit_tools_merge_settings(v, patch)?;
+    let rev: Option<i64> = sqlx::query_scalar("UPDATE settings SET value=$2,revision=revision+1 WHERE owner_id=$1 AND ($3::bigint IS NULL OR revision=$3) RETURNING revision").bind(scope.owner_id).bind(&merged).bind(s.arguments.get("expected_revision").and_then(Value::as_i64)).fetch_optional(&self.pool).await?;
+    let rev = rev.ok_or(Error::Conflict("settings revision changed".into()))?;
+    json!({"revision":rev})
+   },"orbit-control.ask_owner"=>{
+    let q = s.arguments["question"].as_str().unwrap_or("").trim();
+    if q.is_empty() {return Err(Error::Validation("question required".into()));}
+    let opts = s.arguments.get("options").cloned().unwrap_or(json!([]));
+    let qid = Uuid::new_v4();
+    sqlx::query("INSERT INTO agent_questions(id,owner_id,task_id,agent_id,question,options) VALUES($1,$2,$3,$4,$5,$6)").bind(qid).bind(scope.owner_id).bind(s.task_id).bind(s.agent_id).bind(q).bind(&opts).execute(&self.pool).await?;
+    sqlx::query("INSERT INTO notifications(id,owner_id,task_id,correlation_id,severity,title,body,authorization_id,related_entity_ids) SELECT $1,$2,id,correlation_id,'ACTION_REQUIRED',$4,$5,$6,'[]' FROM tasks WHERE owner_id=$2 AND id=$3 ON CONFLICT(authorization_id) DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(s.task_id).bind("Agent has a question").bind(q).bind(action.authorization_id()).execute(&self.pool).await?;
+    json!({"question_id":qid})
+   },"orbit-control.skills_list"=>{
+    let rows = sqlx::query("SELECT id,name,description,enabled FROM skills WHERE owner_id=$1 AND enabled ORDER BY name LIMIT 100").bind(scope.owner_id).fetch_all(&self.pool).await?;
+    let items: Vec<Value> = rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description")})).collect();
+    let installs: Vec<Value> = sqlx::query("SELECT name,version FROM marketplace_installs WHERE owner_id=$1 LIMIT 100").bind(scope.owner_id).fetch_all(&self.pool).await.map(|rs| rs.iter().map(|r| json!({"name":r.get::<String,_>("name"),"version":r.get::<String,_>("version"),"source":"marketplace"})).collect()).unwrap_or_default();
+    json!({"items": items.into_iter().chain(installs).collect::<Vec<_>>()})
+   },"orbit-control.docs_read"=>{
+    let path = s.arguments["path"].as_str().unwrap_or("");
+    let content = orbit_tools_doc(path).ok_or(Error::Validation("unknown doc path".into()))?;
+    json!({"content":content})
+   },"orbit-data.memory_search"=>{
+    let q = s.arguments["query"].as_str().unwrap_or("");
+    let limit = s.arguments.get("limit").and_then(Value::as_i64).unwrap_or(5).clamp(1,20);
+    let rows = sqlx::query("SELECT subject,value FROM memory_records WHERE owner_id=$1 AND (subject ILIKE $2 OR value ILIKE $2) LIMIT $3").bind(scope.owner_id).bind(format!("%{q}%")).bind(limit).fetch_all(&self.pool).await?;
+    let items: Vec<Value> = rows.iter().map(|r| json!({"subject":r.get::<String,_>("subject"),"value":r.get::<String,_>("value")})).collect();
+    json!({"items":items,"trust":"UNTRUSTED_EXTERNAL"})
+   },"orbit-data.mail_read"=>{
+    let mid: Uuid = s.arguments["message_id"].as_str().unwrap_or("").parse().map_err(|_| Error::Validation("invalid message_id".into()))?;
+    let row = sqlx::query("SELECT metadata,body_text FROM email_messages WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(mid).fetch_optional(&self.pool).await?.ok_or(Error::Forbidden)?;
+    let meta: Value = row.get("metadata");
+    json!({"subject":meta.get("subject").cloned().unwrap_or(Value::Null),"from":meta.get("from").cloned().unwrap_or(Value::Null),"body":row.get::<String,_>("body_text"),"trust":"UNTRUSTED_EXTERNAL"})
+   },"orbit-data.calendar_list"=>{
+    let rows = sqlx::query("SELECT title,starts_at,ends_at,source FROM calendar_events WHERE owner_id=$1 AND starts_at>=$2 AND starts_at<$3 ORDER BY starts_at LIMIT $4").bind(scope.owner_id).bind(s.arguments["from"].as_str().unwrap_or("1970-01-01T00:00:00Z").parse::<chrono::DateTime<chrono::Utc>>().unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC)).bind(s.arguments["to"].as_str().unwrap_or("2100-01-01T00:00:00Z").parse::<chrono::DateTime<chrono::Utc>>().unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC)).bind(s.arguments.get("limit").and_then(Value::as_i64).unwrap_or(50).clamp(1,200)).fetch_all(&self.pool).await?;
+    let items: Vec<Value> = rows.iter().map(|r| json!({"title":r.get::<String,_>("title"),"starts_at":r.get::<chrono::DateTime<chrono::Utc>,_>("starts_at"),"source":r.get::<String,_>("source")})).collect();
+    json!({"items":items,"trust":"UNTRUSTED_EXTERNAL"})
+   },"orbit-data.files_list"=>{
+    let limit = s.arguments.get("limit").and_then(Value::as_i64).unwrap_or(50).clamp(1,100);
+    let rows = sqlx::query("SELECT id,title,mime_type,size FROM artifacts WHERE owner_id=$1 ORDER BY created_at DESC LIMIT $2").bind(scope.owner_id).bind(limit).fetch_all(&self.pool).await?;
+    let items: Vec<Value> = rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"title":r.get::<String,_>("title"),"mime":r.get::<String,_>("mime_type"),"size":r.get::<i64,_>("size")})).collect();
+    json!({"items":items,"trust":"UNTRUSTED_EXTERNAL"})
    },_=>return Err(Error::Forbidden)
   };validate_value(&d.output_schema,&output)?;Ok(ToolResult{output,privacy_class:orbit_core::PrivacyClass::Private,trust_level:orbit_core::TrustLevel::UntrustedExternal,source_reference:format!("tool-call:{}",s.action_id)})
  }
+}
+
+fn orbit_tools_merge_settings(current: Value, patch: &Value) -> Result<Value> {
+    let mut out = current.as_object().cloned().unwrap_or_default();
+    // Allowlist: agent may change everyday prefs, never identity/keys/consent itself.
+    const ALLOW: &[&str] = &["installation_mode","autonomy_mode","allow_private_cloud","agent_backend","inbox_enabled","sandbox_enabled"];
+    for (k, v) in patch.as_object().cloned().unwrap_or_default() {
+        if !ALLOW.contains(&k.as_str()) {return Err(Error::Forbidden);}
+        if k == "installation_mode" && !matches!(v.as_str(), Some("LOCAL_ONLY")|Some("HYBRID")|Some("CLOUD_ONLY")) {return Err(Error::Validation("unknown installation mode".into()));}
+        if k == "agent_backend" && orbit_agent_backend::BackendKind::parse(v.as_str().unwrap_or("")).is_err() {return Err(Error::Validation("unknown agent backend".into()));}
+        out.insert(k, v);
+    }
+    Ok(Value::Object(out))
+}
+fn orbit_tools_doc(path: &str) -> Option<&'static str> {
+    Some(match path {
+        "overview" => include_str!("../../../docs/orbit-overview.md"),
+        "settings" => include_str!("../../../docs/orbit-settings.md"),
+        "memory" => include_str!("../../../docs/orbit-memory.md"),
+        "tools" => include_str!("../../../docs/orbit-tools.md"),
+        _ => return None,
+    })
 }
 #[cfg(test)]mod tests{use super::*;
  #[test]fn provider_mapping_is_exact(){let mut r=Registry::default();for d in descriptors(){let name=provider_name(d.id);assert_eq!(name.len(),34);r.register(d.clone()).unwrap();assert_eq!(r.from_provider(&name).unwrap().name,d.name);}assert!(r.from_provider("notifications_create").is_err());}

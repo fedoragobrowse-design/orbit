@@ -60,5 +60,27 @@ pub async fn releases(State(state): State<ApiState>,headers: HeaderMap)->Result<
  let items: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('version',version,'channel',channel,'digest',digest,'artifact_url',artifact_url,'notes',notes,'published_at',published_at) FROM releases WHERE owner_id=$1 ORDER BY published_at DESC,version DESC LIMIT 100").bind(a.scope.owner_id).fetch_all(&state.pool).await?;
  Ok(Json(json!({"items":items,"next_cursor":null})))
 }
-#[derive(utoipa::OpenApi)] #[openapi(paths(publish,check,releases),components(schemas(PublishRequest,CheckResponse)))] pub struct UpdatesApi;
-pub fn router()->Router<ApiState>{Router::new().route("/api/v1/updates/check",get(check)).route("/api/v1/updates/publish",post(publish)).route("/api/v1/updates/releases",get(releases))}
+#[derive(Deserialize,utoipa::ToSchema)] #[serde(deny_unknown_fields)] pub struct ApplyRequest { pub version: String, #[serde(default)] pub expected_revision: Option<i64>, #[serde(default)] pub confirm: bool }
+#[derive(Serialize,utoipa::ToSchema)] pub struct ApplyResponse { pub applied: bool, pub version: String, pub restart_required: bool }
+#[utoipa::path(post,path="/api/v1/updates/apply",request_body=ApplyRequest,responses((status=200,body=ApplyResponse)))]
+/// Stage a known stable release for use on next restart. Never restarts the server: the caller restarts out of band. Unknown versions 404; outside ASSIST autonomy the owner must pass `confirm: true`; an `expected_revision` mismatch is a conflict.
+pub async fn apply(State(state): State<ApiState>,headers: HeaderMap,Json(input): Json<ApplyRequest>)->Result<Json<ApplyResponse>,ApiError>{
+ let a=authenticate(&state,&headers,true).await?;
+ let version=input.version.trim().to_owned();
+ if !valid_version(&version){return Err(Error::Validation("release version must be 1-64 chars of alphanumerics . - + _".into()).into())}
+ let digest: Option<String> = sqlx::query_scalar("SELECT digest FROM releases WHERE owner_id=$1 AND channel=$2 AND version=$3").bind(a.scope.owner_id).bind(STABLE).bind(&version).fetch_optional(&state.pool).await?;
+ let digest=digest.ok_or(Error::NotFound)?;
+ let settings: Option<Value> = sqlx::query_scalar("SELECT value FROM settings WHERE owner_id=$1").bind(a.scope.owner_id).fetch_optional(&state.pool).await?;
+ let assist=settings.as_ref().and_then(|v| v.get("autonomy_mode")).and_then(Value::as_str).is_some_and(|m| m == "ASSIST");
+ if !assist && !input.confirm{return Err(Error::Validation("apply needs owner confirmation: pass confirm true or switch autonomy to ASSIST".into()).into())}
+ let mut tx=state.pool.begin().await?;
+ let epoch: i64 = sqlx::query_scalar("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE").bind(a.scope.owner_id).fetch_one(&mut *tx).await?;
+ if let Some(expected)=input.expected_revision{ if expected != epoch{return Err(Error::Conflict("release revision changed".into()).into())} }
+ sqlx::query("UPDATE authorization_epochs SET revision=revision+1 WHERE owner_id=$1").bind(a.scope.owner_id).execute(&mut *tx).await?;
+ orbit_audit::append(&mut tx,&a.scope,Uuid::new_v4(),None,None,"UPDATE_APPLIED","owner applied a staged release",json!({"version":version,"digest":digest,"restart_required":true})).await?;
+ tx.commit().await?;
+ Ok(Json(ApplyResponse{applied:true,version,restart_required:true}))
+}
+
+#[derive(utoipa::OpenApi)] #[openapi(paths(publish,check,releases,apply),components(schemas(PublishRequest,CheckResponse,ApplyRequest,ApplyResponse)))] pub struct UpdatesApi;
+pub fn router()->Router<ApiState>{Router::new().route("/api/v1/updates/check",get(check)).route("/api/v1/updates/publish",post(publish)).route("/api/v1/updates/releases",get(releases)).route("/api/v1/updates/apply",post(apply))}

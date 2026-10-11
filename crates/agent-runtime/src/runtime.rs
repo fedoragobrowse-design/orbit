@@ -691,6 +691,7 @@ async fn run(
                 let response: ChatResponse = serde_json::from_value(r.get("model_response"))?;
                 let mut tx = lock(pool, scope, task, fence).await?;
                 sqlx::query("INSERT INTO chat_messages(id,owner_id,conversation_id,task_id,role,content,route,tool_calls,turn_key) VALUES($1,$2,$3,$4,'assistant',$5,$6,$7,$8) ON CONFLICT DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(conversation).bind(task).bind(&response.text).bind(r.get::<Option<Value>,_>("route")).bind(json!(response.tool_calls)).bind(format!("assistant:{turn}")).execute(&mut *tx).await?;
+                let user_facts = serde_json::from_value::<Value>(r.get("chat")).ok().and_then(|c| c.get("messages").cloned()).and_then(|m| serde_json::from_value::<Vec<ChatMessage>>(m).ok()).and_then(|ms| ms.iter().rev().find(|m| m.role == "user").map(|m| m.content.clone())).map(|t| orbit_memory::extract_owner_facts(&t)).unwrap_or_default();
                 sqlx::query(
                     "UPDATE conversations SET updated_at=now() WHERE owner_id=$1 AND id=$2",
                 )
@@ -699,6 +700,14 @@ async fn run(
                 .execute(&mut *tx)
                 .await?;
                 tx.commit().await?;
+                // Lightweight memory extractor: durable self-statements in the latest
+                // user turn become memory records. Best-effort, never fails the run.
+                // Runs after commit: ingest opens its own transaction.
+                for (memory_type, subject, value) in user_facts {
+                    let candidate = orbit_memory::Candidate { memory_type, subject, value: serde_json::json!({"text": value}), source_references: vec![], related_entities: vec![], privacy_class: orbit_core::PrivacyClass::Private, confidence: 0.8, valid_until: None, entity_id: None };
+                    let provenance = orbit_memory::owner_provenance(scope, &candidate);
+                    let _ = orbit_memory::ingest(pool, scope, candidate, provenance, None, None).await;
+                }
                 if response.tool_calls.is_empty() {
                     if response.text.trim().is_empty() {
                         return Err(Error::Validation("empty model final response".into()));

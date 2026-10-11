@@ -651,7 +651,89 @@ export function TaskDetail() {
           <Json value={row.evidence} />
         </aside>
       </div>
+      <div className="section">
+        <LiveRun taskId={text(id)} state={text(row.state)} />
+      </div>
     </>
+  );
+}
+type TaskRun = {
+  task_id: string;
+  phase: unknown;
+  model_calls: unknown;
+  model_retries: unknown;
+  turn: unknown;
+  depth: unknown;
+  tool_calls: unknown;
+  tokens: unknown;
+};
+const RUN_STEPS: Record<string, string> = {
+  CONTEXT: "Reading your request",
+  MODEL: "Thinking",
+  MODEL_INFLIGHT: "Thinking",
+  RESPONSE: "Drafting a reply",
+  PROPOSE: "Planning the next step",
+  DISPATCH: "Doing safe work",
+  RESULT: "Checking the result",
+  DONE: "Finished",
+};
+const RUN_ORDER = ["CONTEXT", "MODEL", "RESPONSE", "PROPOSE", "DISPATCH", "RESULT", "DONE"];
+function LiveRun({ taskId, state }: { taskId: string; state: string }) {
+  const active = !TERMINAL_TASK_STATES[state];
+  const runs = useQuery({
+    queryKey: ["task-runs", taskId],
+    queryFn: () => api<{ items: TaskRun[] }>(`/tasks/${taskId}/runs`),
+    enabled: !!taskId,
+    refetchInterval: active ? 2000 : false,
+  });
+  const items = runs.data?.items ?? [];
+  const calls = items.reduce((n, r) => n + (Number(r.model_calls) || 0), 0);
+  const retries = items.reduce((n, r) => n + (Number(r.model_retries) || 0), 0);
+  const tokens = items.reduce((n, r) => n + (Number(r.tokens) || 0), 0);
+  const tools = items.reduce((n, r) => n + (Number(r.tool_calls) || 0), 0);
+  return (
+    <section className="panel">
+      <h2>Live run</h2>
+      {runs.isPending && <p role="status">Loading run…</p>}
+      {runs.error && <ErrorNotice error={runs.error} retry={() => runs.refetch()} />}
+      {runs.data && !items.length && (
+        <p className="muted">No agent run recorded for this task yet.</p>
+      )}
+      {!!items.length && (
+        <>
+          <p className="muted">
+            {calls} model {calls === 1 ? "call" : "calls"} · {retries}{" "}
+            {retries === 1 ? "retry" : "retries"} · {tools} tool{" "}
+            {tools === 1 ? "call" : "calls"} · {tokens} tokens counted
+            {active ? " · updating every 2 seconds" : " · final"}.
+          </p>
+          {items.map((r) => {
+            const phase = text(r.phase);
+            const seen = RUN_ORDER.indexOf(phase.replace("MODEL_INFLIGHT", "MODEL"));
+            const depth = Number(r.depth) || 0;
+            return (
+              <div key={text(r.task_id)} style={{ marginLeft: depth * 16 }}>
+                <div className="row-meta">
+                  <Status value={phase} />
+                  <span>
+                    {RUN_STEPS[phase] ?? label(phase)}
+                    {depth > 0 ? ` · helper level ${depth}` : ""}
+                  </span>
+                </div>
+                <p className="muted">
+                  {RUN_ORDER.filter((_, i) => seen < 0 || i <= seen).join(" → ")}
+                </p>
+                <p className="muted">
+                  Turn {text(r.turn)} · {text(r.model_calls)} model{" "}
+                  {Number(r.model_calls) === 1 ? "call" : "calls"} ·{" "}
+                  {text(r.tokens)} tokens counted
+                </p>
+              </div>
+            );
+          })}
+        </>
+      )}
+    </section>
   );
 }
 type SpendCall = {
@@ -879,6 +961,9 @@ type SettingsData = {
   allow_private_cloud: boolean;
   agent_backend: string;
   inbox_enabled: boolean;
+  sandbox_enabled: boolean;
+  agent_may_change_settings: boolean;
+  agent_may_manage_mcp: boolean;
   revision: number;
 };
 const HIDEABLE_TABS: [string, string, string][] = FAMILIES.flatMap((f) =>
@@ -886,6 +971,11 @@ const HIDEABLE_TABS: [string, string, string][] = FAMILIES.flatMap((f) =>
     .filter(([path]) => path !== "/" && path !== "/settings")
     .map(([path, name]) => [f.title, path, name] as [string, string, string]),
 );
+const THEME_VARS: Record<string, Record<string, string>> = {
+  dusk: { "--ground": "#221c2e", "--surface": "#2d2540", "--ink": "#f0eaf7", "--action": "#e8a04c", "--secondary": "#b3a8c7", "--line": "#453a5c" },
+  tide: { "--ground": "#eef3f1", "--surface": "#ffffff", "--ink": "#1f2e2b", "--action": "#0e7490", "--secondary": "#5c6f6a", "--line": "#cfdcd8" },
+  paper: { "--ground": "#ffffff", "--surface": "#ffffff", "--ink": "#000000", "--action": "#000000", "--secondary": "#444444", "--line": "#999999" },
+};
 function TabVisibility() {
   const [hidden, setHidden] = useState<string[]>(() => {
     try {
@@ -921,6 +1011,64 @@ function TabVisibility() {
           {group} · {name}
         </label>
       ))}
+    </section>
+  );
+}
+function ThemePicker() {
+  const themes: Record<string, { label: string; hint: string }> = {
+    default: { label: "Porch light", hint: "Warm paper, green accents" },
+    dusk: { label: "Dusk", hint: "Deep plum, amber accents" },
+    tide: { label: "Tide", hint: "Sea slate, teal accents" },
+    paper: { label: "Paper", hint: "High contrast black on white" },
+  };
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem("orbit.theme") ?? "default";
+    } catch {
+      return "default";
+    }
+  });
+  const [custom, setCustom] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("orbit.theme.custom") ?? "{}");
+    } catch {
+      return {};
+    }
+  });
+  const apply = (name: string, vars: Record<string, string>) => {
+    setTheme(name);
+    setCustom(vars);
+    try {
+      localStorage.setItem("orbit.theme", name);
+      localStorage.setItem("orbit.theme.custom", JSON.stringify(vars));
+    } catch { /* private mode */ }
+    const root = document.documentElement;
+    for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v);
+    if (name === "default") {
+      for (const k of ["--ground", "--surface", "--ink", "--action", "--secondary", "--line"]) root.style.removeProperty(k);
+    }
+  };
+  return (
+    <section className="panel form">
+      <h2>Theme</h2>
+      <p className="muted">Pick a look, or mix your own colors below. Applies instantly.</p>
+      <div className="theme-row" role="radiogroup" aria-label="Theme">
+        {Object.entries(themes).map(([name, t]) => (
+          <label key={name} className={theme === name ? "theme-active" : ""}>
+            <input type="radio" name="orbit-theme" checked={theme === name} onChange={() => apply(name, name === "default" ? {} : THEME_VARS[name] ?? {})} />
+            <strong>{t.label}</strong>
+            <span className="muted">{t.hint}</span>
+          </label>
+        ))}
+      </div>
+      <div className="theme-custom">
+        {(["--ground", "--surface", "--ink", "--action", "--secondary", "--line"] as const).map((k) => (
+          <label key={k}>
+            {k}
+            <input type="color" value={custom[k] ?? "#808080"} onChange={(e) => apply("custom", { ...custom, [k]: e.target.value })} />
+          </label>
+        ))}
+      </div>
     </section>
   );
 }
@@ -1069,10 +1217,69 @@ export function Settings() {
             to gather items in the AI Inbox tab; treat everything there as
             untrusted until you have checked it.
           </p>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.sandbox_enabled ?? false}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  sandbox_enabled: e.target.checked,
+                })
+              }
+            />
+            Run tools inside a sandbox (AIec)
+          </label>
+          <p className="muted">
+            Off means tools run directly on this machine, still checked by
+            policy before they run. Turn it on to route every tool
+            interaction through the isolated sandbox instead.
+          </p>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.agent_may_change_settings ?? false}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  agent_may_change_settings: e.target.checked,
+                })
+              }
+            />
+            Let the agent change everyday settings itself
+          </label>
+          <p className="muted">
+            Off means only you can change settings. When on, the agent may
+            change everyday preferences, but never keys, identity, or these
+            very permissions.
+          </p>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.agent_may_manage_mcp ?? false}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  agent_may_manage_mcp: e.target.checked,
+                })
+              }
+            />
+            Let the agent manage its own tool connections
+          </label>
+          <p className="muted">
+            Off means only you add or remove tool connections. When on, the
+            agent may connect tools it needs, always inside the sandbox.
+          </p>
           <button disabled={save.isPending}>Save</button>
         </form>
       )}
+      <UpdaterSection />
+      <McpSection />
+      <SkillsSection />
+      <QuestionsSection />
+      <DocsSection />
       <TabVisibility />
+      <ThemePicker />
       <PushToggle />
       <UpdateNotice />
       <section className="panel form">
@@ -1088,6 +1295,148 @@ export function Settings() {
       <PasswordSecurity />
       <ApiTokens />
     </>
+  );
+}
+function UpdaterSection() {
+  const client = useQueryClient();
+  const [state, setState] = useState("");
+  const check = useMutation({
+    mutationFn: () => api<{ update_available: boolean; latest_version: string; digest: string; notes: string }>("/updates/check?channel=stable&current=web-0.1.0"),
+    onSuccess: (d) => setState(d.update_available ? `New version ready: ${d.latest_version}.` : `You are up to date (latest seen: ${d.latest_version}).`),
+    onError: () => setState(""),
+  });
+  const releases = useQuery({ queryKey: ["updates-releases"], queryFn: () => api<{ items: RecordData[] }>("/updates/releases") });
+  const apply = useMutation({
+    mutationFn: (version: string) => post<{ applied: boolean; version: string; restart_required: boolean }>("/updates/apply", { version, confirm: true }),
+    onSuccess: (d) => { setState(`Version ${d.version} is staged. Restart Orbit to start using it.`); client.invalidateQueries({ queryKey: ["updates-releases"] }); },
+  });
+  return (
+    <section className="panel form">
+      <h2>Updates</h2>
+      <p className="muted">Check for a new release, then stage it. Orbit never restarts itself — you restart when ready.</p>
+      <div className="actions"><button disabled={check.isPending} onClick={() => check.mutate()}>Check for updates</button></div>
+      {state && <p role="status">{state}</p>}
+      {check.data?.notes ? <p className="muted">{text(check.data.notes)}</p> : null}
+      {check.error && <ErrorNotice error={check.error} retry={() => check.reset()} />}
+      {releases.data && (releases.data.items ?? []).length > 0 && (
+        <table>
+          <thead><tr><th scope="col">Version</th><th scope="col">Notes</th><th scope="col">Actions</th></tr></thead>
+          <tbody>
+            {(releases.data.items ?? []).map((row) => (
+              <tr key={String(row.version)}>
+                <th scope="row">{text(row.version)}</th>
+                <td>{text(row.notes) || "—"}</td>
+                <td><div className="actions"><button className="secondary" disabled={apply.isPending} onClick={() => apply.mutate(String(row.version))}>Use this version</button></div></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {apply.error && <ErrorNotice error={apply.error} retry={() => apply.reset()} />}
+    </section>
+  );
+}
+function McpSection() {
+  const conns = useQuery({ queryKey: ["settings-mcp"], queryFn: () => api<{ items: RecordData[] }>("/mcp/connections") });
+  const grants = useQuery({ queryKey: ["settings-grants"], queryFn: () => api<{ items: RecordData[] }>("/grants?limit=50") });
+  const items = conns.data?.items ?? [];
+  const grantCount = grants.data?.items.length ?? 0;
+  return (
+    <section className="panel form">
+      <h2>Tool connections</h2>
+      <p className="muted">
+        Manage connections in <Link to="/connections/mcp">Connections</Link>.{" "}
+        {items.length ? `${items.length} connected.` : "Nothing connected yet."}{" "}
+        {grantCount ? `${grantCount} standing approval${grantCount === 1 ? "" : "s"} let tools act without asking each time — see Approvals to revoke.` : "No standing approvals: every risky tool call asks you first in Approvals."}
+      </p>
+      {conns.error ? <ErrorNotice error={conns.error} retry={() => conns.refetch()} /> : null}
+    </section>
+  );
+}
+function SkillsSection() {
+  const client = useQueryClient();
+  const skills = useQuery({ queryKey: ["settings-skills"], queryFn: () => api<{ items: RecordData[] }>("/skills") });
+  const installs = useQuery({ queryKey: ["settings-installs"], queryFn: () => api<{ items: RecordData[] }>("/marketplace/installs") });
+  const toggle = useMutation({
+    mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) => post(`/skills/${encodeURIComponent(name)}/enabled`, { enabled }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["settings-skills"] }),
+  });
+  const rows = skills.data?.items ?? [];
+  const pkgs = installs.data?.items ?? [];
+  return (
+    <section className="panel form">
+      <h2>Skills</h2>
+      <p className="muted">Skills are things the agent knows how to do. Switch one off and the agent stops offering it.</p>
+      {skills.error ? <ErrorNotice error={skills.error} retry={() => skills.refetch()} /> : !rows.length ? <p className="muted">No local skills yet.</p> : (
+        <table>
+          <thead><tr><th scope="col">Skill</th><th scope="col">What it does</th><th scope="col">On</th></tr></thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={String(row.name)}>
+                <th scope="row">{text(row.name)}</th>
+                <td>{text(row.description) || "—"}</td>
+                <td><input type="checkbox" aria-label={`${text(row.name)} enabled`} checked={Boolean(row.enabled)} onChange={(e) => toggle.mutate({ name: String(row.name), enabled: e.target.checked })} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {toggle.error && <ErrorNotice error={toggle.error} retry={() => toggle.reset()} />}
+      <p className="muted">
+        {pkgs.length ? `${pkgs.length} marketplace package${pkgs.length === 1 ? "" : "s"} installed — manage them in ` : "No marketplace packages installed. Browse them in "}
+        <Link to="/marketplace">Marketplace</Link>.
+      </p>
+    </section>
+  );
+}
+function QuestionsSection() {
+  const client = useQueryClient();
+  const q = useQuery({ queryKey: ["settings-questions"], queryFn: () => api<{ items: RecordData[] }>("/questions?state=OPEN") });
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const answer = useMutation({
+    mutationFn: ({ id, text: t }: { id: string; text: string }) => post(`/questions/${id}/answer`, { answer: t }),
+    onSuccess: () => { setAnswers({}); client.invalidateQueries({ queryKey: ["settings-questions"] }); },
+  });
+  const rows = q.data?.items ?? [];
+  return (
+    <section className="panel form">
+      <h2>Agent questions</h2>
+      <p className="muted">When the agent is stuck it asks here. Answer in plain words and it carries on.</p>
+      {q.error ? <ErrorNotice error={q.error} retry={() => q.refetch()} /> : !rows.length ? <p className="muted">No open questions. Nothing needs you.</p> : (
+        <ul>
+          {rows.map((row) => {
+            const id = String(row.id);
+            return (
+              <li key={id}>
+                <p>{text(row.question)}</p>
+                {Array.isArray(row.options) && (row.options as unknown[]).length > 0 && (
+                  <p className="muted">Suggestions: {(row.options as unknown[]).map((o) => text(o)).join(" · ")}</p>
+                )}
+                <div className="actions">
+                  <Input label={`Answer to: ${text(row.question).slice(0, 40)}`} value={answers[id] ?? ""} onChange={(e) => setAnswers((a) => ({ ...a, [id]: e.target.value }))} placeholder="Type your answer" maxLength={2000} />
+                  <button disabled={!(answers[id] ?? "").trim() || answer.isPending} onClick={() => answer.mutate({ id, text: (answers[id] ?? "").trim() })}>Send answer</button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {answer.error && <ErrorNotice error={answer.error} retry={() => answer.reset()} />}
+    </section>
+  );
+}
+const DOC_PAGES = [["overview", "What Orbit is"], ["settings", "Settings explained"], ["memory", "How memory works"], ["tools", "What the agent can do"]] as const;
+function DocsSection() {
+  return (
+    <section className="panel form">
+      <h2>Guides</h2>
+      <p className="muted">Short guides, same words the agent reads.</p>
+      <ul>
+        {DOC_PAGES.map(([page, title]) => (
+          <li key={page}><Link to={`/docs/${page}`}>{title}</Link></li>
+        ))}
+      </ul>
+    </section>
   );
 }
 function ApiTokens() {

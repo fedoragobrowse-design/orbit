@@ -849,7 +849,46 @@ pre.rich-code {
 .chat-composer textarea {
   min-height: 64px;
 }
-.chat-pickers { display: grid; grid-template-columns: 1fr 1fr 160px; gap: 8px; padding: 8px 12px; }
+.chat-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+}
+.chat-image img {
+  max-width: 320px;
+  max-height: 240px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  display: block;
+}
+.chat-image figcaption {
+  color: var(--secondary);
+  margin-top: 4px;
+}
+.chat-attached {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 13px;
+  color: var(--secondary);
+}
+.attach-image {
+  display: inline-block;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.file-thumb img {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  vertical-align: middle;
+  margin-right: 8px;
+}
 @media (max-width: 900px) { .chat-pickers { grid-template-columns: 1fr; } }
 @media (max-width: 900px) {
   .chat-shell {
@@ -1465,4 +1504,38 @@ dialog::backdrop {
     animation: none !important;
     transition: none !important;
   }
+}
+.theme-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.theme-row label {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+}
+.theme-active {
+  outline: 2px solid var(--action);
+  outline-offset: -2px;
+}
+.theme-custom {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+.theme-custom label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
 }

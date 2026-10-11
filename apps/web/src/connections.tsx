@@ -1762,7 +1762,20 @@ function StoredFiles() {
           <tbody>
             {items.map((row) => (
               <tr key={String(row.id)}>
-                <th scope="row">{text(row.name)}</th>
+                <th scope="row">
+                  {String(row.mime_type ?? "").startsWith("image/") ? (
+                    <span className="file-thumb">
+                      <img
+                        loading="lazy"
+                        src={`/api/v1/files/${row.id}/content`}
+                        alt={text(row.name) || "Stored image"}
+                      />
+                      {text(row.name)}
+                    </span>
+                  ) : (
+                    text(row.name)
+                  )}
+                </th>
                 <td>{text(row.mime_type)}</td>
                 <td>{text(row.size)}</td>
                 <td>
