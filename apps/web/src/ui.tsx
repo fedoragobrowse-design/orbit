@@ -250,6 +250,42 @@ export function Confirm({
     </dialog>
   );
 }
+export function Modal({
+  title,
+  children,
+  onClose,
+  pending = false,
+}: {
+  title: string;
+  children: ReactNode;
+  onClose: () => void;
+  pending?: boolean;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const previous = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    previous.current = document.activeElement as HTMLElement;
+    ref.current?.showModal();
+    return () => previous.current?.focus();
+  }, []);
+  return (
+    <dialog
+      ref={ref}
+      onCancel={(e) => {
+        e.preventDefault();
+        if (!pending) onClose();
+      }}
+    >
+      <h2>{title}</h2>
+      {children}
+      <div className="actions">
+        <button className="secondary" disabled={pending} onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    </dialog>
+  );
+}
 export function Resource({
   path,
   empty,

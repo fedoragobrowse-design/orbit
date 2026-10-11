@@ -19,6 +19,7 @@ import {
   Field,
   Input,
   Json,
+  Modal,
   PageHeader,
   Select,
   Status,
@@ -627,6 +628,7 @@ function Calendars() {
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
   const [day, setDay] = useState<string | null>(null);
+  const [eventOpen, setEventOpen] = useState(false);
   const [form, setForm] = useState({ title: "", starts: "", ends: "" });
   const from = new Date(year, month, 1).toISOString();
   const to = new Date(year, month + 1, 1).toISOString();
@@ -641,7 +643,7 @@ function Calendars() {
       starts_at: new Date(form.starts).toISOString(),
       ends_at: form.ends ? new Date(form.ends).toISOString() : undefined,
     }),
-    onSuccess: () => { setForm({ title: "", starts: "", ends: "" }); setDay(null); invalidate(); },
+    onSuccess: () => { setForm({ title: "", starts: "", ends: "" }); setEventOpen(false); invalidate(); },
   });
   if (sources.isPending) return (<div className="panel"><p role="status">Loading calendars…</p></div>);
   if (sources.error) return (<div className="panel"><ErrorNotice error={sources.error} retry={() => sources.refetch()} /></div>);
@@ -709,6 +711,14 @@ function Calendars() {
               ))}
             </ul>
           )}
+          <div className="actions">
+            <button onClick={() => { addEvent.reset(); setEventOpen(true); }}>Add event</button>
+            <button type="button" className="secondary" onClick={() => setDay(null)}>Close</button>
+          </div>
+        </section>
+      )}
+      {eventOpen && (
+        <Modal title="Add event" onClose={() => setEventOpen(false)} pending={addEvent.isPending}>
           <form
             className="grid"
             onSubmit={(e) => { e.preventDefault(); addEvent.mutate(); }}
@@ -718,11 +728,10 @@ function Calendars() {
             <Input label="Ends (optional)" type="datetime-local" value={form.ends} onChange={(e) => setForm({ ...form, ends: e.target.value })} />
             <div className="actions">
               <button disabled={addEvent.isPending || !form.title.trim() || !form.starts}>{addEvent.isPending ? "Adding…" : "Add event"}</button>
-              <button type="button" className="secondary" onClick={() => setDay(null)}>Close</button>
             </div>
           </form>
           {addEvent.error && <ErrorNotice error={addEvent.error} retry={() => addEvent.reset()} />}
-        </section>
+        </Modal>
       )}
       <p>
         <button type="button" className="secondary" onClick={() => setShowFeeds((v) => !v)}>

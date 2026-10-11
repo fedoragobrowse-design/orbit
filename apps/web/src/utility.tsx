@@ -6,6 +6,7 @@ import {
   Empty,
   ErrorNotice,
   Input,
+  Modal,
   PageHeader,
   Status,
   Textarea,
@@ -35,6 +36,7 @@ export function Reminders() {
   });
   const [title, setTitle] = useState("");
   const [when, setWhen] = useState("");
+  const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<RecordData | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editWhen, setEditWhen] = useState("");
@@ -46,6 +48,7 @@ export function Reminders() {
     onSuccess: () => {
       setTitle("");
       setWhen("");
+      setShowNew(false);
       refreshKey(client, ["reminders"]);
     },
   });
@@ -90,37 +93,44 @@ export function Reminders() {
         title="Reminders"
         description="Things to do, with an optional date and time."
       />
-      {list.error && <ErrorNotice error={list.error} retry={() => list.refetch()} />}
-      <section className="panel form section" aria-label="New reminder">
-        <h2>New reminder</h2>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate({
-              title,
-              remind_at: when ? new Date(when).toISOString() : null,
-            });
-          }}
+      <div className="section">
+        <button onClick={() => setShowNew(true)}>New reminder</button>
+      </div>
+      {showNew && (
+        <Modal
+          title="New reminder"
+          onClose={() => setShowNew(false)}
+          pending={create.isPending}
         >
-          <Input
-            label="Title"
-            value={title}
-            maxLength={280}
-            required
-            onChange={(e) => setTitle(e.target.value)}
-          />
-          <Input
-            label="Remind at (optional)"
-            type="datetime-local"
-            value={when}
-            onChange={(e) => setWhen(e.target.value)}
-          />
-          <button disabled={create.isPending || !title.trim()}>
-            {create.isPending ? "Saving…" : "Save reminder"}
-          </button>
-        </form>
-        {create.error && <ErrorNotice error={create.error} />}
-      </section>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              create.mutate({
+                title,
+                remind_at: when ? new Date(when).toISOString() : null,
+              });
+            }}
+          >
+            <Input
+              label="Title"
+              value={title}
+              maxLength={280}
+              required
+              onChange={(e) => setTitle(e.target.value)}
+            />
+            <Input
+              label="Remind at (optional)"
+              type="datetime-local"
+              value={when}
+              onChange={(e) => setWhen(e.target.value)}
+            />
+            <button disabled={create.isPending || !title.trim()}>
+              {create.isPending ? "Saving…" : "Save reminder"}
+            </button>
+          </form>
+          {create.error && <ErrorNotice error={create.error} />}
+        </Modal>
+      )}
       <section className="section" aria-label="Saved reminders">
         <div className="panel">
           <h2>Saved reminders</h2>
@@ -166,7 +176,7 @@ export function Reminders() {
               </table>
             ) : (
               <Empty title="No reminders yet">
-                Add one above, or import a batch below.
+                Use the button above, or import a batch below.
               </Empty>
             ))}
         </div>
@@ -257,6 +267,7 @@ export function Contacts() {
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [notes, setNotes] = useState("");
+  const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<RecordData | null>(null);
   const [draft, setDraft] = useState({ name: "", email: "", phone: "", notes: "" });
   const [deleting, setDeleting] = useState<RecordData | null>(null);
@@ -272,6 +283,7 @@ export function Contacts() {
       setEmail("");
       setPhone("");
       setNotes("");
+      setShowNew(false);
       refreshKey(client, ["contacts"]);
     },
   });
@@ -322,45 +334,53 @@ export function Contacts() {
         description="People and places you want to keep track of."
       />
       {list.error && <ErrorNotice error={list.error} retry={() => list.refetch()} />}
-      <section className="panel form section" aria-label="New contact">
-        <h2>New contact</h2>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate({ name, email, phone, notes });
-          }}
+      <div className="section">
+        <button onClick={() => setShowNew(true)}>New contact</button>
+      </div>
+      {showNew && (
+        <Modal
+          title="New contact"
+          onClose={() => setShowNew(false)}
+          pending={create.isPending}
         >
-          <Input
-            label="Name"
-            value={name}
-            maxLength={200}
-            required
-            onChange={(e) => setName(e.target.value)}
-          />
-          <Input
-            label="Email (optional)"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          <Input
-            label="Phone (optional)"
-            type="tel"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-          />
-          <Textarea
-            label="Notes (optional)"
-            rows={3}
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-          />
-          <button disabled={create.isPending || !name.trim()}>
-            {create.isPending ? "Saving…" : "Save contact"}
-          </button>
-        </form>
-        {create.error && <ErrorNotice error={create.error} />}
-      </section>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              create.mutate({ name, email, phone, notes });
+            }}
+          >
+            <Input
+              label="Name"
+              value={name}
+              maxLength={200}
+              required
+              onChange={(e) => setName(e.target.value)}
+            />
+            <Input
+              label="Email (optional)"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <Input
+              label="Phone (optional)"
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+            />
+            <Textarea
+              label="Notes (optional)"
+              rows={3}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+            />
+            <button disabled={create.isPending || !name.trim()}>
+              {create.isPending ? "Saving…" : "Save contact"}
+            </button>
+          </form>
+          {create.error && <ErrorNotice error={create.error} />}
+        </Modal>
+      )}
       <section className="section" aria-label="Saved contacts">
         <div className="panel">
           <h2>Saved contacts</h2>
@@ -404,7 +424,7 @@ export function Contacts() {
               </table>
             ) : (
               <Empty title="No contacts yet">
-                Add one above, or import a batch below.
+                Use the button above, or import a batch below.
               </Empty>
             ))}
         </div>
@@ -492,6 +512,7 @@ export function Bookmarks() {
   });
   const [url, setUrl] = useState("");
   const [title, setTitle] = useState("");
+  const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<RecordData | null>(null);
   const [editUrl, setEditUrl] = useState("");
   const [editTitle, setEditTitle] = useState("");
@@ -502,6 +523,7 @@ export function Bookmarks() {
     onSuccess: () => {
       setUrl("");
       setTitle("");
+      setShowNew(false);
       refreshKey(client, ["bookmarks"]);
     },
   });
@@ -537,34 +559,42 @@ export function Bookmarks() {
         description="Pages worth finding again. Links must start with http:// or https://."
       />
       {list.error && <ErrorNotice error={list.error} retry={() => list.refetch()} />}
-      <section className="panel form section" aria-label="New bookmark">
-        <h2>New bookmark</h2>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate({ url, title });
-          }}
+      <div className="section">
+        <button onClick={() => setShowNew(true)}>New bookmark</button>
+      </div>
+      {showNew && (
+        <Modal
+          title="New bookmark"
+          onClose={() => setShowNew(false)}
+          pending={create.isPending}
         >
-          <Input
-            label="Link"
-            type="url"
-            value={url}
-            placeholder="https://example.com"
-            required
-            onChange={(e) => setUrl(e.target.value)}
-          />
-          <Input
-            label="Title (optional)"
-            value={title}
-            maxLength={280}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-          <button disabled={create.isPending || !url.trim()}>
-            {create.isPending ? "Saving…" : "Save bookmark"}
-          </button>
-        </form>
-        {create.error && <ErrorNotice error={create.error} />}
-      </section>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              create.mutate({ url, title });
+            }}
+          >
+            <Input
+              label="Link"
+              type="url"
+              value={url}
+              placeholder="https://example.com"
+              required
+              onChange={(e) => setUrl(e.target.value)}
+            />
+            <Input
+              label="Title (optional)"
+              value={title}
+              maxLength={280}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+            <button disabled={create.isPending || !url.trim()}>
+              {create.isPending ? "Saving…" : "Save bookmark"}
+            </button>
+          </form>
+          {create.error && <ErrorNotice error={create.error} />}
+        </Modal>
+      )}
       <section className="section" aria-label="Saved bookmarks">
         <div className="panel">
           <h2>Saved bookmarks</h2>
@@ -615,7 +645,7 @@ export function Bookmarks() {
               </table>
             ) : (
               <Empty title="No bookmarks yet">
-                Add one above, or import a batch below.
+                Use the button above, or import a batch below.
               </Empty>
             ))}
         </div>
@@ -695,6 +725,7 @@ export function Clips() {
   });
   const [source, setSource] = useState("");
   const [clipText, setClipText] = useState("");
+  const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<RecordData | null>(null);
   const [editSource, setEditSource] = useState("");
   const [editText, setEditText] = useState("");
@@ -705,6 +736,7 @@ export function Clips() {
     onSuccess: () => {
       setSource("");
       setClipText("");
+      setShowNew(false);
       refreshKey(client, ["clips"]);
     },
   });
@@ -740,33 +772,41 @@ export function Clips() {
         description="Snippets you pasted or saved from elsewhere. Treat them as untrusted until you have checked them."
       />
       {list.error && <ErrorNotice error={list.error} retry={() => list.refetch()} />}
-      <section className="panel form section" aria-label="New clip">
-        <h2>New clip</h2>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate({ source, text: clipText });
-          }}
+      <div className="section">
+        <button onClick={() => setShowNew(true)}>New clip</button>
+      </div>
+      {showNew && (
+        <Modal
+          title="New clip"
+          onClose={() => setShowNew(false)}
+          pending={create.isPending}
         >
-          <Input
-            label="Where is it from? (optional)"
-            value={source}
-            maxLength={512}
-            onChange={(e) => setSource(e.target.value)}
-          />
-          <Textarea
-            label="Clip text"
-            rows={5}
-            value={clipText}
-            required
-            onChange={(e) => setClipText(e.target.value)}
-          />
-          <button disabled={create.isPending || !clipText.trim()}>
-            {create.isPending ? "Saving…" : "Save clip"}
-          </button>
-        </form>
-        {create.error && <ErrorNotice error={create.error} />}
-      </section>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              create.mutate({ source, text: clipText });
+            }}
+          >
+            <Input
+              label="Where is it from? (optional)"
+              value={source}
+              maxLength={512}
+              onChange={(e) => setSource(e.target.value)}
+            />
+            <Textarea
+              label="Clip text"
+              rows={5}
+              value={clipText}
+              required
+              onChange={(e) => setClipText(e.target.value)}
+            />
+            <button disabled={create.isPending || !clipText.trim()}>
+              {create.isPending ? "Saving…" : "Save clip"}
+            </button>
+          </form>
+          {create.error && <ErrorNotice error={create.error} />}
+        </Modal>
+      )}
       <section className="section" aria-label="Saved clips">
         <div className="panel">
           <h2>Saved clips</h2>
@@ -819,7 +859,7 @@ export function Clips() {
               </table>
             ) : (
               <Empty title="No clips yet">
-                Paste one above, or import a batch below.
+                Use the button above, or import a batch below.
               </Empty>
             ))}
         </div>
