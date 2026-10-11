@@ -27,9 +27,8 @@ services:
       DATABASE_URL: postgres://orbit_runtime:${ORBIT_APP_DB_PASSWORD}@postgres:5432/orbit
       ORBIT_MIGRATION_DATABASE_URL: postgres://orbit:${ORBIT_DB_PASSWORD}@postgres:5432/orbit
       ORBIT_BIND: 0.0.0.0:3000
-      # Pi has no KVM: run the server with ORBIT_AIEC_RUNTIME=docker so sandbox
-      # creates ask AIec for the docker runtime. Default is firecracker.
-      ORBIT_AIEC_RUNTIME: ${ORBIT_AIEC_RUNTIME:-firecracker}
+      ORBIT_KEY_DIR: /var/lib/orbit/keys
+      ORBIT_ARTIFACT_DIR: /var/lib/orbit/artifacts
     volumes: ["keys:/var/lib/orbit/keys", "artifacts:/var/lib/orbit/artifacts"]
     depends_on:
       postgres: {condition: service_healthy}
