@@ -107,10 +107,13 @@ named gaps. **UNAVAILABLE** = names the exact missing prerequisite.
 
 Milestones 1–10 are live in the API router (`crates/api/src/lib.rs::router()`
 merges auth, foundation, models, gateway, memory, automations, runtimes,
-email, mcp, marketplace, computers, agents, push, ops, updates, brief,
-calendar, connectors, uploads, tokens, utility_tabs, notes, inbox) and wired
+email, mcp, marketplace, computers, agents, push, ops, updates, search,
+brief, calendar, connectors, tokens, uploads, utility_tabs, notes, inbox)
+and wired
 in the web workspace: setup/login, settings (incl. `agent_backend` +
-`inbox_enabled`), events, tasks with recovery, activity, notifications,
+`inbox_enabled`), events, tasks with settled detail record + state-appropriate
+recovery (Cancel while active, Retry on FAILED/TIMED_OUT/CANCELLED, reconcile
+when calls are unresolved), activity, notifications,
 live stream, provider/model catalog (M2), agent runtime and chat (M3),
 approvals (M4), computers tab with live/dead + files import/quarantine +
 Home Assistant entities/sync (P4), memory and retention (M7), automations
