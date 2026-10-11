@@ -61,6 +61,7 @@ async fn main() -> Result<(), String> {
             image: image.clone(),
             disk_mb,
             lifetime_seconds: 1680,
+            runtime_kind: orbit_aiec_runtime::default_runtime_kind(),
         },
         key,
     )

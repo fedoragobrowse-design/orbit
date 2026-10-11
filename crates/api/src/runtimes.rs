@@ -79,6 +79,7 @@ async fn connection_input(
         image: input.image,
         disk_mb: input.disk_mb,
         lifetime_seconds: input.lifetime_seconds,
+        runtime_kind: orbit_aiec_runtime::default_runtime_kind(),
     };
     config.validate()?;
     // Admission resolves/pins in the server namespace; it does not contact AIec or prove capacity.

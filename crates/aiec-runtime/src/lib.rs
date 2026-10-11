@@ -31,7 +31,12 @@ pub struct ConnectionConfig {
     pub image: String,
     pub disk_mb: u32,
     pub lifetime_seconds: u64,
+    /// AIec runtime kind: `firecracker` (default server) or `docker` (Pi — no
+    /// KVM). Read from `ORBIT_AIEC_RUNTIME`; the create body carries it.
+    #[serde(default = "default_runtime_kind")]
+    pub runtime_kind: String,
 }
+pub fn default_runtime_kind() -> String { std::env::var("ORBIT_AIEC_RUNTIME").unwrap_or_else(|_| "firecracker".into()) }
 impl ConnectionConfig {
     pub fn validate(&self) -> Result<()> {
         let u = reqwest::Url::parse(&self.origin)
@@ -49,6 +54,9 @@ impl ConnectionConfig {
             || self.ca_pem.as_ref().is_some_and(|v| v.len() > 65536)
         {
             return Err(Error::Validation("AIec needs an exact origin, pinned admitted addresses, image, disk floor and 1680-second ceiling".into()));
+        }
+        if self.runtime_kind != "firecracker" && self.runtime_kind != "docker" {
+            return Err(Error::Validation("AIec runtime kind is firecracker or docker".into()));
         }
         if u.scheme() != "https"
             && !(u.scheme() == "http"
@@ -85,7 +93,7 @@ pub struct Network {
 #[derive(Serialize)]
 struct CreateBody<'a> {
     image: &'a str,
-    runtime: &'static str,
+    runtime: &'a str,
     isolation: &'static str,
     cpu: u32,
     memory_mb: u32,
@@ -201,7 +209,7 @@ impl AIecRuntime {
     }
     pub fn validate_running(&self, sandbox: &Sandbox, spec: &RuntimeSpec) -> Result<RuntimeHandle> {
         if sandbox.id != spec.run_id
-            || sandbox.runtime != "firecracker"
+            || sandbox.runtime != self.config.runtime_kind
             || sandbox.cpu != 1
             || sandbox.memory_mb != 512
             || sandbox.disk_mb != spec.disk_mb
@@ -212,11 +220,7 @@ impl AIecRuntime {
                 .pointer("/guard/topology")
                 .and_then(Value::as_str)
                 != Some("outside")
-            || sandbox
-                .environment
-                .pointer("/guard/policy_template")
-                .and_then(Value::as_str)
-                != Some("no-network")
+            || !matches!(sandbox.environment.pointer("/guard/policy_template").and_then(Value::as_str), Some("no-network") | Some("brokered-egress"))
         {
             return Err(Error::Forbidden);
         }
@@ -378,7 +382,7 @@ impl TaskRuntime for AIecRuntime {
         };
         let body = CreateBody {
             image: &spec.image,
-            runtime: "firecracker",
+            runtime: &self.config.runtime_kind,
             isolation: "microvm",
             cpu: 1,
             memory_mb: 512,
@@ -575,6 +579,14 @@ mod tests {
             !raw.contains("no_network") && !raw.contains("Outside") && !raw.contains("NO_NETWORK")
         );
     }
+    /// Pi kind: `docker` validates and serializes; anything else fails closed.
+    #[test]
+    fn docker_runtime_kind_validates_for_pi() {
+        let mut config = ConnectionConfig { origin: "http://127.0.0.1:8081".into(), admitted_addresses: vec!["127.0.0.1".parse().unwrap()], ca_pem: None, secret_id: Uuid::new_v4(), image: "img".into(), disk_mb: 1024, lifetime_seconds: 1680, runtime_kind: "docker".into() };
+        config.validate().unwrap();
+        config.runtime_kind = "kvm".into();
+        assert!(config.validate().is_err(), "unknown runtime kind must fail closed");
+    }
     /// Brokered egress guard: origin-allowlisted `brokered-egress` template,
     /// kebab-case literals, guest network still disabled, no credentials.
     #[test]
@@ -615,7 +627,7 @@ mod tests {
     /// Fail-closed: an unroutable AIec origin never succeeds and never touches host exec. `readiness` surfaces `Error::Unavailable` (the api `wait_reason` mapping turns it into `WAITING_FOR_RESOURCE` + `AIEC_UNAVAILABLE: …`); `create` must also err, never yield a handle.
     #[tokio::test]
     async fn unreachable_aiec_fails_closed_never_host_exec() {
-        let config = ConnectionConfig { origin: "http://127.0.0.1:9".into(), admitted_addresses: vec!["127.0.0.1".parse().unwrap()], ca_pem: None, secret_id: Uuid::new_v4(), image: "admitted-image".into(), disk_mb: 1024, lifetime_seconds: 1680 };
+        let config = ConnectionConfig { origin: "http://127.0.0.1:9".into(), admitted_addresses: vec!["127.0.0.1".parse().unwrap()], ca_pem: None, secret_id: Uuid::new_v4(), image: "admitted-image".into(), disk_mb: 1024, lifetime_seconds: 1680, runtime_kind: "firecracker".into() };
         let runtime = AIecRuntime::connect(config, Zeroizing::new(b"test-tenant-key".to_vec())).await.expect("client builds without network");
         let err = runtime.readiness().await.expect_err("unreachable AIec must fail readiness, never succeed");
         assert!(matches!(&err, Error::Unavailable(_)), "unreachable AIec must fail closed with Unavailable, got {err:?}");

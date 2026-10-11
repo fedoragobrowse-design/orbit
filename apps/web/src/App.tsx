@@ -1,5 +1,7 @@
 import {
   createContext,
+  lazy,
+  Suspense,
   useContext,
   useEffect,
   useState,
@@ -28,14 +30,20 @@ import {
 import { api, post, queryClient, setSession, type Session } from "./api";
 import { syncPushSubscription } from "./push";
 import { ErrorNotice, Input } from "./ui";
+// Tab bundles split per route so the Pi serves a small first paint: the shell
+// (Home/Chat/Tasks) loads first, heavier tabs load on navigation.
 import { Home, Tasks, TaskDetail, Activity, Settings } from "./workspace";
 import { Chat, Agents } from "./chat";
-import { Approvals } from "./approvals";
-import { Memory, Automations } from "./knowledge";
-import { Models } from "./models";
-import { Marketplace } from "./marketplace";
-import { Connections, Computers, Files } from "./connections";
-import { Ops, GlobalSearch } from "./ops";
+const Approvals = lazy(() => import("./approvals").then((m) => ({ default: m.Approvals })));
+const Memory = lazy(() => import("./knowledge").then((m) => ({ default: m.Memory })));
+const Automations = lazy(() => import("./knowledge").then((m) => ({ default: m.Automations })));
+const Models = lazy(() => import("./models").then((m) => ({ default: m.Models })));
+const Marketplace = lazy(() => import("./marketplace").then((m) => ({ default: m.Marketplace })));
+const Connections = lazy(() => import("./connections").then((m) => ({ default: m.Connections })));
+const Computers = lazy(() => import("./connections").then((m) => ({ default: m.Computers })));
+const Files = lazy(() => import("./connections").then((m) => ({ default: m.Files })));
+const Ops = lazy(() => import("./ops").then((m) => ({ default: m.Ops })));
+const GlobalSearch = lazy(() => import("./ops").then((m) => ({ default: m.GlobalSearch })));
 const DraftContext = createContext<{
   drafts: Record<string, string>;
   save: (key: string, value: string) => void;
@@ -187,6 +195,7 @@ export function App() {
               remain here.
             </div>
           )}
+          <Suspense fallback={<div role="status">Loading…</div>}>
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/chat" element={<Chat />} />
@@ -217,6 +226,7 @@ export function App() {
               }
             />
           </Routes>
+          </Suspense>
         </main>
       </div>
     </DraftContext.Provider>
