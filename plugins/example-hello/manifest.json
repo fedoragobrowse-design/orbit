@@ -1,0 +1,46 @@
+{
+  "manifest_version": 1,
+  "name": "example-hello",
+  "version": "0.1.0",
+  "kind": "skill",
+  "description": "Example hello skill: the smallest plugin shape. One warm greeting, no network, no secrets, read-only workspace access. Copy this directory to start a new plugin.",
+  "content_digest": "sha256:cc9ea1eb62d0b0b8daf932d2a149cb27a95e36bb6a023d040b8c79b2d139d203",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "8dbce8edae4e784eaa4866077a00ba026426e0f894ac96eebcfd0c1d55ed7dce"
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "ddf016de97f2514bf9ec3baa7d18cf704f0ecfaa2b5e95251a6105f86710be8d"
+    }
+  ],
+  "publisher": {
+    "name": "Orbit Example",
+    "key": "GTwd5Qu6MhRHkb/Oma7K/1J7+87EpbaSvA4sZ4jDuY8=",
+    "key_id": "example-2026-dev"
+  },
+  "requested_capabilities": {
+    "network": {
+      "hosts": [],
+      "egress": false
+    },
+    "filesystem": {
+      "scopes": [
+        "workspace"
+      ],
+      "read_only": true
+    },
+    "secrets": [],
+    "tools": []
+  },
+  "trust_level": "experimental",
+  "versions_pinned": {
+    "orbit-manifest": "1"
+  },
+  "signature": {
+    "algorithm": "ed25519",
+    "key_id": "example-2026-dev",
+    "value": "Tf1DGzp8YCMj9fvlziG32HH0XQOeXUSP6kOxUyPg2Uee9MKIV3RNDcdZL80F/nWVIj5BD7oyHhP+keg9MbOCAQ=="
+  }
+}

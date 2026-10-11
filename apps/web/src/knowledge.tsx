@@ -6,6 +6,7 @@ import {
   label,
   post,
   put,
+  remove,
   text,
   timestamp,
   type Page,
@@ -57,7 +58,16 @@ export function DocPage() {
 }
 
 function MemoryList() {
+  const client = useQueryClient();
   const [typeFilter, setTypeFilter] = useState("all");
+  const [deleting, setDeleting] = useState<RecordData | null>(null);
+  const forget = useMutation({
+    mutationFn: (id: string) => remove(`/memory/${id}`),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["/memory"] }),
+  });
+  const closeDelete = () => {
+    if (!forget.isPending) setDeleting(null);
+  };
   return (
     <section className="section" aria-label="Memories">
       <div className="panel">
@@ -125,12 +135,21 @@ function MemoryList() {
                     {shown.map((row) => (
                       <li key={row.id} className="memory-file">
                         <Link className="safe-link memory-file-name" to={`/memory/${row.id}`}>
-                          {text(row.subject)}
+                          {text(row.subject) || "Untitled memory"}
                         </Link>
                         <span className="memory-file-meta">
                           {label(row.type)} · <Status value={row.status} /> ·{" "}
                           {label(row.privacy_class)} · {timestamp(row.updated_at)}
                         </span>
+                        <div className="actions">
+                          <button
+                            type="button"
+                            className="danger"
+                            onClick={() => setDeleting(row)}
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -139,6 +158,28 @@ function MemoryList() {
             );
           }}
         </Resource>
+        {forget.error && (
+          <ErrorNotice error={forget.error} retry={() => forget.reset()} />
+        )}
+        {deleting && (
+          <Confirm
+            title="Delete this memory?"
+            action="Delete"
+            pending={forget.isPending}
+            onClose={closeDelete}
+            onConfirm={() => {
+              forget.mutate(String(deleting.id), {
+                onSuccess: () => setDeleting(null),
+              });
+            }}
+          >
+            <p>
+              {text(deleting.subject) || "This memory"} will be forgotten. Orbit
+              stops using it and keeps only an audit stub. This cannot be
+              undone.
+            </p>
+          </Confirm>
+        )}
       </div>
     </section>
   );
@@ -152,20 +193,31 @@ function MemoryDetail({ id }: { id: string }) {
   });
   const history = useQuery({
     queryKey: ["memory", id, "history"],
-    queryFn: () => api<RecordData[]>(`/memory/${id}/history`),
+    queryFn: () =>
+      api<{ record: RecordData; history: RecordData[]; conflicts: RecordData[] }>(
+        `/memory/${id}/history`,
+      ),
   });
   const [forgetting, setForgetting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [superseding, setSuperseding] = useState(false);
-  const invalidate = () => client.invalidateQueries({ queryKey: ["memory"] });
+  const invalidate = () => {
+    client.invalidateQueries({ queryKey: ["memory"] });
+    client.invalidateQueries({ queryKey: ["/memory"] });
+  };
   const verify = useMutation({
-    mutationFn: (revision: number) =>
+    mutationFn: (version: number) =>
       post<RecordData>(`/memory/${id}/verify`, {
-        expected_revision: revision,
+        expected_revision: version,
       }),
     onSuccess: invalidate,
   });
   const forget = useMutation({
     mutationFn: () => post<RecordData>(`/memory/${id}/forget`),
+    onSuccess: invalidate,
+  });
+  const removeMemory = useMutation({
+    mutationFn: () => remove(`/memory/${id}`),
     onSuccess: invalidate,
   });
   if (record.isPending)
@@ -181,13 +233,14 @@ function MemoryDetail({ id }: { id: string }) {
       </section>
     );
   const row = record.data!;
-  const revision = Number(row.revision ?? 0);
-  const error = verify.error ?? forget.error;
+  const version = Number(row.version ?? 0);
+  const error = verify.error ?? forget.error ?? removeMemory.error;
+  const versions = history.data?.history ?? [];
   return (
     <article className="panel section">
       <header className="page-heading">
         <div>
-          <h2>{text(row.subject)}</h2>
+          <h2>{text(row.subject) || "Untitled memory"}</h2>
           <p className="muted">
             {label(row.type)} · <Status value={row.status} />
           </p>
@@ -199,7 +252,7 @@ function MemoryDetail({ id }: { id: string }) {
       <p>
         <small>
           Confidence {text(row.confidence)}, privacy {label(row.privacy_class)},
-          revision {text(row.revision)}.
+          version {text(row.version)}.
           {row.valid_until
             ? ` Valid until ${timestamp(row.valid_until)}.`
             : ""}
@@ -208,7 +261,7 @@ function MemoryDetail({ id }: { id: string }) {
       <div className="actions">
         <button
           disabled={verify.isPending}
-          onClick={() => verify.mutate(revision)}
+          onClick={() => verify.mutate(version)}
         >
           {verify.isPending ? "Verifying…" : "Verify"}
         </button>
@@ -218,11 +271,27 @@ function MemoryDetail({ id }: { id: string }) {
         <button className="danger" onClick={() => setForgetting(true)}>
           Forget
         </button>
+        <button
+          className="danger"
+          disabled={removeMemory.isPending}
+          onClick={() => setDeleting(true)}
+        >
+          {removeMemory.isPending ? "Deleting…" : "Delete"}
+        </button>
         <Link className="safe-link" to="/memory">
           All memories
         </Link>
       </div>
-      {error && <ErrorNotice error={error} retry={() => forget.reset()} />}
+      {error && (
+        <ErrorNotice
+          error={error}
+          retry={() => {
+            verify.reset();
+            forget.reset();
+            removeMemory.reset();
+          }}
+        />
+      )}
       {forgetting && (
         <Confirm
           title="Forget this memory?"
@@ -230,8 +299,7 @@ function MemoryDetail({ id }: { id: string }) {
           pending={forget.isPending}
           onClose={() => setForgetting(false)}
           onConfirm={() => {
-            forget.mutate();
-            setForgetting(false);
+            forget.mutate(undefined, { onSuccess: () => setForgetting(false) });
           }}
         >
           <p>
@@ -240,10 +308,30 @@ function MemoryDetail({ id }: { id: string }) {
           </p>
         </Confirm>
       )}
+      {deleting && (
+        <Confirm
+          title="Delete this memory?"
+          action="Delete"
+          pending={removeMemory.isPending}
+          onClose={() => {
+            if (!removeMemory.isPending) setDeleting(false);
+          }}
+          onConfirm={() => {
+            removeMemory.mutate(undefined, {
+              onSuccess: () => setDeleting(false),
+            });
+          }}
+        >
+          <p>
+            Orbit stops using this fact and keeps only an audit stub. This
+            cannot be undone.
+          </p>
+        </Confirm>
+      )}
       {superseding && (
         <SupersedeForm
           id={id}
-          revision={revision}
+          revision={version}
           onDone={() => setSuperseding(false)}
         />
       )}
@@ -252,15 +340,16 @@ function MemoryDetail({ id }: { id: string }) {
       {history.error && (
         <ErrorNotice error={history.error} retry={() => history.refetch()} />
       )}
-      {history.data && !history.data.length && (
+      {history.data && versions.length === 0 && (
         <Empty title="No earlier revisions">This memory has not changed yet.</Empty>
       )}
-      {history.data && history.data.length > 0 && (
+      {versions.length > 0 && (
         <ul className="list">
-          {history.data.map((entry, index) => (
-            <li key={text(entry.id) || index}>
-              {timestamp(entry.created_at)} · {text(entry.subject)} ·{" "}
-              <Status value={entry.status} />
+          {versions.map((entry, index) => (
+            <li key={text((entry as RecordData).id) || index}>
+              {timestamp((entry as RecordData).created_at)} ·{" "}
+              {text((entry as RecordData).subject)} ·{" "}
+              <Status value={(entry as RecordData).status} />
             </li>
           ))}
         </ul>

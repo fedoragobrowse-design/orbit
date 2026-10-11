@@ -19,8 +19,23 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 const REPO: &str = "https://raw.githubusercontent.com/fedoragobrowse-design/Orbit-MarketPlace/main";
+/// Validate a custom registry root: https URL, no credentials/query/fragment, bounded length.
+pub fn valid_registry_url(raw: &str) -> Result<String, Error> {
+    let url = raw.trim();
+    if url.len() < 9 || url.len() > 2048 || url.chars().any(char::is_whitespace) || url.chars().any(char::is_control) { return Err(Error::Validation("marketplace registry must be an https URL".into())); }
+    let parsed = reqwest::Url::parse(url).map_err(|_| Error::Validation("marketplace registry must be an https URL".into()))?;
+    if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() || parsed.query().is_some() || parsed.fragment().is_some() || parsed.host_str().is_none() { return Err(Error::Validation("marketplace registry must be an https URL without credentials".into())); }
+    Ok(url.to_owned())
+}
+/// Validate a registry name: lowercase kebab-case, 1-64 chars.
+pub fn valid_registry_name(raw: &str) -> Result<String, Error> {
+    let name = raw.trim().to_owned();
+    if name.is_empty() || name.len() > 64 || !name.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') { return Err(Error::Validation("invalid marketplace registry name".into())); }
+    Ok(name)
+}
 pub fn index_url(entry: Option<&str>) -> String { match entry { Some(n) => format!("{REPO}/entries/{n}/manifest.json"), None => format!("{REPO}/manifest.schema.json") } }
-pub fn router() -> Router<ApiState> { Router::new().route("/api/v1/marketplace/search", get(search)).route("/api/v1/marketplace/installs", get(list_installs)).route("/api/v1/marketplace/preview", post(preview)).route("/api/v1/marketplace/install", post(install)).route("/api/v1/marketplace/installs/{name}", delete(remove)) }
+pub fn registry_entry_url(base: &str, name: &str) -> String { format!("{}/entries/{name}/manifest.json", base.trim_end_matches('/')) }
+pub fn router() -> Router<ApiState> { Router::new().route("/api/v1/marketplace/search", get(search)).route("/api/v1/marketplace/installs", get(list_installs)).route("/api/v1/marketplace/preview", post(preview)).route("/api/v1/marketplace/install", post(install)).route("/api/v1/marketplace/installs/{name}", delete(remove)).route("/api/v1/marketplace/registries", get(list_registries).post(add_registry)).route("/api/v1/marketplace/registries/{name}", delete(remove_registry)) }
 #[derive(Deserialize)] pub struct SearchQuery { pub q: Option<String>, pub limit: Option<i64> }
 #[derive(Deserialize, utoipa::ToSchema)] #[serde(deny_unknown_fields)] pub struct PreviewRequest { pub name: String }
 #[derive(Deserialize, utoipa::ToSchema)] #[serde(deny_unknown_fields)] pub struct InstallRequest { pub name: String, #[serde(default)] pub manifest: Option<Value>, #[serde(default)] pub allow_unsigned: Option<bool>, #[serde(default)] pub approved_capabilities: Option<Value>, #[serde(default)] pub accept_trust_level: Option<bool> }
@@ -132,7 +147,46 @@ pub async fn remove(State(state): State<ApiState>, headers: HeaderMap, Path(name
     tx.commit().await?;
     Ok(Json(json!({"name": name, "removed": true})))
 }
-#[derive(utoipa::OpenApi)] #[openapi(paths(search, list_installs, preview, install, remove), components(schemas(PreviewRequest, InstallRequest, PreviewResponse)))] pub struct MarketplaceApi;
+#[derive(Deserialize, utoipa::ToSchema)] #[serde(deny_unknown_fields)] pub struct RegistryRequest { pub name: String, pub base_url: String }
+#[utoipa::path(get, path = "/api/v1/marketplace/registries", responses((status = 200, body = Value)))]
+pub async fn list_registries(State(state): State<ApiState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
+    let auth = authenticate(&state, &headers, false).await?;
+    let items: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('name',name,'base_url',base_url,'created_at',created_at) FROM marketplace_registries WHERE owner_id=$1 ORDER BY name").bind(auth.scope.owner_id).fetch_all(&state.pool).await?;
+    Ok(Json(json!({"items": items, "next_cursor": null})))
+}
+#[utoipa::path(post, path = "/api/v1/marketplace/registries", request_body = RegistryRequest, responses((status = 200, body = Value)))]
+pub async fn add_registry(State(state): State<ApiState>, headers: HeaderMap, Json(input): Json<RegistryRequest>) -> Result<Json<Value>, ApiError> {
+    let auth = authenticate(&state, &headers, true).await?;
+    // Same manifest schema as the built-in index: validate the shape on add by
+    // fetching `<base_url>/manifest.schema.json` and requiring the same object shape.
+    let name = valid_registry_name(&input.name)?;
+    let base = valid_registry_url(&input.base_url)?;
+    let schema_url = format!("{}/manifest.schema.json", base.trim_end_matches('/'));
+    let body = http()?.get(&schema_url).send().await.map_err(|_| Error::Unavailable("marketplace registry unreachable".into()))?.error_for_status().map_err(|_| Error::Validation("marketplace registry must serve manifest.schema.json at its root".into()))?.text().await.map_err(|_| Error::Unavailable("marketplace registry schema unreadable".into()))?;
+    if body.len() > 65536 { return Err(Error::Validation("marketplace registry schema exceeds limit".into()).into()); }
+    let schema: Value = serde_json::from_str(&body).map_err(|_| Error::Validation("marketplace registry schema is not JSON".into()))?;
+    if !schema.is_object() { return Err(Error::Validation("marketplace registry schema must be a JSON object".into()).into()); }
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE").bind(auth.scope.owner_id).fetch_one(&mut *tx).await?;
+    sqlx::query("INSERT INTO marketplace_registries(id,owner_id,name,base_url) VALUES($1,$2,$3,$4) ON CONFLICT(owner_id,name) DO UPDATE SET base_url=EXCLUDED.base_url").bind(Uuid::new_v4()).bind(auth.scope.owner_id).bind(&name).bind(&base).execute(&mut *tx).await?;
+    sqlx::query("UPDATE authorization_epochs SET revision=revision+1 WHERE owner_id=$1").bind(auth.scope.owner_id).execute(&mut *tx).await?;
+    orbit_audit::append(&mut tx, &auth.scope, Uuid::new_v4(), None, None, "MARKETPLACE_REGISTRY_ADDED", "owner registered a marketplace index", json!({"name": name, "base_url": base})).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"name": name, "base_url": base, "added": true})))
+}
+#[utoipa::path(delete, path = "/api/v1/marketplace/registries/{name}", params(("name" = String, Path)), responses((status = 200, body = Value)))]
+pub async fn remove_registry(State(state): State<ApiState>, headers: HeaderMap, Path(name): Path<String>) -> Result<Json<Value>, ApiError> {
+    let auth = authenticate(&state, &headers, true).await?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE").bind(auth.scope.owner_id).fetch_one(&mut *tx).await?;
+    let deleted = sqlx::query("DELETE FROM marketplace_registries WHERE owner_id=$1 AND name=$2").bind(auth.scope.owner_id).bind(&name).execute(&mut *tx).await?.rows_affected();
+    if deleted == 0 { return Err(Error::NotFound.into()); }
+    sqlx::query("UPDATE authorization_epochs SET revision=revision+1 WHERE owner_id=$1").bind(auth.scope.owner_id).execute(&mut *tx).await?;
+    orbit_audit::append(&mut tx, &auth.scope, Uuid::new_v4(), None, None, "MARKETPLACE_REGISTRY_REMOVED", "owner removed a marketplace index", json!({"name": name})).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"name": name, "removed": true})))
+}
+#[derive(utoipa::OpenApi)] #[openapi(paths(search, list_installs, preview, install, remove, list_registries, add_registry, remove_registry), components(schemas(PreviewRequest, InstallRequest, PreviewResponse, RegistryRequest)))] pub struct MarketplaceApi;
 #[cfg(test)] mod tests {
     use super::*;
     fn hello() -> Value { serde_json::from_str(r#"{"manifest_version":1,"name":"hello-skill","version":"0.1.0","kind":"skill","description":"Minimal greeting skill: warm one-line hellos with no network, no secrets, and read-only workspace access.","content_digest":"sha256:a6abcf105bc28a0dd20e0e70c10d35dc8574d4db7978bfb3e0a2eb91cb430dd6","files":[{"path":"README.md","sha256":"3c98b0489759b858a6ca547f38f64c165fd97b1b4c838952390b676727284d58"},{"path":"SKILL.md","sha256":"4ad776295fd5218076c5d18b03ab1f83280cf7cb63ae9c6c5d867427adb3d394"}],"publisher":{"name":"Orbit Marketplace Demo","key":"Sad5yRapQu4svjZHbUHGJaK0WoKD1XgVwNTErsFIUqc=","key_id":"demo-2026-hello"},"requested_capabilities":{"network":{"hosts":[],"egress":false},"filesystem":{"scopes":["workspace"],"read_only":true},"secrets":[],"tools":[]},"trust_level":"experimental","versions_pinned":{"orbit-manifest":"1","python":"3.12.3"},"signature":{"algorithm":"ed25519","key_id":"demo-2026-hello","value":"LUJTXXdua6mSZ/G3QolJFXOqkQEmstRekFoHUv1i/imtsCyVio1y+uOhnWrjOOlU5/lyitRU0kWu8Rc3Vol8BQ=="}}"#).unwrap() }
@@ -141,4 +195,6 @@ pub async fn remove(State(state): State<ApiState>, headers: HeaderMap, Path(name
     #[test] fn self_signed_is_forbidden_without_dev_override() { let m = hello(); let e = checked_manifest(&m, false).unwrap_err(); assert!(matches!(e, Error::Forbidden), "embedded-key signature must not confer trust: {e:?}"); assert!(!checked_manifest(&m, true).unwrap().0, "dev override surfaces sig_valid=false (self-asserted)"); }
     #[test] fn tampered_payload_breaks_signature() { let mut m = hello(); m["description"] = json!("tampered description with enough length here"); assert!(checked_manifest(&m, true).is_err()); }
     #[test] fn over_broad_capabilities_surfaced() { let mut m = hello(); m["requested_capabilities"] = json!({"network":{"hosts":["evil.example"],"egress":true},"filesystem":{"scopes":["workspace"],"read_only":false},"secrets":["api-key"],"tools":["fetch_note"]}); let flags = over_broad_flags(&m); assert_eq!(flags.len(), 4, "egress + secrets + tools + writable must surface: {flags:?}"); }
+    #[test] fn registry_url_requires_https_without_credentials() { assert!(valid_registry_url("https://market.example.invalid/").is_ok()); assert!(valid_registry_url("http://market.example.invalid/").is_err()); assert!(valid_registry_url("https://user@market.example.invalid/").is_err()); assert!(valid_registry_url("https://market.example.invalid/?q=1").is_err()); }
+    #[test] fn registry_entry_url_joins_base() { assert_eq!(registry_entry_url("https://market.example.invalid/", "hello-skill"), "https://market.example.invalid/entries/hello-skill/manifest.json"); }
 }

@@ -2,7 +2,7 @@ use crate::{ApiError, ApiState, authenticate};
 use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -290,6 +290,19 @@ pub async fn forget_memory(
     Ok(Json(json!({"status": "FORGOTTEN", "id": id})))
 }
 
+#[utoipa::path(delete, path = "/api/v1/memory/{id}", params(("id" = Uuid, Path)), responses((status = 200, body = Value)))]
+pub async fn delete_memory(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let auth = authenticate(&state, &headers, true).await?;
+    // Memories are never hard-deleted: forget redacts the whole
+    // supersession family in owner scope and keeps only an audit stub.
+    orbit_memory::forget(&state.pool, &auth.scope, id).await?;
+    Ok(Json(json!({"removed": id})))
+}
+
 #[utoipa::path(get, path = "/api/v1/memory/{id}/history", params(("id" = Uuid, Path)), responses((status = 200, body = Value)))]
 pub async fn memory_history(
     State(state): State<ApiState>,
@@ -443,6 +456,7 @@ pub async fn update_retention(
         create_memory,
         get_memory,
         patch_memory,
+        delete_memory,
         verify_memory,
         supersede_memory,
         forget_memory,
@@ -468,7 +482,7 @@ pub fn router() -> Router<ApiState> {
     Router::new()
         .route("/api/v1/memory", get(list_memories).post(create_memory))
         .route("/api/v1/memory/search", post(search_memories))
-        .route("/api/v1/memory/{id}", get(get_memory).patch(patch_memory))
+        .route("/api/v1/memory/{id}", get(get_memory).patch(patch_memory).delete(delete_memory))
         .route("/api/v1/memory/{id}/verify", post(verify_memory))
         .route("/api/v1/memory/{id}/supersede", post(supersede_memory))
         .route("/api/v1/memory/{id}/forget", post(forget_memory))

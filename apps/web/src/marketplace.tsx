@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Package, ShieldAlert, ShieldCheck } from "lucide-react";
 import { api, post, remove, text, timestamp, type RecordData } from "./api";
@@ -20,9 +20,9 @@ function Capabilities({ caps }: { caps: RecordData }) {
     </dl>
   );
 }
-function InstallFlow({ onInstalled }: { onInstalled: () => void }) {
+function InstallFlow({ initialName, autoPreview, onInstalled }: { initialName: string; autoPreview: boolean; onInstalled: () => void }) {
   const client = useQueryClient();
-  const [name, setName] = useState("hello-skill");
+  const [name, setName] = useState(initialName);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [accepted, setAccepted] = useState(false);
   const [devUnsigned, setDevUnsigned] = useState(false);
@@ -35,8 +35,15 @@ function InstallFlow({ onInstalled }: { onInstalled: () => void }) {
       if (!preview) throw new Error("Preview a package first.");
       return post<RecordData>("/marketplace/install", { name: preview.manifest.name, approved_capabilities: preview.capabilities, accept_trust_level: accepted, ...(devUnsigned ? { allow_unsigned: true } : {}) });
     },
-    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["marketplace"] }); setPreview(null); setAccepted(false); setDevUnsigned(false); onInstalled(); },
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["marketplace"] }); await client.invalidateQueries({ queryKey: ["marketplace-search"] }); setPreview(null); setAccepted(false); setDevUnsigned(false); onInstalled(); },
   });
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (autoPreview && !autoStarted.current && initialName.trim()) {
+      autoStarted.current = true;
+      fetchPreview.mutate();
+    }
+  }, []);
   const error = fetchPreview.error ?? install.error;
   return (
     <div className="panel">
@@ -85,9 +92,52 @@ function InstallFlow({ onInstalled }: { onInstalled: () => void }) {
     </div>
   );
 }
+function Registries() {
+  const client = useQueryClient();
+  const [name, setName] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const list = useQuery({ queryKey: ["marketplace-registries"], queryFn: () => api<{ items: RecordData[] }>("/marketplace/registries") });
+  const add = useMutation({
+    mutationFn: () => post<RecordData>("/marketplace/registries", { name: name.trim(), base_url: baseUrl.trim() }),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["marketplace-registries"] }); setName(""); setBaseUrl(""); },
+  });
+  const drop = useMutation({
+    mutationFn: (registry: string) => remove(`/marketplace/registries/${encodeURIComponent(registry)}`),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["marketplace-registries"] }),
+  });
+  const error = add.error ?? drop.error;
+  return (
+    <div className="panel">
+      <h2>Marketplaces</h2>
+      <p><small>Your own indexes, same manifest format as the built-in one. Adding checks the address serves a manifest schema file before saving it. Removing one never touches installed packages.</small></p>
+      <form onSubmit={(e) => { e.preventDefault(); add.mutate(); }}>
+        <Field label="Name" hint="Lowercase kebab-case, e.g. team-index.">
+          <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="team-index" />
+        </Field>
+        <Field label="Index address" hint="https address of the index root, e.g. https://market.example.com.">
+          <input required value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://market.example.com" inputMode="url" />
+        </Field>
+        <div className="actions"><button type="submit" className="secondary" disabled={add.isPending}>{add.isPending ? "Adding…" : "Add marketplace"}</button></div>
+      </form>
+      {list.data && (
+        list.data.items.length ? (
+          <ul>{list.data.items.map((r) => (
+            <li key={String(r.name)}>{text(r.name)} — {text(r.base_url)}{" "}
+              <button className="danger" disabled={drop.isPending} onClick={() => drop.mutate(String(r.name))}>Remove</button>
+            </li>
+          ))}</ul>
+        ) : (
+          <p><small>No extra marketplaces yet — the built-in index above always stays.</small></p>
+        )
+      )}
+      {list.error && <ErrorNotice error={list.error} retry={() => list.refetch()} />}
+      {error && <ErrorNotice error={error} retry={() => { add.reset(); drop.reset(); }} />}
+    </div>
+  );
+}
 export function Marketplace() {
   const client = useQueryClient();
-  const [adding, setAdding] = useState(false);
+  const [installTarget, setInstallTarget] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const installs = useQuery({ queryKey: ["marketplace"], queryFn: () => api<{ items: RecordData[] }>("/marketplace/installs") });
   const search = useQuery({ queryKey: ["marketplace-search"], queryFn: () => api<{ items: RecordData[]; index_source: string }>("/marketplace/search?limit=20") });
@@ -127,9 +177,32 @@ export function Marketplace() {
       )}
       {search.data && (
         <div className="panel">
-          <h2>Repo index</h2>
-          <p><small>Source: {text(search.data.index_source)}. Installed packages run only via the sandbox path — never in-process.</small></p>
-          <ul>{search.data.items.map((e) => <li key={String(e.name)}>{text(e.name)} {text(e.version)} — {text(e.description)} {e.installed ? "(installed)" : ""}</li>)}</ul>
+          <h2>Available packages</h2>
+          <p><small>Source: {text(search.data.index_source)}. Each description below comes from that package's own manifest file. Installed packages run only via the sandbox path — never in-process.</small></p>
+          {search.data.items.length ? (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "16px" }}>
+              {search.data.items.map((e) => {
+                const pkg = String(e.name ?? "");
+                const installed = e.installed === true;
+                const missing = e.unavailable === true;
+                return (
+                  <article key={pkg} style={{ border: "1px solid var(--line)", borderRadius: "12px", padding: "16px", background: "#fff", display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <h3 style={{ margin: 0 }}>{text(e.name)}</h3>
+                    <p style={{ margin: 0 }}><small>Version {text(e.version) || "unknown"}</small></p>
+                    <p style={{ margin: 0 }}>{text(e.description) || (missing ? "Package file not found in the repo index." : "No description yet.")}</p>
+                    <p style={{ margin: 0 }}><small><Status value={e.trust_level} />{installed ? " — installed" : ""}</small></p>
+                    <div className="actions" style={{ marginTop: "auto" }}>
+                      {missing || installed
+                        ? <button className="secondary" disabled>{missing ? "Unavailable" : "Installed"}</button>
+                        : <button onClick={() => setInstallTarget(pkg)}>Install</button>}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <p>No packages found in the repo index.</p>
+          )}
         </div>
       )}
       {removing && (
@@ -137,7 +210,8 @@ export function Marketplace() {
           <p>The package stops being available to the sandbox path. This is recorded in the audit log.</p>
         </Confirm>
       )}
-      {adding ? <InstallFlow onInstalled={() => setAdding(false)} /> : <button className="secondary" onClick={() => setAdding(true)}>Install a package</button>}
+      {installTarget ? <InstallFlow key={installTarget} initialName={installTarget} autoPreview onInstalled={() => setInstallTarget(null)} /> : <button className="secondary" onClick={() => setInstallTarget("hello-skill")}>Install a package</button>}
+      <Registries />
     </>
   );
 }

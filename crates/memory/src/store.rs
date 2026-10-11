@@ -304,7 +304,6 @@ pub async fn forget(pool: &PgPool, scope: &OwnerScope, id: Uuid) -> Result<()> {
     sqlx::query(
         "DELETE FROM memory_relations WHERE owner_id=$1 AND (from_id=ANY($2) OR to_id=ANY($2))",
     )
-    .bind(scope.owner_id)
     .bind(&ids)
     .execute(&mut *tx)
     .await?;

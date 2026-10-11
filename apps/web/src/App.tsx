@@ -62,6 +62,16 @@ const Ops = lazy(() => import("./ops").then((m) => ({ default: m.Ops })));
 const About = lazy(() => import("./ops").then((m) => ({ default: m.About })));
 const GlobalSearch = lazy(() => import("./ops").then((m) => ({ default: m.GlobalSearch })));
 import { DraftContext, FAMILIES } from "./nav";
+function Logo() {
+  return (
+    <svg width="26" height="26" viewBox="0 0 128 128" aria-hidden="true">
+      <circle cx="64" cy="64" r="14" fill="currentColor" />
+      <ellipse cx="64" cy="64" rx="52" ry="22" fill="none" stroke="currentColor" strokeWidth="7" transform="rotate(-24 64 64)" />
+      <ellipse cx="64" cy="64" rx="52" ry="22" fill="none" stroke="currentColor" strokeWidth="4" opacity="0.45" transform="rotate(38 64 64)" />
+      <circle cx="108" cy="38" r="7" fill="currentColor" />
+    </svg>
+  );
+}
 function readHidden(): string[] {
   try {
     return JSON.parse(localStorage.getItem("orbit.nav.hidden") ?? "[]");
@@ -216,7 +226,7 @@ export function App() {
       </a>
       <header className="mobile-header">
         <Link className="brand" to="/">
-          <img src="/logo.svg" alt="" width="26" height="26" /> Orbit
+          <Logo /> Orbit
         </Link>
         <button
           aria-label={menu ? "Close navigation" : "Open navigation"}
@@ -230,7 +240,7 @@ export function App() {
       <div className="shell">
         <aside className={`rail ${menu ? "open" : ""}`}>
           <Link className="brand" to="/">
-            <img src="/logo.svg" alt="" width="26" height="26" /> Orbit
+            <Logo /> Orbit
           </Link>
           <nav id="navigation" aria-label="Main navigation">
             {FAMILIES.map((family) => (
@@ -263,7 +273,7 @@ export function App() {
             <Route path="/approvals" element={<Approvals />} />
             <Route path="/approvals/:id" element={<Approvals />} />
             <Route path="/memory" element={<Memory />} />
-            <Route path="/memory/projects/:id" element={<Memory />} />
+            <Route path="/memory/:id" element={<Memory />} />
             <Route path="/notes" element={<Notes />} />
             <Route path="/inbox" element={<Inbox />} />
             <Route path="/reminders" element={<Reminders />} />

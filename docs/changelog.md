@@ -29,7 +29,14 @@
   env fix; grouped collapsible hideable sidebar; themes (3 presets +
   custom); boot loading screen.
 
-## 2026-10-11 — Sandbox opt-out (OFF by default)
+## 2026-10-11 — Memory page fix + per-memory delete
+
+Memory page (`/memory`) rendered error banners for three fixable reasons: `App.tsx` had no `/memory/:id` route so detail links fell through to "Page not found", `MemoryDetail` read `row.revision` (the column is `version`, so verify/supersede sent `expected_revision: 0` and always conflicted), and it treated `GET /memory/{id}/history` as a bare array (the API returns `{record, history, conflicts}`, so the history list never matched and `length` read `undefined`). All three are fixed; verify/supersede/forget on the detail page now send the real `version`.
+New `DELETE /api/v1/memory/{id}` (`delete_memory` in `crates/api/src/memory.rs`, router + OpenAPI) calls the existing owner-scoped `forget`, which redacts the whole supersession family and keeps only an audit stub — hard deletes never happen. The list and the detail page each have a Delete button behind the shared Confirm dialog; the list invalidates the `/memory` query on success. Also fixed a missing closing paren in `forget`'s `DELETE FROM memory_relations` statement in `crates/memory/src/store.rs`, which would have failed every forget/delete at runtime.
+
+## 2026-10-11 — Marketplace tiles + example plugin + custom registries
+
+Marketplace repo index is now a tile grid: each package shows its name, description (from that package's own manifest file, not hardcoded), version, and an Install button that opens the preview-and-approve flow for that package. New `plugins/example-hello/` fixture (signed `manifest.json` + `README.md` + `SKILL.md`) shows the plugin file layout; `docs/marketplace.md` documents the layout, minimal manifest shape, and install rules. Owners can also pin their own marketplace indexes (same manifest format): `marketplace-registry` list/add/remove over `GET/POST /api/v1/marketplace/registries` + `DELETE /api/v1/marketplace/registries/{name}` (migration 0033, https-only roots, schema-format check on add, audit-logged) with a Marketplaces panel on the page.
 
 Sandbox OFF by default per owner: `sandbox_enabled` on Settings/SettingsUpdate (migration 0031 backfills `{"sandbox_enabled":false}`, column default extended, fresh owners inherit off). `AgentDispatcher::admission` journals `SANDBOX_DISABLED` in the policy decision when off (still Jev-gated on command text plus policy-checked, no AIec); `submit` keeps `requires_sandbox` snapshots parked when the owner enabled the sandbox, and `execute_call` writes `TOOL_EXECUTED` `UNSANDBOXED` in the audit reason for direct runs. AIec create stays fail-closed when unavailable. Web Settings gains a `Run tools inside a sandbox (AIec)` checkbox with a plain-words hint.
 

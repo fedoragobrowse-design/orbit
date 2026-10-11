@@ -283,7 +283,7 @@ dd {
   padding: 40px 48px 64px;
   max-width: 1600px;
   width: 100%;
-  margin: auto;
+  margin: 0;
 }
 .page-heading {
   display: flex;
@@ -892,7 +892,17 @@ pre.rich-code {
   vertical-align: middle;
   margin-right: 8px;
 }
-@media (max-width: 900px) { .chat-pickers { grid-template-columns: 1fr; } }
+.chat-pickers {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+.chat-pickers .field {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
 @media (max-width: 900px) {
   .chat-shell {
     grid-template-columns: 1fr;
@@ -904,6 +914,12 @@ pre.rich-code {
   .chat-main {
     min-height: auto;
     order: 1;
+  }
+  .chat-pickers {
+    flex-wrap: wrap;
+  }
+  .chat-pickers > .field {
+    flex-basis: 100%;
   }
 }
 .progress {
