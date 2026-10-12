@@ -7,7 +7,9 @@ pub mod computers;
 pub mod connectors;
 pub mod control;
 pub mod email;
+pub mod executors;
 pub mod foundation;
+pub use executors::ExecutorRegistry;
 pub mod gateway;
 pub mod inbox;
 pub mod marketplace;
@@ -72,6 +74,7 @@ impl IntoResponse for ApiError {
             }
             Error::Timeout => (StatusCode::GATEWAY_TIMEOUT, "TIMEOUT"),
             Error::OutcomeUnknown => (StatusCode::CONFLICT, "OUTCOME_UNKNOWN"),
+            Error::AskOwnerParked(_) => (StatusCode::CONFLICT, "ASK_OWNER_PARKED"),
             _ => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL"),
         };
         (status,Json(json!({"error":{"code":code,"message":self.0.to_string(),"request_id":Uuid::new_v4()}}))).into_response()
@@ -151,48 +154,196 @@ pub async fn worker(state: ApiState) {
         pool: state.pool.clone(),
     };
     let worker = Uuid::new_v4();
+    let backends = build_backend_registry();
+    // Bounded task pump: at most 2 concurrent tasks on full profile, 1 on Pi.
+    // The semaphore permit is held for the whole claim→tick→settle span so an
+    // over-capacity worker parks instead of spawning unbounded tasks.
+    let task_permits = std::sync::Arc::new(tokio::sync::Semaphore::new(task_concurrency().max(1)));
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         tick.tick().await;
-        // Scheduler: claim due automation windows (durable cron/timer), fire each
-        // window exactly once with missed-window coalescing, and dispatch the
-        // fired event to its correlated agents/foundation task. Runs before event
-        // processing so fired events are picked up in the same tick.
-        if let Err(error) = run_scheduler_tick(&state).await {
-            tracing::error!(error=%error,"scheduler tick failed")
+        if let Err(error) = run_housekeeping(&state, &bus, worker).await {
+            tracing::error!(error=%error,"housekeeping tick failed")
         }
-        // Due sweep: calendar events + reminders whose time arrived get one
-        // notification each (claimed exactly once). Runs after the
-        // automation scheduler, before event processing.
-        if let Err(error) = run_due_sweep(&state).await {
-            tracing::error!(error=%error,"due sweep failed")
-        }
-        // retrieval stops returning them. Owner-scoped sweep; no-op when empty.
-        if let Err(error) = run_memory_sweep(&state).await {
-            tracing::error!(error=%error,"memory sweep failed")
-        }
-        if let Err(error) = bus.process_foundation().await {
-            tracing::error!(error=%error,"event processor failed")
-        }
-        if let Err(error) = run_chat_replies(&state).await {
-            tracing::error!(error=%error,"chat replies failed")
-        }
-        if let Err(error) = bus.run_notification_tasks(worker).await {
-            tracing::error!(error=%error,"task processor failed")
-        }
-        let agents_dispatcher = std::sync::Arc::new(agents::AgentDispatcher::new(&state));
-        if let Err(error) = orbit_agent_runtime::tick(
-            &state.pool,
-            state.key_dir.clone(),
-            worker,
-            agents_dispatcher,
-            None,
-        )
-        .await
-        {
-            tracing::error!(error=%error,"agent worker failed")
+        if let Err(error) = run_task_pump(&state, worker, &backends, &task_permits).await {
+            tracing::error!(error=%error,"task pump failed")
         }
     }
+}
+/// Worker profile: task concurrency (max 2 full / 1 pi).
+const MAX_TASK_CONCURRENCY_FULL: usize = 2;
+const MAX_TASK_CONCURRENCY_PI: usize = 1;
+
+fn task_concurrency() -> usize {
+    let profile = std::env::var("ORBIT_PROFILE").unwrap_or_default();
+    if profile.eq_ignore_ascii_case("pi") {
+        MAX_TASK_CONCURRENCY_PI
+    } else {
+        MAX_TASK_CONCURRENCY_FULL
+    }
+}
+
+/// Build the governed backend registry once per worker boot. Fail-closed OMP
+/// default: an invalid `agent_backend` value falls back to OMP, never to an
+/// unmanaged inline path — the registry is always `Some`.
+///
+/// The registry wraps the admitted AIec execution connection only; when no
+/// AIec connection is admitted, the inner TaskRuntime fails closed with
+/// `SANDBOX_UNAVAILABLE` and the task parks `WAITING_FOR_RESOURCE` through
+/// the normal `Unavailable` path. There is no host fallback — sandbox-off
+/// local execution arrives in a later slice through the execution-host
+/// service, not by executing on the server host here.
+fn build_backend_registry() -> std::sync::Arc<orbit_agent_backend::registry::BackendRegistry> {
+    use orbit_sandbox_dispatch::GovernedExec;
+    let runtime: std::sync::Arc<dyn orbit_task_runtime::TaskRuntime> =
+        std::sync::Arc::new(UnavailableRuntime);
+    let exec = std::sync::Arc::new(GovernedExec::new(
+        runtime,
+        "orbit-agent-runner".to_string(),
+        1024,
+        1,
+    ));
+    let default = configured_backend_default();
+    std::sync::Arc::new(orbit_agent_backend::registry::BackendRegistry::new(
+        exec,
+        "/workspace/omp/packages/coding-agent/scripts/omp",
+        default,
+    ))
+}
+
+/// Fail-closed backend default: parse `ORBIT_AGENT_BACKEND`, fall back to OMP
+/// on missing/invalid. Per-run settings selection happens in the task pump
+/// via [`run_task_pump`]; this only seeds the registry default.
+fn configured_backend_default() -> orbit_agent_backend::BackendKind {
+    let raw = std::env::var("ORBIT_AGENT_BACKEND").unwrap_or_else(|_| "OMP".to_string());
+    orbit_agent_backend::BackendKind::parse(&raw).unwrap_or(orbit_agent_backend::BackendKind::Omp)
+}
+
+/// TaskRuntime that always fails closed. The worker never executes model
+/// backends or tools on the host: when no admitted AIec connection backs the
+/// registry, backend steps return `WAITING_FOR_RESOURCE` (`SANDBOX_UNAVAILABLE`)
+/// through the normal `Unavailable` path, never a host fallback.
+struct UnavailableRuntime;
+#[async_trait::async_trait]
+impl orbit_task_runtime::TaskRuntime for UnavailableRuntime {
+    async fn create(&self, _spec: orbit_task_runtime::RuntimeSpec) -> orbit_core::Result<orbit_task_runtime::RuntimeHandle> {
+        Err(orbit_core::Error::Unavailable("SANDBOX_UNAVAILABLE".to_string()))
+    }
+    async fn execute(&self, _handle: &orbit_task_runtime::RuntimeHandle, _task: orbit_task_runtime::RuntimeTask) -> orbit_core::Result<orbit_task_runtime::RuntimeResult> {
+        Err(orbit_core::Error::Unavailable("SANDBOX_UNAVAILABLE".to_string()))
+    }
+    async fn put_file(&self, _handle: &orbit_task_runtime::RuntimeHandle, _path: &str, _bytes: &[u8]) -> orbit_core::Result<()> {
+        Err(orbit_core::Error::Unavailable("SANDBOX_UNAVAILABLE".to_string()))
+    }
+    async fn collect_artifacts(&self, _handle: &orbit_task_runtime::RuntimeHandle) -> orbit_core::Result<Vec<orbit_task_runtime::Artifact>> {
+        Err(orbit_core::Error::Unavailable("SANDBOX_UNAVAILABLE".to_string()))
+    }
+    async fn destroy(&self, _handle: orbit_task_runtime::RuntimeHandle) -> orbit_core::Result<()> {
+        Ok(())
+    }
+}
+/// Housekeeping keeps the existing 1-second schedule (scheduler, due sweep,
+/// memory sweep, foundation events, chat replies, notifications) and never
+/// awaits model/browser execution.
+async fn run_housekeeping(state: &ApiState, bus: &orbit_event_bus::PostgresEventBus, worker: Uuid) -> orbit_core::Result<()> {
+    // Scheduler: claim due automation windows (durable cron/timer), fire each
+    // window exactly once with missed-window coalescing, and dispatch the
+    // fired event to its correlated agents/foundation task. Runs before event
+    // processing so fired events are picked up in the same tick.
+    if let Err(error) = run_scheduler_tick(state).await {
+        tracing::error!(error=%error,"scheduler tick failed")
+    }
+    // Due sweep: calendar events + reminders whose time arrived get one
+    // notification each (claimed exactly once). Runs after the
+    // automation scheduler, before event processing.
+    if let Err(error) = run_due_sweep(state).await {
+        tracing::error!(error=%error,"due sweep failed")
+    }
+    // retrieval stops returning them. Owner-scoped sweep; no-op when empty.
+    if let Err(error) = run_memory_sweep(state).await {
+        tracing::error!(error=%error,"memory sweep failed")
+    }
+    if let Err(error) = bus.process_foundation().await {
+        tracing::error!(error=%error,"event processor failed")
+    }
+    if let Err(error) = run_chat_replies(state).await {
+        tracing::error!(error=%error,"chat replies failed")
+    }
+    if let Err(error) = bus.run_notification_tasks(worker).await {
+        tracing::error!(error=%error,"task processor failed")
+    }
+    Ok(())
+}
+/// Task pump: run agent/gateway tasks through `agent-runtime` with a concrete
+/// `AgentBackend` (never `None`). One live task per conversation: a
+/// conversation that already has a live RUNNING task queues later turns
+/// behind it (the claim is simply skipped this pass). Cancel/kill-switch
+/// propagates via the task fence/lease checks inside `tick_single`/`run`.
+async fn run_task_pump(state: &ApiState, worker: Uuid, backends: &std::sync::Arc<orbit_agent_backend::registry::BackendRegistry>, task_permits: &std::sync::Arc<tokio::sync::Semaphore>) -> orbit_core::Result<()> {
+    // Drain one pump pass: spawn at most `task_concurrency()` concurrent
+    // claim→tick→settle tasks (2 full / 1 pi). Each spawned task holds one
+    // semaphore permit for its whole span, so over-capacity work parks
+    // instead of spawning unbounded tasks. Housekeeping already ran on the
+    // 1s schedule and never awaits these tasks beyond this pass.
+    let mut pending: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let rows = sqlx::query("SELECT owner_id,id FROM tasks WHERE consumer IN ('agents','gateway') AND (state='QUEUED' OR (state='RUNNING' AND lease_until<now())) ORDER BY created_at,id LIMIT 10").fetch_all(&state.pool).await?;
+    for row in rows {
+        use sqlx::Row;
+        let owner: Uuid = row.get("owner_id");
+        let task: Uuid = row.get("id");
+        // Per-conversation single-live-task queue: skip a claim while another
+        // live RUNNING task for the same conversation exists. `tick_single`
+        // re-checks this under an advisory lock at claim time, so this
+        // pre-check is only a cheap filter, not the authority.
+        let conversation: Option<String> = sqlx::query_scalar("SELECT checkpoint->>'conversation_id' FROM tasks WHERE owner_id=$1 AND id=$2").bind(owner).bind(task).fetch_optional(&state.pool).await?.flatten();
+        if let Some(conversation) = conversation {
+            let live: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE owner_id=$1 AND id!=$2 AND consumer IN ('agents','gateway') AND state='RUNNING' AND checkpoint->>'conversation_id'=$3 AND lease_until>now()").bind(owner).bind(task).bind(&conversation).fetch_one(&state.pool).await?;
+            if live > 0 {
+                continue;
+            }
+        }
+        let permit = match task_permits.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => break,
+        };
+        let backend = backend_for_task(&state.pool, backends, owner, task).await;
+        let pool = state.pool.clone();
+        let key_dir = state.key_dir.clone();
+        let pump_state = state.clone();
+        pending.push(tokio::spawn(async move {
+            // Hold the permit across the whole tick so concurrency stays bounded.
+            let _permit = permit;
+            let agents_dispatcher = std::sync::Arc::new(agents::AgentDispatcher::new(&pump_state));
+            record_active_backend(&pool, owner, task, backend.kind()).await;
+            if let Err(error) = orbit_agent_runtime::tick_single(&pool, key_dir, worker, agents_dispatcher, Some(backend), owner, task).await {
+                tracing::error!(error=%error,"agent worker failed")
+            }
+        }));
+    }
+    for task in pending {
+        let _ = task.await;
+    }
+    Ok(())
+}
+/// Resolve the backend for one task from owner settings (`agent_backend`),
+/// fail-closed to OMP on invalid. The selected kind is persisted into the
+/// task checkpoint so the run records which backend owns it.
+async fn backend_for_task(pool: &PgPool, backends: &std::sync::Arc<orbit_agent_backend::registry::BackendRegistry>, owner: Uuid, task: Uuid) -> std::sync::Arc<dyn orbit_agent_backend::AgentBackend> {
+    let raw: Option<String> = sqlx::query_scalar("SELECT value->>'agent_backend' FROM settings WHERE owner_id=$1").bind(owner).fetch_optional(pool).await.unwrap_or(None).flatten();
+    // Explicit per-agent choice in the task checkpoint wins when valid.
+    let checkpoint_raw: Option<String> = sqlx::query_scalar("SELECT checkpoint->>'agent_backend' FROM tasks WHERE owner_id=$1 AND id=$2").bind(owner).bind(task).fetch_optional(pool).await.unwrap_or(None).flatten();
+    let pick = checkpoint_raw.or(raw).unwrap_or_else(|| "OMP".to_string());
+    let kind = orbit_agent_backend::BackendKind::parse(&pick).unwrap_or(orbit_agent_backend::BackendKind::Omp);
+    backends.get(kind)
+}
+/// Record the active backend kind in the task checkpoint (`agent_backend`)
+/// and on its `agent_runs` row (`route.backend`) so the run visibly records
+/// which backend owns it. Best-effort: a missing run row or a racing claim
+/// only skips the annotation, never the task itself.
+async fn record_active_backend(pool: &PgPool, owner: Uuid, task: Uuid, kind: orbit_agent_backend::BackendKind) {
+    let name = kind.as_str();
+    let _ = sqlx::query("UPDATE tasks SET checkpoint=checkpoint||jsonb_build_object('agent_backend',$3) WHERE owner_id=$1 AND id=$2").bind(owner).bind(task).bind(name).execute(pool).await;
+    let _ = sqlx::query("UPDATE agent_runs SET route=COALESCE(route,'{}'::jsonb)||jsonb_build_object('backend',$3) WHERE owner_id=$1 AND task_id=$2").bind(owner).bind(task).bind(name).execute(pool).await;
 }
 /// Chat replies: AGENT_MESSAGE rows parked as QUEUED_REPLY get one FAST-role
 /// model call each, then store text. Failures park as FAILED_REPLY with the

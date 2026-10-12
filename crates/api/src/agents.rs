@@ -11,7 +11,6 @@ use axum::{
     routing::{get, post},
 };
 use orbit_core::Error;
-use orbit_tools::ToolExecutor;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -21,17 +20,23 @@ use std::{
 };
 use uuid::Uuid;
 
-/// Tools the M4 gateway does not exist for yet, so the agent loop executes
-/// them in-app: memory reads and writes, and notification/report artifacts.
-/// Every other admitted tool waits for a real gateway approval; unadmitted
-/// tools (absent from the registry or outside the agent's allow-list) are
-/// denied and recorded, never executed.
-const IN_APP_TOOLS: [&str; 4] = [
-    "memory.search",
-    "memory.propose",
-    "notifications.create",
-    "reports.save",
-];
+/// A tool name is registry-routable when the [`ExecutorRegistry`] can dispatch
+/// it to a real executor: memory tools, notification/report artifacts,
+/// `orbit-control.*`/`orbit-data.*`/`ha-control.*` builtins, external `mcp.*`
+/// tools, computer `files.*` tools (which report `TOOL_EXECUTOR_UNAVAILABLE`
+/// until the node gateway wires in), and `shell.execute`. Routable tools park
+/// in `PROPOSED` for the `submit` loop to execute; anything else admitted but
+/// not yet executable waits for a real gateway approval. Unadmitted tools
+/// (absent from the registry or outside the agent's allow-list) are denied
+/// and recorded, never executed.
+fn is_registry_routable(name: &str) -> bool {
+    matches!(name, "memory.search" | "memory.propose" | "notifications.create" | "reports.save" | "shell.execute")
+        || name.starts_with("orbit-control.")
+        || name.starts_with("orbit-data.")
+        || name.starts_with("ha-control.")
+        || name.starts_with("files.")
+        || name.starts_with("mcp.")
+}
 /// Extract command text from tool args carrying `command` (string or array) or
 /// `argv`. Returns `None` when the proposal carries no command text.
 fn command_argv(args: &Value) -> Option<Vec<String>> {
@@ -128,14 +133,31 @@ impl AgentDispatcher {
             ),
             None => (1, vec![]),
         };
-        let empty_revisions: BTreeMap<String, i64> = BTreeMap::new();
+        // Owner-scoped grants bound this tool: load only this tool's rows so the
+        // engine can clear default low-effect consent exactly where the owner
+        // granted it, following the computer gateway's scoped admission pattern.
+        // Rows omit owner_id; malformed rows are skipped, never granted.
+        let grants: Vec<orbit_policy::ScopeGrant> = sqlx::query_scalar(
+            "SELECT to_jsonb(g)-'owner_id' FROM scope_grants g WHERE owner_id=$1 AND tool_name=$2",
+        )
+        .bind(scope.owner_id)
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect();
+        let scope_revisions: BTreeMap<String, i64> = grants
+            .iter()
+            .map(|grant| (grant.scope_key.clone(), grant.scope_revision))
+            .collect();
         let mut decision = orbit_policy::PolicyEngine {
             revision,
             autonomy,
             rules,
-            grants: vec![],
+            grants,
         }
-        .evaluate(scope, name, args, &descriptor, risk, &empty_revisions);
+        .evaluate(scope, name, args, &descriptor, risk, &scope_revisions);
         if decision.policy_revision != revision {
             return Err(Error::Conflict("policy changed during evaluation".into()));
         }
@@ -293,7 +315,7 @@ impl orbit_agent_runtime::Dispatcher for AgentDispatcher {
                         optional_escalation: None,
                     },
                 )?;
-                let state = if IN_APP_TOOLS.contains(&name) {
+                let state = if is_registry_routable(name) {
                     "PROPOSED"
                 } else {
                     "WAITING_FOR_APPROVAL"
@@ -382,18 +404,16 @@ impl orbit_agent_runtime::Dispatcher for AgentDispatcher {
         // gates AIec use per interaction. When off, admitted tools run direct
         // (still Jev-gated at admission plus policy-checked); when on,
         // requires_sandbox snapshots stay parked for the out-of-band executor
-        // that owns its sandbox. Consent never removes the sandbox requirement.
         // Gateway-approved resume: `approve` parks the task at DISPATCH with a fresh
-        // authorization, so SUBMITTED in-app calls execute here under the same lease
-        // and fence checks. Only IN_APP_TOOLS run inside the agent worker;
-        // anything else stays parked for the out-of-band executor that owns
-        // its sandbox or node session.
+        // authorization, so SUBMITTED calls execute here under the same lease
+        // and fence checks. Every SUBMITTED call — immediately permitted or
+        // approved — routes through the ExecutorRegistry; registry-routed
+        // names without an executor report TOOL_EXECUTOR_UNAVAILABLE, never
+        // an invented completion.
         let mut resumed = vec![];
-        for call in sqlx::query("SELECT id,authorization_id,snapshot->>'tool_name' AS tool,snapshot FROM tool_calls WHERE owner_id=$1 AND task_id=$2 AND state='SUBMITTED' AND authorization_id IS NOT NULL ORDER BY submitted_at FOR UPDATE").bind(scope.owner_id).bind(task).fetch_all(&mut *tx).await?{
-   let id:Uuid=call.get("id");let authorization:Uuid=call.get("authorization_id");let name:String=call.get("tool");
-   if !IN_APP_TOOLS.contains(&name.as_str()){continue}
+        for call in sqlx::query("SELECT id,authorization_id,snapshot FROM tool_calls WHERE owner_id=$1 AND task_id=$2 AND state='SUBMITTED' AND authorization_id IS NOT NULL ORDER BY submitted_at FOR UPDATE").bind(scope.owner_id).bind(task).fetch_all(&mut *tx).await?{
+   let id:Uuid=call.get("id");let authorization:Uuid=call.get("authorization_id");
    if call.get::<Value,_>("snapshot").get("requires_sandbox").and_then(Value::as_bool).unwrap_or(true){continue}
-   tx.commit().await?;
    let outcome=self.execute_call(scope,task,agent,id,authorization,fence).await?;
    resumed.push(outcome);tx=self.pool.begin().await?;
    sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE").bind(scope.owner_id).fetch_one(&mut *tx).await?;
@@ -413,11 +433,9 @@ impl orbit_agent_runtime::Dispatcher for AgentDispatcher {
                 .unwrap_or("")
                 .to_owned();
             let args = snapshot.get("arguments").cloned().unwrap_or(json!({}));
-            if !IN_APP_TOOLS.contains(&name.as_str()) {
-                sqlx::query("UPDATE tool_calls SET state='WAITING_FOR_APPROVAL' WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(id).execute(&mut *tx).await?;
-                queued.push(json!({"call_id":id,"state":"WAITING_FOR_APPROVAL"}));
-                continue;
-            }
+            // All admitted PROPOSED names route through the registry at
+            // execution; the approval detour is gone. Unadmitted names deny
+            // in the re-verification below.
             // Re-verify admission, schema, and the registry row under the epoch and call locks.
             let descriptor=sqlx::query("SELECT descriptor FROM tool_registry WHERE owner_id=$1 AND name=$2 AND enabled FOR UPDATE").bind(scope.owner_id).bind(&name).fetch_optional(&mut *tx).await?;
             let admitted = match &descriptor {
@@ -496,6 +514,13 @@ impl AgentDispatcher {
         let outcome = self
             .execute_authorized(scope, task, agent, id, authorization, fence)
             .await;
+        // Park path: the executor already recorded the OPEN question and
+        // moved the task RUNNING -> WAITING_FOR_INPUT. Report the parked
+        // state and return WITHOUT settling the call — settlement belongs
+        // to control.rs answer/cancel, which re-queues the same run.
+        if let Err(Error::AskOwnerParked(output)) = &outcome {
+            return Ok(json!({"call_id":id,"state":"WAITING_FOR_INPUT","question_id":output.get("question_id")}));
+        }
         let (state, result, code) = match &outcome {
             Ok(value) => ("COMPLETED", value.clone(), None),
             Err(Error::OutcomeUnknown) => (
@@ -556,19 +581,39 @@ impl AgentDispatcher {
             return Err(Error::Forbidden);
         }
         let action = orbit_core::AuthorizedAction::from_submission(snapshot, authorization, fence);
-        match descriptor.name.as_str() {
-            "memory.search" | "memory.propose" => {
-                orbit_memory::execute_authorized(&self.pool, &self.key_dir, scope, &action).await
-            }
-            _ => Ok(orbit_tools::SafeTools {
+        let tool_name = descriptor.name.clone();
+        // ask_owner parks instead of completing (sibling ask_owner slice owns
+        // this arm): the executor records the OPEN question linked to this
+        // call. Return the question_id output WITHOUT settling the call to
+        // COMPLETED — settlement happens exactly once in control.rs
+        // answer/cancel, which also re-queues the task.
+        if tool_name == "orbit-control.ask_owner" {
+            use orbit_tools::ToolExecutor;
+            let output = orbit_tools::SafeTools {
                 pool: self.pool.clone(),
                 artifact_dir: self.artifact_dir.clone(),
                 key_dir: self.key_dir.clone(),
             }
             .execute(scope, action)
             .await?
-            .output),
+            .output;
+            debug_assert!(output.get("question_id").is_some());
+            return Err(Error::AskOwnerParked(output));
         }
+        // All admitted calls — immediately permitted and approved SUBMITTED
+        // resumes alike — route through the ExecutorRegistry under the same
+        // lease/fence locks and binding checks above. A registered descriptor
+        // without an executor reports TOOL_EXECUTOR_UNAVAILABLE, never an
+        // invented completion.
+        let args = action.snapshot().arguments.clone();
+        crate::ExecutorRegistry {
+            pool: self.pool.clone(),
+            key_dir: self.key_dir.clone(),
+            artifact_dir: self.artifact_dir.clone(),
+            origin: self.origin.clone(),
+        }
+        .route(scope, task, agent, &tool_name, &args, action)
+        .await
     }
 }
 

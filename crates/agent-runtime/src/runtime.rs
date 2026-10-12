@@ -57,87 +57,119 @@ pub async fn tick(
     for row in candidates {
         let owner: Uuid = row.get("owner_id");
         let task: Uuid = row.get("id");
-        let mut tx = pool.begin().await?;
-        sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE")
-            .bind(owner)
-            .fetch_one(&mut *tx)
-            .await?;
-        let r=sqlx::query("SELECT *,lease_until>now() AS lease_active,expires_at<=now() AS expired FROM tasks WHERE owner_id=$1 AND id=$2 FOR UPDATE").bind(owner).bind(task).fetch_one(&mut *tx).await?;
-        let state: String = r.get("state");
-        if !matches!(state.as_str(), "QUEUED" | "RUNNING")
-            || (state == "RUNNING" && r.get::<Option<bool>, _>("lease_active") == Some(true))
-        {
-            continue;
+        tick_single(pool, key_dir.clone(), worker, dispatcher.clone(), backend.clone(), owner, task).await?;
+    }
+    Ok(())
+}
+
+/// Claim one task through the existing fences/leases and run it to settle or
+/// park. Returns `true` when the task was claimed and a run was attempted,
+/// `false` when there was nothing to do (settled, actively leased, queued
+/// behind a live conversation task, or expired elsewhere). The API task pump
+/// calls this per task so it can bound global concurrency and keep one live
+/// task per conversation; `tick` above remains the sequential batch sweep.
+pub async fn tick_single(
+    pool: &PgPool,
+    key_dir: PathBuf,
+    worker: Uuid,
+    dispatcher: Arc<dyn Dispatcher>,
+    backend: Option<Arc<dyn orbit_agent_backend::AgentBackend>>,
+    owner: Uuid,
+    task: Uuid,
+) -> Result<bool> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE")
+        .bind(owner)
+        .fetch_one(&mut *tx)
+        .await?;
+    let r=sqlx::query("SELECT *,lease_until>now() AS lease_active,expires_at<=now() AS expired FROM tasks WHERE owner_id=$1 AND id=$2 FOR UPDATE").bind(owner).bind(task).fetch_one(&mut *tx).await?;
+    let state: String = r.get("state");
+    if !matches!(state.as_str(), "QUEUED" | "RUNNING")
+        || (state == "RUNNING" && r.get::<Option<bool>, _>("lease_active") == Some(true))
+    {
+        return Ok(false);
+    }
+    // Per-conversation single-live-task queue: serialize claims on the
+    // conversation key and re-check for a live task under that lock, so two
+    // concurrent pump workers cannot start two live tasks for the same
+    // conversation. Advisory xact lock, released at commit/rollback;
+    // conversations never block each other.
+    let conversation: Option<String> = r.get::<Value,_>("checkpoint").get("conversation_id").and_then(|v| v.as_str()).map(str::to_owned);
+    if let Some(conversation) = &conversation {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1 || $2))").bind(owner.to_string()).bind(conversation).execute(&mut *tx).await?;
+        let live: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE owner_id=$1 AND id!=$2 AND consumer IN ('agents','gateway') AND state='RUNNING' AND lease_until>now() AND checkpoint->>'conversation_id'=$3").bind(owner).bind(task).bind(conversation).fetch_one(&mut *tx).await?;
+        if live > 0 {
+            return Ok(false);
         }
-        let scope = OwnerScope {
-            owner_id: owner,
-            principal_id: r.get("principal_id"),
-        };
-        if r.get::<bool, _>("expired") {
-            sqlx::query("UPDATE tasks SET state='TIMED_OUT',fence=fence+1,revision=revision+1,lease_until=NULL WHERE owner_id=$1 AND id=$2").bind(owner).bind(task).execute(&mut *tx).await?;
-            tx.commit().await?;
-            continue;
-        }
-        let fence:i64=sqlx::query_scalar("UPDATE tasks SET state='RUNNING',fence=fence+1,revision=revision+1,lease_holder=$3,lease_until=now()+interval '30 seconds',updated_at=now() WHERE owner_id=$1 AND id=$2 RETURNING fence").bind(owner).bind(task).bind(worker).fetch_one(&mut *tx).await?;
+    }
+    let scope = OwnerScope {
+        owner_id: owner,
+        principal_id: r.get("principal_id"),
+    };
+    if r.get::<bool, _>("expired") {
+        sqlx::query("UPDATE tasks SET state='TIMED_OUT',fence=fence+1,revision=revision+1,lease_until=NULL WHERE owner_id=$1 AND id=$2").bind(owner).bind(task).execute(&mut *tx).await?;
         tx.commit().await?;
-        let hb_pool = pool.clone();
-        let hb_scope = scope.clone();
-        let heartbeat = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-            loop {
-                interval.tick().await;
-                let result=sqlx::query("UPDATE tasks SET lease_until=now()+interval '30 seconds' WHERE owner_id=$1 AND id=$2 AND fence=$3 AND lease_holder=$4 AND state='RUNNING' AND lease_until>now()").bind(hb_scope.owner_id).bind(task).bind(fence).bind(worker).execute(&hb_pool).await;
-                if !matches!(result,Ok(r) if r.rows_affected()==1) {
-                    break;
-                }
+        return Ok(false);
+    }
+    let fence:i64=sqlx::query_scalar("UPDATE tasks SET state='RUNNING',fence=fence+1,revision=revision+1,lease_holder=$3,lease_until=now()+interval '30 seconds',updated_at=now() WHERE owner_id=$1 AND id=$2 RETURNING fence").bind(owner).bind(task).bind(worker).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+    let hb_pool = pool.clone();
+    let hb_scope = scope.clone();
+    let heartbeat = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            let result=sqlx::query("UPDATE tasks SET lease_until=now()+interval '30 seconds' WHERE owner_id=$1 AND id=$2 AND fence=$3 AND lease_holder=$4 AND state='RUNNING' AND lease_until>now()").bind(hb_scope.owner_id).bind(task).bind(fence).bind(worker).execute(&hb_pool).await;
+            if !matches!(result,Ok(r) if r.rows_affected()==1) {
+                break;
             }
-        });
-        let outcome = run(
-            pool,
-            &key_dir,
-            &scope,
-            task,
-            worker,
-            fence,
-            dispatcher.as_ref(),
-            backend.clone(),
-        )
-        .await;
-        heartbeat.abort();
-        if let Err(error) = outcome {
-            match error {
-                Error::Conflict(_) => {}
-                Error::OutcomeUnknown => {
-                    wait(pool, &scope, task, fence, "OUTCOME_UNKNOWN").await?;
-                }
-                Error::Unavailable(reason) => {
-                    let code = if reason.starts_with("LOCAL_MODEL_UNAVAILABLE") {
-                        "LOCAL_MODEL_UNAVAILABLE"
-                    } else if reason.starts_with("MODEL_") {
-                        "MODEL_RESOURCE_UNAVAILABLE"
-                    } else {
-                        "DEPENDENCY_UNAVAILABLE"
-                    };
-                    wait(pool, &scope, task, fence, code).await?;
-                }
-                Error::Timeout => {
-                    finish(
-                        pool,
-                        &scope,
-                        task,
-                        fence,
-                        "TIMED_OUT",
-                        "ACTIVE_BUDGET_EXHAUSTED",
-                    )
-                    .await?;
-                }
-                _ => {
-                    finish(pool, &scope, task, fence, "FAILED", "AGENT_RUN_FAILED").await?;
-                }
+        }
+    });
+    let outcome = run(
+        pool,
+        &key_dir,
+        &scope,
+        task,
+        worker,
+        fence,
+        dispatcher.as_ref(),
+        backend.clone(),
+    )
+    .await;
+    heartbeat.abort();
+    if let Err(error) = outcome {
+        match error {
+            Error::Conflict(_) => {}
+            Error::OutcomeUnknown => {
+                wait(pool, &scope, task, fence, "OUTCOME_UNKNOWN").await?;
+            }
+            Error::Unavailable(reason) => {
+                let code = if reason.starts_with("LOCAL_MODEL_UNAVAILABLE") {
+                    "LOCAL_MODEL_UNAVAILABLE"
+                } else if reason.starts_with("MODEL_") {
+                    "MODEL_RESOURCE_UNAVAILABLE"
+                } else {
+                    "DEPENDENCY_UNAVAILABLE"
+                };
+                wait(pool, &scope, task, fence, code).await?;
+            }
+            Error::Timeout => {
+                finish(
+                    pool,
+                    &scope,
+                    task,
+                    fence,
+                    "TIMED_OUT",
+                    "ACTIVE_BUDGET_EXHAUSTED",
+                )
+                .await?;
+            }
+            _ => {
+                finish(pool, &scope, task, fence, "FAILED", "AGENT_RUN_FAILED").await?;
             }
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 async fn lock<'a>(

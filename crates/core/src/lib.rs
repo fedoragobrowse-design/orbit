@@ -61,7 +61,7 @@ impl AuthorizedAction {
  pub fn task_fence(&self)->i64{self.task_fence}
 }
 #[derive(Debug,thiserror::Error)]
-pub enum Error {#[error("authentication required")] Unauthorized,#[error("permission denied")] Forbidden,#[error("record not found")] NotFound,#[error("{0}")] Validation(String),#[error("{0}")] Conflict(String),#[error("{0}")] Unavailable(String),#[error("capability unsupported")] UnsupportedCapability,#[error("operation timed out")] Timeout,#[error("effect outcome is unknown")] OutcomeUnknown,#[error("storage operation failed")] Database(#[from] sqlx::Error),#[error("serialization failed")] Serialization(#[from] serde_json::Error)}
+pub enum Error {#[error("authentication required")] Unauthorized,#[error("permission denied")] Forbidden,#[error("record not found")] NotFound,#[error("{0}")] Validation(String),#[error("{0}")] Conflict(String),#[error("{0}")] Unavailable(String),#[error("capability unsupported")] UnsupportedCapability,#[error("operation timed out")] Timeout,#[error("effect outcome is unknown")] OutcomeUnknown,#[error("owner input requested")] AskOwnerParked(serde_json::Value),#[error("storage operation failed")] Database(#[from] sqlx::Error),#[error("serialization failed")] Serialization(#[from] serde_json::Error)}
 pub type Result<T, E = Error> = std::result::Result<T,E>;
 pub fn literal<T:Serialize>(value:T)->String {serde_json::to_value(value).expect("enum serializes").as_str().expect("enum string").to_owned()}
 pub fn validate_event(kind:EventType,payload:&Value)->Result<()> {

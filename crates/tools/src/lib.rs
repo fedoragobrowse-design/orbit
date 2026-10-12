@@ -195,8 +195,26 @@ pub struct SafeTools {pub pool:PgPool,pub artifact_dir:PathBuf,pub key_dir:PathB
     if q.is_empty() {return Err(Error::Validation("question required".into()));}
     let opts = s.arguments.get("options").cloned().unwrap_or(json!([]));
     let qid = Uuid::new_v4();
-    sqlx::query("INSERT INTO agent_questions(id,owner_id,task_id,agent_id,question,options) VALUES($1,$2,$3,$4,$5,$6)").bind(qid).bind(scope.owner_id).bind(s.task_id).bind(s.agent_id).bind(q).bind(&opts).execute(&self.pool).await?;
-    sqlx::query("INSERT INTO notifications(id,owner_id,task_id,correlation_id,severity,title,body,authorization_id,related_entity_ids) SELECT $1,$2,id,correlation_id,'ACTION_REQUIRED',$4,$5,$6,'[]' FROM tasks WHERE owner_id=$2 AND id=$3 ON CONFLICT(authorization_id) DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(s.task_id).bind("Agent has a question").bind(q).bind(action.authorization_id()).execute(&self.pool).await?;
+    // Park contract: link the question to the requesting tool call
+    // (action.action_id) and give it a 24h lapse. The question is recorded
+    // OPEN; the task is parked RUNNING -> WAITING_FOR_INPUT per the legal
+    // transition trigger; only the returned question_id is handed back.
+    // No completion is recorded here: the call stays SUBMITTED (never
+    // COMPLETED) until the owner answers/cancels via control.rs, and the
+    // execute path must park on this output rather than settle it.
+    let mut tx = self.pool.begin().await?;
+    sqlx::query("INSERT INTO agent_questions(id,owner_id,task_id,agent_id,call_id,question,options,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,now()+interval '24 hours')").bind(qid).bind(scope.owner_id).bind(s.task_id).bind(s.agent_id).bind(s.action_id).bind(q).bind(&opts).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO notifications(id,owner_id,task_id,correlation_id,severity,title,body,authorization_id,related_entity_ids) SELECT $1,$2,id,correlation_id,'ACTION_REQUIRED',$4,$5,$6,'[]' FROM tasks WHERE owner_id=$2 AND id=$3 ON CONFLICT(authorization_id) DO NOTHING").bind(Uuid::new_v4()).bind(scope.owner_id).bind(s.task_id).bind("Agent has a question").bind(q).bind(action.authorization_id()).execute(&mut *tx).await?;
+    let correlation: Uuid = sqlx::query_scalar("SELECT correlation_id FROM tasks WHERE owner_id=$1 AND id=$2").bind(scope.owner_id).bind(s.task_id).fetch_optional(&mut *tx).await?.unwrap_or_else(Uuid::new_v4);
+    orbit_audit::append(&mut tx, scope, correlation, None, Some(s.task_id), "AGENT_QUESTION_ASKED", "agent asked the owner a question", json!({"question_id": qid, "call_id": s.action_id})).await?;
+    // Only a RUNNING row parks; stale/terminal states conflict instead.
+    let parked = sqlx::query("UPDATE tasks SET state='WAITING_FOR_INPUT',wait_reason='waiting for owner answer',lease_until=NULL,revision=revision+1,updated_at=now() WHERE owner_id=$1 AND id=$2 AND state='RUNNING'").bind(scope.owner_id).bind(s.task_id).execute(&mut *tx).await?.rows_affected();
+    if parked != 1 {
+        return Err(Error::Conflict("task is not running; cannot park for owner input".into()));
+    }
+    tx.commit().await?;
+    // question_id-only output matches the descriptor output schema exactly,
+    // so the shared SETTLE validation below still applies unchanged.
     json!({"question_id":qid})
    },"orbit-control.skills_list"=>{
     let rows = sqlx::query("SELECT id,name,description,enabled FROM skills WHERE owner_id=$1 AND enabled ORDER BY name LIMIT 100").bind(scope.owner_id).fetch_all(&self.pool).await?;
