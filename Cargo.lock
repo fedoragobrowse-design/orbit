@@ -2427,16 +2427,35 @@ dependencies = [
  "hex",
  "jsonschema",
  "orbit-agent-backend",
+ "orbit-agent-runtime",
  "orbit-approvals",
  "orbit-audit",
  "orbit-core",
  "orbit-model-router",
  "orbit-secrets",
+ "orbit-workspace",
  "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "sqlx",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "orbit-workspace"
+version = "1.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "orbit-agent-runtime",
+ "orbit-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tempfile",
  "tokio",
  "uuid",
 ]

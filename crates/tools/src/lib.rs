@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
 pub struct ToolResult {pub output:Value,pub privacy_class:orbit_core::PrivacyClass,pub trust_level:orbit_core::TrustLevel,pub source_reference:String}
+pub mod workspace;
 #[async_trait]
 pub trait ToolExecutor:Send+Sync {async fn execute(&self,scope:&OwnerScope,action:AuthorizedAction)->Result<ToolResult>;}
 
@@ -122,11 +123,99 @@ pub fn descriptors()->Vec<ToolDescriptor>{
    sandbox_required: false,
   },
   ToolDescriptor {
+   id: Uuid::from_u128(40),
+   name: "orbit-control.workspace_create".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["parent_id","name","kind"],"properties":{"parent_id":{"type":"string","format":"uuid"},"name":{"type":"string","minLength":1,"maxLength":255},"kind":{"enum":["FILE","DIRECTORY"]},"artifact_id":{"type":"string","format":"uuid"}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["entry_id","name","kind","revision","trust"],"properties":{"entry_id":{"type":"string","format":"uuid"},"name":{"type":"string"},"kind":{"type":"string"},"revision":{"type":"integer"},"trust":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Medium,
+   permission_keys: vec!["orbit-control.workspace_create".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(41),
+   name: "orbit-control.workspace_write".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["entry_id","expected_revision","artifact_id"],"properties":{"entry_id":{"type":"string","format":"uuid"},"expected_revision":{"type":"integer","minimum":1},"artifact_id":{"type":"string","format":"uuid"}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["entry_id","revision","artifact_id","trust"],"properties":{"entry_id":{"type":"string","format":"uuid"},"revision":{"type":"integer"},"artifact_id":{"type":"string","format":"uuid"},"trust":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Medium,
+   permission_keys: vec!["orbit-control.workspace_write".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(42),
+   name: "orbit-control.workspace_move".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["entry_id","expected_revision"],"properties":{"entry_id":{"type":"string","format":"uuid"},"expected_revision":{"type":"integer","minimum":1},"name":{"type":"string","minLength":1,"maxLength":255},"parent_id":{"type":"string","format":"uuid"}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["entry_id","name","revision","trust"],"properties":{"entry_id":{"type":"string","format":"uuid"},"name":{"type":"string"},"revision":{"type":"integer"},"trust":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Medium,
+   permission_keys: vec!["orbit-control.workspace_move".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(43),
+   name: "orbit-control.workspace_trash".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["entry_id","expected_revision"],"properties":{"entry_id":{"type":"string","format":"uuid"},"expected_revision":{"type":"integer","minimum":1}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["entry_id","revision","trashed","trust"],"properties":{"entry_id":{"type":"string","format":"uuid"},"revision":{"type":"integer"},"trashed":{"type":"boolean"},"trust":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Medium,
+   permission_keys: vec!["orbit-control.workspace_trash".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(44),
+   name: "orbit-control.workspace_restore".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["entry_id","expected_revision"],"properties":{"entry_id":{"type":"string","format":"uuid"},"expected_revision":{"type":"integer","minimum":1},"version_id":{"type":"string","format":"uuid"}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["entry_id","revision","trust"],"properties":{"entry_id":{"type":"string","format":"uuid"},"revision":{"type":"integer"},"trust":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Medium,
+   permission_keys: vec!["orbit-control.workspace_restore".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(45),
+   name: "orbit-data.workspace_list".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["parent_id"],"properties":{"parent_id":{"type":"string","format":"uuid"},"limit":{"type":"integer","minimum":1,"maximum":100},"cursor":{"type":"string","format":"uuid"}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["items","trust"],"properties":{"items":{"type":"array","items":{"type":"object"}},"trust":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Low,
+   permission_keys: vec!["orbit-data.workspace_list".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(46),
+   name: "orbit-data.workspace_read".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["entry_id"],"properties":{"entry_id":{"type":"string","format":"uuid"},"max_bytes":{"type":"integer","minimum":1,"maximum":1048576}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["entry_id","name","kind","revision","artifact_id","trust","provenance"],"properties":{"entry_id":{"type":"string","format":"uuid"},"name":{"type":"string"},"kind":{"type":"string"},"revision":{"type":"integer"},"artifact_id":{"type":["string","null"]},"content":{"type":"string"},"truncated":{"type":"boolean"},"trust":{"type":"string"},"provenance":{"type":"object"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Low,
+   permission_keys: vec!["orbit-data.workspace_read".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(47),
+   name: "orbit-data.workspace_search".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1,"maxLength":200},"limit":{"type":"integer","minimum":1,"maximum":50}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["items","trust"],"properties":{"items":{"type":"array","items":{"type":"object"}},"trust":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Low,
+   permission_keys: vec!["orbit-data.workspace_search".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
    id: Uuid::from_u128(30),
    name: "ha-control.entities_list".into(),
    version: "1".into(),
    input_schema: json!({"type":"object","additionalProperties":false,"required":[],"properties":{"limit":{"type":"integer","minimum":1,"maximum":200}}}),
-   output_schema: json!({"type":"object","additionalProperties":false,"required":["items","trust"],"properties":{"items":{"type":"array","maxItems":200,"items":{"type":"object"}},"trust":{"type":"string"}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["items","trust"],"properties":{"items":{"type":"array","items":{"type":"object"}},"trust":{"type":"string"}}}),
    effects: ToolEffects{external:true,modifies_data:false,reversible:true,credential_access:false,affected_party:"OWNER".into(),network:true},
    default_risk: RiskLevel::High,
    permission_keys: vec!["ha-control.entities_list".into()],
@@ -280,6 +369,91 @@ pub struct SafeTools {pub pool:PgPool,pub artifact_dir:PathBuf,pub key_dir:PathB
     let rows = sqlx::query("SELECT id,title,mime_type,size FROM artifacts WHERE owner_id=$1 ORDER BY created_at DESC LIMIT $2").bind(scope.owner_id).bind(limit).fetch_all(&self.pool).await?;
     let items: Vec<Value> = rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"title":r.get::<String,_>("title"),"mime":r.get::<String,_>("mime_type"),"size":r.get::<i64,_>("size")})).collect();
     json!({"items":items,"trust":"UNTRUSTED_EXTERNAL"})
+   },"orbit-control.workspace_create"=>{
+    let parent_id: Uuid = s.arguments.get("parent_id").and_then(Value::as_str).unwrap_or("").parse().map_err(|_| Error::Validation("invalid parent_id".into()))?;
+    let name = s.arguments.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+    let kind = match s.arguments.get("kind").and_then(Value::as_str).unwrap_or("") {
+     "FILE" => orbit_workspace::EntryKind::File,
+     "DIRECTORY" => orbit_workspace::EntryKind::Directory,
+     _ => return Err(Error::Validation("invalid kind".into())),
+    };
+    let artifact_id: Option<Uuid> = match s.arguments.get("artifact_id").and_then(Value::as_str) {
+     None => None,
+     Some(raw) => Some(raw.parse().map_err(|_| Error::Validation("invalid artifact_id".into()))?),
+    };
+    let entry = orbit_workspace::create(&self.pool, scope, parent_id, &name, kind, artifact_id).await?;
+    json!({"entry_id":entry.id,"name":entry.name,"kind":entry.kind,"revision":entry.revision,"trust":"OWNER"})
+   },"orbit-control.workspace_write"=>{
+    let entry_id: Uuid = s.arguments.get("entry_id").and_then(Value::as_str).unwrap_or("").parse().map_err(|_| Error::Validation("invalid entry_id".into()))?;
+    let expected_revision = s.arguments.get("expected_revision").and_then(Value::as_i64).unwrap_or(0);
+    let artifact_id: Uuid = s.arguments.get("artifact_id").and_then(Value::as_str).unwrap_or("").parse().map_err(|_| Error::Validation("invalid artifact_id".into()))?;
+    let entry = orbit_workspace::set_content(&self.pool, scope, entry_id, expected_revision, artifact_id).await?;
+    json!({"entry_id":entry.id,"revision":entry.revision,"artifact_id":entry.head_artifact_id,"trust":"OWNER"})
+   },"orbit-control.workspace_move"=>{
+    let entry_id: Uuid = s.arguments.get("entry_id").and_then(Value::as_str).unwrap_or("").parse().map_err(|_| Error::Validation("invalid entry_id".into()))?;
+    let expected_revision = s.arguments.get("expected_revision").and_then(Value::as_i64).unwrap_or(0);
+    let name = s.arguments.get("name").and_then(Value::as_str).map(|v| v.to_string());
+    let parent_id: Option<Uuid> = match s.arguments.get("parent_id").and_then(Value::as_str) {
+     None => None,
+     Some(raw) => Some(raw.parse().map_err(|_| Error::Validation("invalid parent_id".into()))?),
+    };
+    let entry = orbit_workspace::rename_move(&self.pool, scope, entry_id, expected_revision, name.as_deref(), parent_id).await?;
+    json!({"entry_id":entry.id,"name":entry.name,"revision":entry.revision,"trust":"OWNER"})
+   },"orbit-control.workspace_trash"=>{
+    let entry_id: Uuid = s.arguments.get("entry_id").and_then(Value::as_str).unwrap_or("").parse().map_err(|_| Error::Validation("invalid entry_id".into()))?;
+    let expected_revision = s.arguments.get("expected_revision").and_then(Value::as_i64).unwrap_or(0);
+    let entry = orbit_workspace::trash(&self.pool, scope, entry_id, expected_revision).await?;
+    json!({"entry_id":entry.id,"revision":entry.revision,"trashed":entry.trashed_at.is_some(),"trust":"OWNER"})
+   },"orbit-control.workspace_restore"=>{
+    let entry_id: Uuid = s.arguments.get("entry_id").and_then(Value::as_str).unwrap_or("").parse().map_err(|_| Error::Validation("invalid entry_id".into()))?;
+    let expected_revision = s.arguments.get("expected_revision").and_then(Value::as_i64).unwrap_or(0);
+    let entry = match s.arguments.get("version_id").and_then(Value::as_str) {
+     None => orbit_workspace::restore(&self.pool, scope, entry_id, expected_revision).await?,
+     Some(raw) => {
+      let version_id: Uuid = raw.parse().map_err(|_| Error::Validation("invalid version_id".into()))?;
+      orbit_workspace::restore_version(&self.pool, scope, entry_id, expected_revision, version_id).await?
+     }
+    };
+    json!({"entry_id":entry.id,"revision":entry.revision,"trust":"OWNER"})
+   },"orbit-data.workspace_list"=>{
+    let parent_id: Uuid = s.arguments.get("parent_id").and_then(Value::as_str).unwrap_or("").parse().map_err(|_| Error::Validation("invalid parent_id".into()))?;
+    let parent = workspace::entry_by_id(&self.pool, scope, parent_id).await?;
+    let limit = s.arguments.get("limit").and_then(Value::as_i64).unwrap_or(50).clamp(1,100);
+    let cursor: Option<Uuid> = match s.arguments.get("cursor").and_then(Value::as_str) {
+     None => None,
+     Some(raw) => Some(raw.parse().map_err(|_| Error::Validation("invalid cursor".into()))?),
+    };
+    let kids = orbit_workspace::children(&self.pool, scope, &parent, limit, cursor).await?;
+    let mut items: Vec<Value> = Vec::with_capacity(kids.len());
+    for e in &kids {
+     let source = workspace::head_source(&self.pool, scope, e).await?;
+     items.push(json!({"entry_id":e.id,"name":e.name,"kind":e.kind,"revision":e.revision,"artifact_id":e.head_artifact_id,"trust":workspace::trust_of_entry(e, &source),"provenance":workspace::provenance_json(e, &source),"trashed":e.trashed_at.is_some()}));
+    }
+    json!({"items":items,"trust":"OWNER"})
+   },"orbit-data.workspace_read"=>{
+    let entry_id: Uuid = s.arguments.get("entry_id").and_then(Value::as_str).unwrap_or("").parse().map_err(|_| Error::Validation("invalid entry_id".into()))?;
+    let max_bytes = s.arguments.get("max_bytes").and_then(Value::as_i64).unwrap_or(65536).clamp(1,1_048_576) as usize;
+    let entry = workspace::entry_by_id(&self.pool, scope, entry_id).await?;
+    let source = workspace::head_source(&self.pool, scope, &entry).await?;
+    let (content, truncated, artifact_id) = match entry.head_artifact_id {
+     None => (None, false, None),
+     Some(aid) => {
+      let (_name, bytes, _source) = orbit_agent_runtime::attachments::read(&self.pool, &self.artifact_dir, scope, aid).await?;
+      let take = bytes.len().min(max_bytes);
+      (Some(String::from_utf8_lossy(&bytes[..take]).into_owned()), bytes.len() > max_bytes, Some(aid))
+     }
+    };
+    json!({"entry_id":entry.id,"name":entry.name,"kind":entry.kind,"revision":entry.revision,"artifact_id":artifact_id,"content":content,"truncated":truncated,"trust":workspace::trust_of_entry(&entry, &source),"provenance":workspace::provenance_json(&entry, &source)})
+   },"orbit-data.workspace_search"=>{
+    let query = s.arguments.get("query").and_then(Value::as_str).unwrap_or("").to_string();
+    let limit = s.arguments.get("limit").and_then(Value::as_i64).unwrap_or(20).clamp(1,50);
+    let rows = workspace::search_entries(&self.pool, scope, &query, limit).await?;
+    let mut items: Vec<Value> = Vec::with_capacity(rows.len());
+    for e in &rows {
+     let source = workspace::head_source(&self.pool, scope, e).await?;
+     items.push(json!({"entry_id":e.id,"name":e.name,"kind":e.kind,"revision":e.revision,"artifact_id":e.head_artifact_id,"trust":workspace::trust_of_entry(e, &source),"provenance":workspace::provenance_json(e, &source)}));
+    }
+    json!({"items":items,"trust":"MIXED"})
    },_=>return Err(Error::Forbidden)
   };validate_value(&d.output_schema,&output)?;Ok(ToolResult{output,privacy_class:orbit_core::PrivacyClass::Private,trust_level:orbit_core::TrustLevel::UntrustedExternal,source_reference:format!("tool-call:{}",s.action_id)})
  }
