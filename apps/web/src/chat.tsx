@@ -125,7 +125,9 @@ type ChatMsg = {
   role: string;
   content: string;
   created_at?: unknown;
+  sequence?: number;
 };
+type RunDelta = { id: number; task_id?: unknown; kind: string; payload: { text?: unknown; role?: unknown } };
 type RunSource = { kind: string; reference: string; trust?: unknown; preview?: unknown };
 function SourceChips({ taskId }: { taskId: string }) {
   const runs = useQuery({
@@ -135,17 +137,11 @@ function SourceChips({ taskId }: { taskId: string }) {
   });
   const sources = (runs.data?.items ?? []).flatMap((r) => r.sources ?? []).slice(0, 6);
   if (!sources.length) return null;
-  const label = (s: RunSource) => {
-    if (s.reference.startsWith("orbit-memory:")) return "Saved memory";
-    if (s.reference.startsWith("attachment:")) return "Attached file";
-    if (s.reference.startsWith("message:")) return "Your message";
-    return s.kind || "Source";
-  };
   return (
     <p className="source-chips" aria-label="What this answer used">
       {sources.map((s, i) => (
         <span key={i} className="source-chip" title={text(s.preview)}>
-          {label(s)}
+          {s.reference.startsWith("orbit-memory:") ? "Saved memory" : s.reference.startsWith("attachment:") ? "Attached file" : s.reference.startsWith("message:") ? "Your message" : s.kind || "Source"}
           {text(s.trust) && text(s.trust) !== "OwnerAuthenticated" && text(s.trust) !== "OWNER_AUTHENTICATED" && (
             <> · untrusted</>
           )}
@@ -166,20 +162,24 @@ function TypingBubble() {
     </article>
   );
 }
-function ConversationStream({ conversation, taskId }: { conversation: string; taskId: string | null }) {
+ function ConversationStream({ conversation, taskId }: { conversation: string; taskId: string | null }) {
   const [streamed, setStreamed] = useState<ChatMsg[]>([]);
+  const [deltas, setDeltas] = useState<RunDelta[]>([]);
   const [done, setDone] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const history = useQuery({
     queryKey: ["chat-history", conversation],
-    queryFn: () => api<{ items: ChatMsg[] }>(`/chat/messages?conversation_id=${conversation}&limit=100`),
+    queryFn: () => api<{ items: ChatMsg[]; last_sequence: number | null }>(`/chat/messages?conversation_id=${conversation}&limit=100`),
     enabled: !!conversation,
   });
   useEffect(() => {
     setStreamed([]);
+    setDeltas([]);
     setDone(null);
     setFailed(false);
     if (!conversation) return;
+    // run_events ids double as the SSE cursor: the server replays from
+    // Last-Event-ID, so a reconnect resumes without missing or duplicating.
     const src = new EventSource(`/api/v1/chat/stream?conversation_id=${conversation}`);
     src.addEventListener("message", (e) => {
       try {
@@ -187,6 +187,17 @@ function ConversationStream({ conversation, taskId }: { conversation: string; ta
         setStreamed((prev) => (prev.some((p) => p.id === m.id) ? prev : [...prev, m]));
       } catch { /* partial frame */ }
     });
+    const onDelta = (e: Event) => {
+      try {
+        const d = JSON.parse((e as MessageEvent).data) as RunDelta & { payload: { text?: unknown } };
+        if (d.kind === "TEXT_DELTA" && typeof d.payload?.text === "string") {
+          setDeltas((prev) => [...prev, d as RunDelta]);
+        }
+      } catch { /* partial frame */ }
+    };
+    for (const name of ["delta", "tool_started", "tool_result", "status", "usage"]) {
+      src.addEventListener(name, onDelta);
+    }
     src.addEventListener("done", (e) => {
       try {
         const d = JSON.parse((e as MessageEvent).data) as { state: string };
@@ -202,16 +213,18 @@ function ConversationStream({ conversation, taskId }: { conversation: string; ta
     };
     return () => src.close();
   }, [conversation, taskId]);
+  // Sequence-ordered pages: the server returns every page oldest-first, so
+  // merge history and live rows by (sequence, id) — never by timestamp.
   const seen: Record<string, true> = {};
   for (const m of streamed) seen[m.id] = true;
   const older = (history.data?.items ?? []).filter((m) => !seen[m.id]);
-  // Oldest first: history pages newest-task-first for the cursor, so flip
-  // to chronological (first message on top, latest at the bottom) here.
-  // The time sort keeps each reply glued to its own message on ties.
-  const byTime = (m: ChatMsg) => String(m.created_at ?? "");
-  const roleRank = (m: ChatMsg) => (m.role === "user" ? 0 : m.role === "assistant" ? 1 : 2);
-  const all = [...older, ...streamed].sort((a, b) => (byTime(a) < byTime(b) ? -1 : byTime(a) > byTime(b) ? 1 : roleRank(a) - roleRank(b) || (a.id < b.id ? -1 : 1)));
-  const waiting = !done && (taskId !== null || all.length === 0 || all[all.length - 1]?.role === "user");
+  const all = [...older, ...streamed].sort((a, b) => (typeof a.sequence === "number" ? a.sequence : Number.MAX_SAFE_INTEGER) - (typeof b.sequence === "number" ? b.sequence : Number.MAX_SAFE_INTEGER) || (a.id < b.id ? -1 : 1));
+  // Live partial reply: TEXT_DELTA chunks for the open turn reduce in order
+  // into one in-place bubble keyed by the latest assistant message's task.
+  const openTask = taskId ?? (all.length && all[all.length - 1]?.role === "user" ? text(all[all.length - 1]?.task_id) || null : null);
+  const partial = openTask ? deltas.filter((d) => text(d.task_id) === openTask).map((d) => text(d.payload?.text)).join("") : "";
+  const showPartial = !done && partial.length > 0 && (all.length === 0 || all[all.length - 1]?.role !== "assistant" || text(all[all.length - 1]?.task_id) !== (openTask ?? ""));
+  const waiting = !done && !showPartial && (taskId !== null || all.length === 0 || all[all.length - 1]?.role === "user");
   return (
     <>
       {history.isPending && <p role="status">Loading conversation…</p>}
@@ -226,6 +239,11 @@ function ConversationStream({ conversation, taskId }: { conversation: string; ta
           </span>
         </article>
       ))}
+      {showPartial && (
+        <article className="message assistant" aria-live="polite">
+          <div className="assistant-streamed">{renderRich(partial, undefined)}</div>
+        </article>
+      )}
       {waiting && !failed && <TypingBubble />}
       {failed && (
         <article className="message assistant">

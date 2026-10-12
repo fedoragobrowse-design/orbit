@@ -8,11 +8,13 @@
 //! (documentation-grade — adjust argv to the real `claude --help` in the image
 //! if they differ; the `AgentBackend` contract is unchanged).
 
-use super::{AgentBackend, AgentEvent, BackendKind, BackendRequest, BackendStep, parse_ndjson_events};
-use orbit_core::{OwnerScope, Result};
+use super::{AgentBackend, AgentEvent, BackendKind, BackendRequest, BackendStep, RunEventSink, emit_step_events, parse_ndjson_events};
+use orbit_core::{OwnerScope, PrivacyClass, Result};
 use orbit_model_router::Usage;
 use orbit_sandbox_dispatch::{ExecRequest, GovernedExec, StageFile, Verdict, classify_command};
+use orbit_task_runtime::Artifact;
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub struct ClaudeSdkBackend {
     exec: Arc<GovernedExec>,
@@ -52,7 +54,7 @@ impl AgentBackend for ClaudeSdkBackend {
         BackendKind::ClaudeSdk
     }
 
-    async fn step(&self, req: BackendRequest) -> Result<BackendStep> {
+    async fn step(&self, req: BackendRequest, sink: Arc<dyn RunEventSink>) -> Result<BackendStep> {
         let scope = OwnerScope { owner_id: req.owner_id, principal_id: req.owner_id };
         let argv = claude_argv(&req);
         match classify_command(&argv)? {
@@ -83,19 +85,26 @@ impl AgentBackend for ClaudeSdkBackend {
             approved: req.approval_id.is_some(),
         }).await;
         match outcome {
-            Err(e) => Ok(finished_step(vec![AgentEvent::Message { role: "assistant".into(), text: format!("Backend error: {e}") }], "FAILED")),
+            Err(e) => {
+                let events = vec![AgentEvent::Message { role: "assistant".into(), text: format!("Backend error: {e}") }];
+                emit_step_events(&sink, req.owner_id, req.task_id, req.run_id, req.session_id, &events).await;
+                Ok(finished_step(events, "FAILED"))
+            }
             Ok(out) => {
                 let mut events = parse_ndjson_events(&out.stdout);
                 if events.is_empty() && !out.stdout.trim().is_empty() {
                     events.push(AgentEvent::Message { role: "assistant".into(), text: out.stdout.trim().to_string() });
                 }
+                emit_step_events(&sink, req.owner_id, req.task_id, req.run_id, req.session_id, &events).await;
                 let finished = out.exit_code == 0;
+                let usage = fold_usage(&events);
+                let artifacts = fold_artifacts(&events);
                 Ok(BackendStep {
                     events,
                     finished,
                     outcome: Some(if finished { "COMPLETED".into() } else { "FAILED".into() }),
-                    usage: Usage::default(),
-                    artifacts: Vec::new(),
+                    usage,
+                    artifacts,
                 })
             }
         }
@@ -103,5 +112,45 @@ impl AgentBackend for ClaudeSdkBackend {
 }
 
 fn finished_step(events: Vec<AgentEvent>, outcome: &str) -> BackendStep {
-    BackendStep { events, finished: true, outcome: Some(outcome.into()), usage: Usage::default(), artifacts: Vec::new() }
+    BackendStep { events, finished: true, outcome: Some(outcome.into()), usage: fold_usage(&[]), artifacts: Vec::new() }
+}
+
+/// Sum ModelCall token counts from the parsed stream-json events so the step
+/// carries real spend into `agent_runs` instead of a fabricated zero. Guest
+/// counts stay advisory (the runtime already consumed one `model_calls` unit);
+/// the sum only feeds the shared token cap and display.
+fn fold_usage(events: &[AgentEvent]) -> Usage {
+    let mut usage = Usage::default();
+    for event in events {
+        if let AgentEvent::ModelCall { usage: u, .. } = event {
+            usage.input_tokens = usage.input_tokens.saturating_add(u.input_tokens);
+            usage.output_tokens = usage.output_tokens.saturating_add(u.output_tokens);
+            usage.cached_tokens = usage.cached_tokens.saturating_add(u.cached_tokens);
+            usage.known = true;
+        }
+    }
+    usage
+}
+
+/// Forward runner-reported output files as metadata-only artifacts: name +
+/// digest from the stream, bytes never invented server-side. The guest keeps
+/// the bytes; persistence (if any) happens downstream via workspace import.
+fn fold_artifacts(events: &[AgentEvent]) -> Vec<Artifact> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::Artifact { name, sha256 } => Some(Artifact {
+                id: Uuid::new_v4(),
+                safe_name: name.clone(),
+                mime_type: "application/octet-stream".into(),
+                size: 0,
+                sha256: sha256.clone(),
+                privacy_class: PrivacyClass::Private,
+                provenance: "claude-cli:stream-json".into(),
+                private_storage_reference: String::new(),
+                bytes: Vec::new(),
+            }),
+            _ => None,
+        })
+        .collect()
 }

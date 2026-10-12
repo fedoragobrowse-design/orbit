@@ -326,13 +326,32 @@ async fn run_task_pump(state: &ApiState, worker: Uuid, backends: &std::sync::Arc
     Ok(())
 }
 /// Resolve the backend for one task from owner settings (`agent_backend`),
-/// fail-closed to OMP on invalid. The selected kind is persisted into the
-/// task checkpoint so the run records which backend owns it.
+/// with a per-agent override when the task's `agent_definitions.definition`
+/// carries an `agent_backend` key. Fail-closed to OMP on invalid. A backend
+/// already recorded in the task checkpoint (a prior pump pass claimed this
+/// task) wins so a run never switches backends mid-flight. The selected kind
+/// is persisted into the task checkpoint so the run records which backend
+/// owns it.
 async fn backend_for_task(pool: &PgPool, backends: &std::sync::Arc<orbit_agent_backend::registry::BackendRegistry>, owner: Uuid, task: Uuid) -> std::sync::Arc<dyn orbit_agent_backend::AgentBackend> {
     let raw: Option<String> = sqlx::query_scalar("SELECT value->>'agent_backend' FROM settings WHERE owner_id=$1").bind(owner).fetch_optional(pool).await.unwrap_or(None).flatten();
-    // Explicit per-agent choice in the task checkpoint wins when valid.
+    // Explicit per-agent choice in the task's agent definition wins over the
+    // owner-wide settings default when valid. The agent is resolved from the
+    // task's run row, falling back to the checkpoint-recorded agent id.
+    let agent_override: Option<String> = async {
+        let agent: Option<Uuid> = sqlx::query_scalar("SELECT agent_id FROM agent_runs WHERE owner_id=$1 AND task_id=$2").bind(owner).bind(task).fetch_optional(pool).await.unwrap_or(None);
+        let agent = match agent {
+            Some(agent) => Some(agent),
+            None => sqlx::query_scalar("SELECT (checkpoint->>'agent_id')::uuid FROM tasks WHERE owner_id=$1 AND id=$2 AND checkpoint ? 'agent_id'").bind(owner).bind(task).fetch_optional(pool).await.unwrap_or(None).flatten(),
+        };
+        match agent {
+            Some(agent) => sqlx::query_scalar("SELECT definition->>'agent_backend' FROM agent_definitions WHERE owner_id=$1 AND id=$2").bind(owner).bind(agent).fetch_optional(pool).await.unwrap_or(None).flatten(),
+            None => None,
+        }
+    }
+    .await;
+    // Sticky per-task choice recorded by an earlier pump pass wins when valid.
     let checkpoint_raw: Option<String> = sqlx::query_scalar("SELECT checkpoint->>'agent_backend' FROM tasks WHERE owner_id=$1 AND id=$2").bind(owner).bind(task).fetch_optional(pool).await.unwrap_or(None).flatten();
-    let pick = checkpoint_raw.or(raw).unwrap_or_else(|| "OMP".to_string());
+    let pick = checkpoint_raw.or(agent_override).or(raw).unwrap_or_else(|| "OMP".to_string());
     let kind = orbit_agent_backend::BackendKind::parse(&pick).unwrap_or(orbit_agent_backend::BackendKind::Omp);
     backends.get(kind)
 }

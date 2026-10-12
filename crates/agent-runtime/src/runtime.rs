@@ -1,7 +1,7 @@
 use crate::{AgentDefinition, AgentInput, Dispatcher, validate_context};
 use orbit_core::{ContextBlock, ContextKind, Error, OwnerScope, PrivacyClass, Result, TrustLevel};
 use orbit_model_router::{
-    ChatMessage, ChatRequest, ChatResponse, ModelRouter, RoutedRequest, ToolSchema,
+    ChatMessage, ChatRequest, ChatResponse, ModelChunk, ModelRouter, RoutedRequest, ToolSchema,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -363,6 +363,47 @@ async fn finish(
     Ok(())
 }
 
+/// Postgres-backed [`RunEventSink`]: appends bounded `run_events` rows
+/// (`TEXT_DELTA|TOOL_STARTED|TOOL_RESULT|STATUS|USAGE`) with owner/task
+/// filtering. Best-effort display — insert failures are swallowed so a
+/// timeline write can never fail the model step itself.
+pub struct PgEventSink {
+    pool: PgPool,
+}
+
+impl PgEventSink {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl orbit_agent_backend::RunEventSink for PgEventSink {
+    async fn append(
+        &self,
+        owner: Uuid,
+        task: Uuid,
+        run: Option<Uuid>,
+        session: Option<Uuid>,
+        kind: &str,
+        payload: Value,
+    ) -> orbit_core::Result<()> {
+        if !orbit_agent_backend::RUN_EVENT_KINDS.contains(&kind) {
+            return Err(orbit_core::Error::Validation("unknown run event kind".into()));
+        }
+        let _ = sqlx::query("INSERT INTO run_events(owner_id,task_id,run_id,session_id,kind,payload) VALUES($1,$2,$3,$4,$5,$6)")
+            .bind(owner)
+            .bind(task)
+            .bind(run)
+            .bind(session)
+            .bind(kind)
+            .bind(payload)
+            .execute(&self.pool)
+            .await;
+        Ok(())
+    }
+}
+
 /// Tool descriptors the agent may use, filtered to its allow-list. Shared by
 /// the CONTEXT arm (alias registration) and the backend adapter.
 async fn permitted_tools(scope: &OwnerScope, dispatcher: &dyn Dispatcher, agent: &AgentDefinition) -> Result<Vec<orbit_core::ToolDescriptor>> {
@@ -625,6 +666,8 @@ async fn run(
                     let step_req = orbit_agent_backend::BackendRequest {
                         task_id: task,
                         owner_id: scope.owner_id,
+                        run_id: None,
+                        session_id: None,
                         agent: agent.clone(),
                         input: history.iter().rev().find(|m| m.role == "user").map(|m| m.content.clone()).unwrap_or_default(),
                         history,
@@ -635,9 +678,11 @@ async fn run(
                         approval_id: None,
                         depth: r.get::<i32, _>("depth") as u32,
                     };
+                    let sink: Arc<dyn orbit_agent_backend::RunEventSink> =
+                        Arc::new(PgEventSink::new(pool.clone()));
                     let answer = tokio::time::timeout(
                         std::time::Duration::from_secs_f64(remaining),
-                        backend.step(step_req),
+                        backend.step(step_req, sink),
                     )
                     .await;
                     let mut tx = lock(pool, scope, task, fence).await?;
@@ -678,42 +723,132 @@ async fn run(
                     }
                     continue;
                 }
-                let answer = tokio::time::timeout(
+                // Durable streaming path: `stream` owns the spend reservation and
+                // settles it exactly once on the terminal frame (or failure), so
+                // text deltas can persist to `run_events` during the call while
+                // double-settle is impossible. Client disconnect never aborts the
+                // task: the worker owns this future, not any HTTP handler.
+                let stream_request = RoutedRequest {
+                    role: agent.config.model_role,
+                    chat: serde_json::from_value(r.get("chat"))?,
+                    context,
+                    privacy,
+                    task_id: Some(task),
+                    task_fence: Some(fence),
+                    agent_id: Some(agent.id),
+                    automatic: r.get("automatic"),
+                    model_id: None,
+                };
+                let stream_open = tokio::time::timeout(
                     std::time::Duration::from_secs_f64(remaining),
-                    ModelRouter::new(pool.clone(), key_dir.clone()).complete(
-                        scope,
-                        RoutedRequest {
-                            role: agent.config.model_role,
-                            chat: serde_json::from_value(r.get("chat"))?,
-                            context,
-                            privacy,
-                            task_id: Some(task),
-                            task_fence: Some(fence),
-                            agent_id: Some(agent.id),
-                            automatic: r.get("automatic"),
-                            model_id: None,
-                        },
-                    ),
+                    ModelRouter::new(pool.clone(), key_dir.clone()).stream(scope, stream_request),
                 )
                 .await;
-                let mut tx = lock(pool, scope, task, fence).await?;
-                sqlx::query("UPDATE agent_runs SET active_seconds=active_seconds+$3 WHERE owner_id=$1 AND task_id=$2").bind(scope.owner_id).bind(task).bind(started.elapsed().as_secs_f64()).execute(&mut *tx).await?;
-                match answer {
-                    Ok(Ok(answer)) => {
-                        if answer.response.tool_calls.len() > 24
-                            || answer.response.text.len() > 262144
-                        {
-                            return Err(Error::Validation("model response exceeded bounds".into()));
-                        }
-                        sqlx::query("UPDATE agent_runs SET phase='RESPONSE',model_response=$3,route=$4,model_call_id=$5,tokens=tokens+$6,proposal_index=0,pending_calls='[]' WHERE owner_id=$1 AND task_id=$2").bind(scope.owner_id).bind(task).bind(json!(answer.response)).bind(json!(answer.route)).bind(answer.call_id).bind((answer.response.usage.input_tokens+answer.response.usage.output_tokens) as i64).execute(&mut *tx).await?;
-                        tx.commit().await?;
-                        phase(pool, scope, task, fence, "RESPONSE").await?;
-                    }
+                let (mut model_stream, route, call_id) = match stream_open {
+                    Ok(Ok(opened)) => opened,
                     Ok(Err(e)) => {
+                        let mut tx = lock(pool, scope, task, fence).await?;
+                        sqlx::query("UPDATE agent_runs SET active_seconds=active_seconds+$3 WHERE owner_id=$1 AND task_id=$2").bind(scope.owner_id).bind(task).bind(started.elapsed().as_secs_f64()).execute(&mut *tx).await?;
                         tx.commit().await?;
                         return Err(e);
                     }
                     Err(_) => {
+                        let mut tx = lock(pool, scope, task, fence).await?;
+                        sqlx::query("UPDATE agent_runs SET active_seconds=active_seconds+$3 WHERE owner_id=$1 AND task_id=$2").bind(scope.owner_id).bind(task).bind(started.elapsed().as_secs_f64()).execute(&mut *tx).await?;
+                        tx.commit().await?;
+                        return Err(Error::Timeout);
+                    }
+                };
+                // Fold stream chunks in worker time: text/tool deltas append as
+                // bounded `TEXT_DELTA` display rows; the terminal `Done` frame is
+                // the only frame that settles spend (inside `stream`'s wrapper).
+                // Errors mid-stream settle as FAILED there, then surface here so
+                // the run keeps visible partial text with a terminal error.
+                use futures_util::StreamExt;
+                let mut partial_text = String::new();
+                let mut partial_calls: Vec<orbit_model_router::ToolCall> = Vec::new();
+                let mut pending_name: Vec<(String, String)> = Vec::new();
+                let mut pending_args: Vec<String> = Vec::new();
+                let mut terminal: Option<orbit_model_router::ChatResponse> = None;
+                let mut stream_error: Option<Error> = None;
+                let stream_deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(remaining);
+                while let Ok(Some(chunk)) = tokio::time::timeout(stream_deadline.saturating_duration_since(std::time::Instant::now()), model_stream.next()).await {
+                    match chunk {
+                        Ok(ModelChunk::Text { text }) => {
+                            if partial_text.len() + text.len() <= 262144 {
+                                partial_text.push_str(&text);
+                            }
+                            let clipped: String = text.chars().take(4096).collect();
+                            let _ = sqlx::query("INSERT INTO run_events(owner_id,task_id,kind,payload) VALUES($1,$2,'TEXT_DELTA',$3)").bind(scope.owner_id).bind(task).bind(json!({"role": "assistant", "text": clipped})).execute(pool).await;
+                        }
+                        Ok(ModelChunk::ToolCallDelta { index, id, name, arguments }) => {
+                            while pending_name.len() <= index {
+                                pending_name.push((String::new(), String::new()));
+                                pending_args.push(String::new());
+                            }
+                            if let Some(id) = id {
+                                pending_name[index].0.push_str(&id);
+                            }
+                            if let Some(name) = name {
+                                pending_name[index].1.push_str(&name);
+                            }
+                            pending_args[index].push_str(&arguments);
+                        }
+                        Ok(ModelChunk::Done { response }) => {
+                            terminal = Some(response);
+                            break;
+                        }
+                        Err(e) => {
+                            stream_error = Some(e);
+                            break;
+                        }
+                    }
+                }
+                if terminal.is_none() && stream_error.is_none() && std::time::Instant::now() >= stream_deadline {
+                    stream_error = Some(Error::Timeout);
+                }
+                for (index, (id, name)) in pending_name.into_iter().enumerate() {
+                    let args = pending_args.get(index).cloned().unwrap_or_default();
+                    if name.is_empty() && args.is_empty() {
+                        continue;
+                    }
+                    let arguments = if args.is_empty() { json!({}) } else { serde_json::from_str(&args).unwrap_or(json!({"_raw": args.chars().take(4096).collect::<String>()})) };
+                    partial_calls.push(orbit_model_router::ToolCall { id: if id.is_empty() { format!("call_{index}") } else { id }, name, arguments });
+                }
+                let mut tx = lock(pool, scope, task, fence).await?;
+                sqlx::query("UPDATE agent_runs SET active_seconds=active_seconds+$3 WHERE owner_id=$1 AND task_id=$2").bind(scope.owner_id).bind(task).bind(started.elapsed().as_secs_f64()).execute(&mut *tx).await?;
+                match (terminal, stream_error) {
+                    (Some(response), _) => {
+                        let mut tool_calls = response.tool_calls.clone();
+                        if tool_calls.is_empty() {
+                            tool_calls = partial_calls;
+                        }
+                        let mut text = response.text.clone();
+                        if text.is_empty() {
+                            text = partial_text;
+                        }
+                        if tool_calls.len() > 24 || text.len() > 262144 {
+                            tx.commit().await?;
+                            return Err(Error::Validation("model response exceeded bounds".into()));
+                        }
+                        let settled = ChatResponse { text, tool_calls, structured_output: response.structured_output.clone(), usage: response.usage.clone(), finish_reason: response.finish_reason.clone() };
+                        sqlx::query("UPDATE agent_runs SET phase='RESPONSE',model_response=$3,route=$4,model_call_id=$5,tokens=tokens+$6,proposal_index=0,pending_calls='[]' WHERE owner_id=$1 AND task_id=$2").bind(scope.owner_id).bind(task).bind(json!(settled)).bind(json!(route)).bind(call_id).bind((settled.usage.input_tokens+settled.usage.output_tokens) as i64).execute(&mut *tx).await?;
+                        let _ = sqlx::query("INSERT INTO run_events(owner_id,task_id,kind,payload) VALUES($1,$2,'USAGE',$3)").bind(scope.owner_id).bind(task).bind(json!({"call_id": call_id, "usage": settled.usage})).execute(&mut *tx).await;
+                        tx.commit().await?;
+                        phase(pool, scope, task, fence, "RESPONSE").await?;
+                    }
+                    (None, Some(e)) => {
+                        // Partial text stays visible: record what arrived, then
+                        // surface the terminal error so the run fails honestly
+                        // instead of hanging on a Responding bubble.
+                        if !partial_text.is_empty() {
+                            let settled = ChatResponse { text: partial_text, tool_calls: partial_calls, structured_output: None, usage: orbit_model_router::Usage::default(), finish_reason: Some("STREAM_ERROR".into()) };
+                            sqlx::query("UPDATE agent_runs SET model_response=$3 WHERE owner_id=$1 AND task_id=$2").bind(scope.owner_id).bind(task).bind(json!(settled)).execute(&mut *tx).await?;
+                        }
+                        tx.commit().await?;
+                        return Err(e);
+                    }
+                    (None, None) => {
                         tx.commit().await?;
                         return Err(Error::Timeout);
                     }
@@ -905,6 +1040,17 @@ mod tests {
         // never a faked answer.
         let (text, tool_calls) = backend_events_to_response(&[]);
         assert!(text.is_empty() && tool_calls.is_empty());
+    }
+    #[test]
+    fn tool_call_deltas_fold_with_id_name_argument_merge() {
+        // Mirrors the MODEL-arm chunk fold: per-index id/name accumulate and
+        // argument fragments concatenate; raw non-JSON falls back to _raw.
+        let args = "{\"path\":\"a\"}";
+        let arguments: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(arguments["path"], json!("a"));
+        let raw = "not-json{";
+        let fallback: Value = serde_json::from_str(raw).unwrap_or(json!({"_raw": raw}));
+        assert_eq!(fallback["_raw"], json!("not-json{"));
     }
     #[test]
     fn step_journal_advances_along_the_loop() {

@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     path::PathBuf,
 };
 use uuid::Uuid;
@@ -751,7 +751,8 @@ pub struct ChatPost {
 #[derive(Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
 pub struct ChatPage {
     pub conversation_id: Uuid,
-    pub cursor: Option<String>,
+    pub after_sequence: Option<i64>,
+    pub before_sequence: Option<i64>,
     pub limit: Option<i64>,
 }
 #[derive(Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
@@ -844,35 +845,26 @@ pub async fn chat_messages(
     Query(p): Query<ChatPage>,
 ) -> Result<Json<Value>, ApiError> {
     let a = authenticate(&s, &h, false).await?;
-    let limit = p.limit.unwrap_or(50).clamp(1, 200);
-    let cursor = p.cursor.as_deref().and_then(|c| Uuid::parse_str(c).ok());
-    let (since, since_id) = match cursor {
-        Some(id) => {
-            let r = sqlx::query("SELECT created_at FROM chat_messages WHERE owner_id=$1 AND id=$2")
-                .bind(a.scope.owner_id)
-                .bind(id)
-                .fetch_optional(&s.pool)
-                .await?
-                .ok_or(Error::Validation("unknown chat cursor".into()))?;
-            (r.get::<chrono::DateTime<chrono::Utc>, _>("created_at"), id)
-        }
-        None => (chrono::DateTime::<chrono::Utc>::MAX_UTC, Uuid::nil()),
-    };
-    // Chain order: newest task first; inside a task the user row sorts
-    // before its assistant sisters, then by time. created_at ties on
-    // same-ms inserts used to scramble long threads; task creation time
-    // keeps each reply glued to its own message.
-    let rows=sqlx::query("SELECT m.id,m.task_id,m.role,m.content,m.attachments,m.created_at FROM chat_messages m LEFT JOIN tasks t ON t.owner_id=m.owner_id AND t.id=m.task_id WHERE m.owner_id=$1 AND m.conversation_id=$2 AND (m.created_at,m.id)<($3,$4) ORDER BY t.created_at DESC NULLS LAST,m.created_at,m.id LIMIT $5").bind(a.scope.owner_id).bind(p.conversation_id).bind(since).bind(since_id).bind(limit+1).fetch_all(&s.pool).await?;
-    let mut items:Vec<Value>=rows.iter().map(|r|json!({"id":r.get::<Uuid,_>("id"),"task_id":r.get::<Option<Uuid>,_>("task_id"),"role":r.get::<String,_>("role"),"content":r.get::<String,_>("content"),"attachments":r.get::<Value,_>("attachments"),"created_at":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at")})).collect();
-    let next = if items.len() as i64 > limit {
-        items.pop();
-        items
-            .last()
-            .and_then(|v| v["id"].as_str().map(str::to_owned))
+    let limit = p.limit.unwrap_or(50).clamp(1, 100);
+    // Ordered conversation timeline: cursor is (conversation_id, sequence).
+    // Latest page (no before_sequence) returns the newest `limit` rows
+    // ascending; older pages return rows before the cursor, also ascending.
+    let rows = if let Some(before) = p.before_sequence {
+        sqlx::query("SELECT m.id,m.task_id,m.role,m.content,m.attachments,m.sequence,m.created_at FROM chat_messages m WHERE m.owner_id=$1 AND m.conversation_id=$2 AND m.sequence<$3 ORDER BY m.sequence DESC LIMIT $4").bind(a.scope.owner_id).bind(p.conversation_id).bind(before).bind(limit+1).fetch_all(&s.pool).await?
+    } else if let Some(after) = p.after_sequence {
+        sqlx::query("SELECT m.id,m.task_id,m.role,m.content,m.attachments,m.sequence,m.created_at FROM chat_messages m WHERE m.owner_id=$1 AND m.conversation_id=$2 AND m.sequence>$3 ORDER BY m.sequence ASC LIMIT $4").bind(a.scope.owner_id).bind(p.conversation_id).bind(after).bind(limit+1).fetch_all(&s.pool).await?
     } else {
-        None
+        sqlx::query("SELECT m.id,m.task_id,m.role,m.content,m.attachments,m.sequence,m.created_at FROM chat_messages m WHERE m.owner_id=$1 AND m.conversation_id=$2 ORDER BY m.sequence DESC LIMIT $3").bind(a.scope.owner_id).bind(p.conversation_id).bind(limit+1).fetch_all(&s.pool).await?
     };
-    Ok(Json(json!({"items":items,"next_cursor":next})))
+    let has_more = rows.len() as i64 > limit;
+    let mut items: Vec<Value> = rows.iter().take(limit as usize).map(|r| json!({"id": r.get::<Uuid, _>("id"), "task_id": r.get::<Option<Uuid>, _>("task_id"), "role": r.get::<String, _>("role"), "content": r.get::<String, _>("content"), "attachments": r.get::<Value, _>("attachments"), "sequence": r.get::<i64, _>("sequence"), "created_at": r.get::<chrono::DateTime<chrono::Utc>, _>("created_at")})).collect();
+    // Descending fetches (latest page, older pages) flip to ascending so
+    // every page reads oldest-first regardless of direction.
+    if p.after_sequence.is_none() {
+        items.reverse();
+    }
+    let (first, last) = (items.first().and_then(|v| v["sequence"].as_i64()), items.last().and_then(|v| v["sequence"].as_i64()));
+    Ok(Json(json!({"items": items, "first_sequence": first, "last_sequence": last, "has_more": has_more})))
 }
 #[utoipa::path(get,path="/api/v1/chat/stream",responses((status=200)))]
 pub async fn chat_stream(
@@ -887,13 +879,95 @@ pub async fn chat_stream(
     let session = a.session_id;
     let owner = a.scope.owner_id;
     let conversation = p.conversation_id;
-    let stream = async_stream::stream! {let mut seen=HashSet::new();loop{
-     if !matches!(sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM sessions WHERE owner_id=$1 AND id=$2 AND expires_at>now())").bind(owner).bind(session).fetch_one(&s.pool).await,Ok(true)){break}
-     match sqlx::query("SELECT id,task_id,role,content,attachments FROM chat_messages WHERE owner_id=$1 AND conversation_id=$2 ORDER BY created_at,id LIMIT 200").bind(owner).bind(conversation).fetch_all(&s.pool).await{
-      Ok(rows)=>{let mut fresh=false;for r in &rows{let id:Uuid=r.get("id");if seen.insert(id){fresh=true;yield Ok(SseEvent::default().id(id.to_string()).event("message").data(json!({"id":id,"task_id":r.get::<Option<Uuid>,_>("task_id"),"role":r.get::<String,_>("role"),"content":r.get::<String,_>("content"),"attachments":r.get::<Value,_>("attachments")}).to_string()))}}if fresh{continue}},Err(_)=>break}
-     match sqlx::query("SELECT state FROM tasks WHERE owner_id=$1 AND checkpoint->>'conversation_id'=$2 ORDER BY created_at DESC LIMIT 1").bind(owner).bind(conversation.to_string()).fetch_optional(&s.pool).await{Ok(Some(r))=>{let state:String=r.get("state");if matches!(state.as_str(),"COMPLETED"|"FAILED"|"TIMED_OUT"|"CANCELLED"){yield Ok(SseEvent::default().event("done").data(json!({"state":state}).to_string()));break}},Ok(None)=>{},Err(_)=>break}
-     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }};
+    // Ordered run-event timeline: replay `run_events` for this conversation's
+    // tasks from `Last-Event-ID`, then follow new rows in `id` order. A run id
+    // stays explicit so an old completed task cannot terminate a new turn.
+    let start: i64 = h
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|n| *n >= 0)
+        .unwrap_or(0);
+    let tasks: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT m.task_id FROM chat_messages m WHERE m.owner_id=$1 AND m.conversation_id=$2 AND m.task_id IS NOT NULL").bind(owner).bind(conversation).fetch_all(&s.pool).await?;
+    let stream = async_stream::stream! {
+        let mut cursor = start;
+        // Replay phase: every stored message once, then every stored event
+        // after the cursor, each exactly once in (sequence, id) order.
+        let rows = sqlx::query("SELECT m.id,m.task_id,m.role,m.content,m.attachments,m.sequence FROM chat_messages m WHERE m.owner_id=$1 AND m.conversation_id=$2 ORDER BY m.sequence ASC LIMIT 500").bind(owner).bind(conversation).fetch_all(&s.pool).await;
+        if let Ok(rows) = rows {
+            for r in &rows {
+                let id: Uuid = r.get("id");
+                let seq: i64 = r.get("sequence");
+                yield Ok(SseEvent::default().id(seq.to_string()).event("message").data(json!({"id": id, "task_id": r.get::<Option<Uuid>, _>("task_id"), "role": r.get::<String, _>("role"), "content": r.get::<String, _>("content"), "attachments": r.get::<Value, _>("attachments"), "sequence": seq}).to_string()));
+            }
+        }
+        loop {
+            if !matches!(sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM sessions WHERE owner_id=$1 AND id=$2 AND expires_at>now())").bind(owner).bind(session).fetch_one(&s.pool).await, Ok(true)) { break; }
+            if tasks.is_empty() {
+                match sqlx::query("SELECT state,id FROM tasks WHERE owner_id=$1 AND checkpoint->>'conversation_id'=$2 ORDER BY created_at DESC LIMIT 5").bind(owner).bind(conversation.to_string()).fetch_all(&s.pool).await {
+                    Ok(latest) => {
+                        let terminal = latest.iter().find_map(|r| { let state: String = r.get("state"); matches!(state.as_str(), "COMPLETED" | "FAILED" | "TIMED_OUT" | "CANCELLED").then(|| (state, r.get::<Uuid, _>("id"))) });
+                        if let Some((state, id)) = terminal {
+                            yield Ok(SseEvent::default().event("done").data(json!({"state": state, "task_id": id}).to_string()));
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                continue;
+            }
+            let events = sqlx::query("SELECT e.id,e.task_id,e.kind,e.payload FROM run_events e WHERE e.owner_id=$1 AND e.task_id = ANY($2) AND e.id>$3 ORDER BY e.id ASC LIMIT 100").bind(owner).bind(&tasks).bind(cursor).fetch_all(&s.pool).await;
+            match events {
+                Ok(rows) => {
+                    for r in &rows {
+                        let id: i64 = r.get("id");
+                        cursor = id;
+                        let kind: String = r.get("kind");
+                        let event = match kind.as_str() {
+                            "TEXT_DELTA" => "delta",
+                            "TOOL_STARTED" => "tool_started",
+                            "TOOL_RESULT" => "tool_result",
+                            "STATUS" => "status",
+                            "USAGE" => "usage",
+                            _ => "event",
+                        };
+                        yield Ok(SseEvent::default().id(id.to_string()).event(event).data(json!({"id": id, "task_id": r.get::<Option<Uuid>, _>("task_id"), "kind": kind, "payload": r.get::<Value, _>("payload")}).to_string()));
+                    }
+                    if !rows.is_empty() { continue; }
+                }
+                Err(_) => break,
+            }
+            // New chat rows after connect stream as messages (deduped by id on
+            // the client); terminal task state closes this run only.
+            match sqlx::query("SELECT m.id,m.task_id,m.role,m.content,m.attachments,m.sequence FROM chat_messages m WHERE m.owner_id=$1 AND m.conversation_id=$2 AND m.sequence>$3 ORDER BY m.sequence ASC LIMIT 50").bind(owner).bind(conversation).bind(start).fetch_all(&s.pool).await {
+                Ok(fresh) => {
+                    for r in &fresh {
+                        let id: Uuid = r.get("id");
+                        let seq: i64 = r.get("sequence");
+                        yield Ok(SseEvent::default().id(format!("m{seq}")).event("message").data(json!({"id": id, "task_id": r.get::<Option<Uuid>, _>("task_id"), "role": r.get::<String, _>("role"), "content": r.get::<String, _>("content"), "attachments": r.get::<Value, _>("attachments"), "sequence": seq}).to_string()));
+                    }
+                    if !fresh.is_empty() { continue; }
+                }
+                Err(_) => break,
+            }
+            match sqlx::query("SELECT id,state FROM tasks WHERE owner_id=$1 AND checkpoint->>'conversation_id'=$2 AND id = ANY($3) ORDER BY created_at DESC LIMIT 5").bind(owner).bind(conversation.to_string()).bind(&tasks).fetch_all(&s.pool).await {
+                Ok(latest) => {
+                    let terminal = latest.iter().find_map(|r| { let state: String = r.get("state"); matches!(state.as_str(), "COMPLETED" | "FAILED" | "TIMED_OUT" | "CANCELLED").then(|| (state, r.get::<Uuid, _>("id"))) });
+                    if let Some((state, id)) = terminal {
+                        // Drain first: only close once no newer events remain.
+                        let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM run_events WHERE owner_id=$1 AND task_id = ANY($2) AND id>$3").bind(owner).bind(&tasks).bind(cursor).fetch_optional(&s.pool).await.unwrap_or(Some(0)).unwrap_or(0);
+                        if pending == 0 {
+                            yield Ok(SseEvent::default().event("done").data(json!({"state": state, "task_id": id}).to_string()));
+                            break;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    };
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 #[utoipa::path(post,path="/api/v1/chat/attachments",responses((status=200,body=Value)))]
