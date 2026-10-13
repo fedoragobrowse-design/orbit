@@ -7,10 +7,11 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::PathBuf};
 use uuid::Uuid;
 
-/// Wire capability version. Bumped to 2 when the node-side browser stub was
-/// removed; managed browser tools live server-side now, so a version mismatch
-/// means an incompatible peer and is reported as unsupported.
-pub const VERSION: u16 = 2;
+/// Wire capability version. Bumped to 3 for opt-in desktop observation
+/// (`Observe` / `DesktopObservation` plus the `desktop_observation`
+/// capability); a version mismatch means an incompatible peer and is
+/// reported as unsupported.
+pub const VERSION: u16 = 3;
 pub const MAX_FILE: usize = 10 * 1024 * 1024;
 pub const MAX_TEXT: usize = 1024 * 1024;
 pub const MAX_PAGE: usize = 50;
@@ -57,11 +58,14 @@ pub struct NodeConfig {
 pub struct EmbeddingConfig { pub origin: String, pub model: String, pub protocol: String }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum MessageType { Register, Authenticate, Heartbeat, Capabilities, FileSearch, FileRead, FileWrite, FileMetadata, FileWatch, FileList, FileMove, FileCopy, BrowserNavigate, BrowserFillSubmit, EventPush, ApprovalRequest, Response, Ack, Revoke, Challenge, Session }
+pub enum MessageType { Register, Authenticate, Heartbeat, Capabilities, FileSearch, FileRead, FileWrite, FileMetadata, FileWatch, FileList, FileMove, FileCopy, BrowserNavigate, BrowserFillSubmit, EventPush, ApprovalRequest, Response, Ack, Revoke, Observe, DesktopObservation, Challenge, Session }
 // NOTE: `BrowserNavigate` / `BrowserFillSubmit` are legacy rejection-only
 // values. They stay decodable so an old peer's frame is rejected with a
 // wire-version/unsupported error instead of a malformed-envelope error; the
 // node performs no browser work.
+// NOTE: `Observe` (server narrow/pause/revoke directives; never enable) and
+// `DesktopObservation` (node-to-server approved evidence frames) are the
+// opt-in desktop observation pair from VERSION 3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope { pub version: u16, pub request_id: Uuid, pub node_id: Uuid, pub message_type: MessageType, pub payload: Value }
@@ -125,11 +129,47 @@ pub struct FileRecord {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct IndexStatus { pub indexed: u64, pub skipped: u64, pub truncated: u64, pub unreadable: u64, pub gap: bool, pub available_modes: Vec<String> }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Capabilities { pub operations: Vec<String>, pub roots: Vec<PublicRoot>, pub native_mutation_proof: String, pub semantic_available: bool }
+pub struct Capabilities { pub operations: Vec<String>, pub roots: Vec<PublicRoot>, pub native_mutation_proof: String, pub semantic_available: bool, #[serde(default)] pub desktop_observation: DesktopObservationCapability }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicRoot { pub id: Uuid, pub display_name: String, pub mode: RootMode, pub revision: i64, pub mutation_available: bool, pub index_status: IndexStatus }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEvent { pub sequence: i64, pub root_id: Uuid, pub root_revision: i64, pub file_id: Uuid, pub version: String, pub event_type: String, pub metadata: Value }
+/// Live desktop-observation report. `supported` gates on the XDG Desktop
+/// Portal ScreenCast path (no silent fallback); `state` is the observer
+/// state with server revocation folded to OFF (pixels off either way).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopObservationCapability { pub supported: bool, pub state: DesktopObservationState }
+impl Default for DesktopObservationCapability {
+    fn default() -> Self { Self { supported: false, state: DesktopObservationState::Off } }
+}
+/// Observer state on the wire. `Off` covers never-enabled, locally stopped
+/// and server-revoked (pixels off in all three); `Running` means enabled,
+/// unpaused and portal-backed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DesktopObservationState { Off, Running, Paused, Unavailable, PermissionDenied }
+/// Server desktop directive. Narrow, pause or revoke only: there is no
+/// enable field by design, so unknown keys (including any future `enable`)
+/// are refused by `deny_unknown_fields` instead of ignored.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObserveDirective {
+    #[serde(default)] pub paused: Option<bool>,
+    #[serde(default)] pub narrowed_apps: Option<Vec<String>>,
+    #[serde(default)] pub revoked: Option<bool>,
+}
+/// One approved desktop evidence frame, node to server. Converted from
+/// observer-approved snapshots only — never raw pixels — and already
+/// bounded, rate-limited and changed-only at the source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DesktopObservationFrame {
+    pub window_id: String,
+    pub app_id: String,
+    pub captured_at: DateTime<Utc>,
+    pub mime_type: String,
+    pub sha256: String,
+    pub bytes_base64: String,
+}
 
 pub fn normalize_path(path: &str) -> Result<String> {
     if path.is_empty() || path.len() > 4096 || path.starts_with('/') || path.starts_with('\\') || path.contains('\\') || path.contains(':') || path.contains('\0') { return Err(Error::Forbidden); }

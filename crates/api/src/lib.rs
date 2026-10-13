@@ -22,6 +22,7 @@ pub mod ops;
 pub mod push;
 pub mod runtimes;
 pub mod search;
+pub mod desktop_observation;
 pub mod observations;
 pub mod shell_routes;
 pub mod skills;
@@ -99,6 +100,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(mcp_server::router(state.clone()))
         .merge(marketplace::router())
         .merge(computers::router())
+        .merge(desktop_observation::router())
         .merge(agents::router())
         .merge(push::router())
         .merge(ops::router())
@@ -270,6 +272,11 @@ async fn run_housekeeping(state: &ApiState, bus: &orbit_event_bus::PostgresEvent
     // retrieval stops returning them. Owner-scoped sweep; no-op when empty.
     if let Err(error) = run_memory_sweep(state).await {
         tracing::error!(error=%error,"memory sweep failed")
+    }
+    // Desktop observation expiry: drop `desktop` rows past expires_at so OCR
+    // text lives at most retention_hours (24h default) unless explicitly kept.
+    if let Err(error) = desktop_observation::sweep_expired_desktop_observations(&state.pool).await {
+        tracing::error!(error=%error,"desktop observation expiry sweep failed")
     }
     if let Err(error) = bus.process_foundation().await {
         tracing::error!(error=%error,"event processor failed")

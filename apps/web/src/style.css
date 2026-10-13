@@ -1005,8 +1005,37 @@ dialog::backdrop {
   padding: 12px 16px;
   background: #f5ebda;
   color: #805600;
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
   margin-bottom: 24px;
+}
+.observing-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 24px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 2px solid var(--pending);
+  border-radius: 12px;
+}
+.observing-banner svg {
+  flex: none;
+  color: var(--pending);
+}
+.observing-banner-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.observing-banner-link {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  font-weight: 600;
 }
 .summary-line {
   display: flex;

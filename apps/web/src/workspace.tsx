@@ -31,6 +31,7 @@ import {
 } from "./api";
 import { enablePush } from "./push";
 import { FAMILIES, useDraft } from "./nav";
+import { DesktopObservationSection } from "./observation";
 const TaskTerminalPane = lazy(() =>
   import("./terminal").then((m) => ({ default: m.TaskTerminalPane })),
 );
@@ -1374,6 +1375,7 @@ export function Settings() {
         </form>
       )}
       <UpdaterSection />
+      <DesktopObservationSection />
       <McpSection />
       <SkillsSection />
       <QuestionsSection />

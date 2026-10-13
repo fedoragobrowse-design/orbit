@@ -37,6 +37,9 @@ enum Command {
     Status,
     /// Rescan one root and report real index counters.
     Reindex { root_id: Uuid },
+    /// Opt-in personal desktop observation. Local enable only; the server
+    /// can narrow, pause or revoke but never enable. Default OFF.
+    Observe { #[command(subcommand)] command: ObserveCommand },
     /// Administrator-only local installation. Never reachable from the server.
     Service { #[command(subcommand)] command: ServiceCommand },
 }
@@ -53,6 +56,23 @@ enum RootCommand {
 #[derive(Subcommand)]
 enum ServiceCommand {
     Install { #[arg(long)] owner: String, #[arg(long)] consent: bool },
+}
+#[derive(Subcommand)]
+enum ObserveCommand {
+    /// Start desktop observation (explicit local opt-in). Fails with
+    /// DESKTOP_CAPTURE_UNAVAILABLE where the portal path is unsupported.
+    Start {
+        /// Window hint shown until the compositor picker selection lands.
+        #[arg(long)] window: Option<String>,
+        /// Explicitly acknowledge a pending server revocation first.
+        #[arg(long)] acknowledge_revoke: bool,
+    },
+    /// Pause observation immediately. Pixels halt; enable state is kept.
+    Pause,
+    /// Stop observation immediately and drop the session.
+    Stop,
+    /// Report portal support, live state, picker denial and activity.
+    Status,
 }
 
 #[tokio::main]
@@ -78,6 +98,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Status => report(read_config(&config_path)?, json!({"command":"status"})),
         Command::Reindex { root_id } => report(read_config(&config_path)?, json!({"command":"reindex","root_id":root_id})),
         Command::Roots { command } => roots(&config_path, command),
+        Command::Observe { command } => observe(&config_path, command),
         Command::Service { command } => service(command),
     }
 }
@@ -185,6 +206,29 @@ fn roots(config_path: &Path, command: RootCommand) -> Result<()> {
             println!("{}", orbit_computer_node::admin::prepare(&config, &path, consent)?.display());
             Ok(())
         }
+    }
+}
+fn observe(config_path: &Path, command: ObserveCommand) -> Result<()> {
+    let config = read_config(config_path)?;
+    match command {
+        ObserveCommand::Start { window, acknowledge_revoke } => {
+            if acknowledge_revoke {
+                // A server revoke is sticky until locally acknowledged; the
+                // ack clears the flag but leaves observation OFF, so the
+                // start below is still an explicit local enable.
+                let _ = report(config.clone(), json!({"command": "observe_acknowledge_revoke"}));
+            }
+            let payload = match window {
+                Some(window) => json!({"command": "observe_start", "window": window}),
+                None => json!({"command": "observe_start"}),
+            };
+            report(config, payload)
+        }
+        ObserveCommand::Pause => report(config, json!({"command": "observe_pause"})),
+        ObserveCommand::Stop => report(config, json!({"command": "observe_stop"})),
+        // Status merges the control reply with capability support so a
+        // human can see supported / running / paused / denied at once.
+        ObserveCommand::Status => report(config, json!({"command": "observe_status"})),
     }
 }
 

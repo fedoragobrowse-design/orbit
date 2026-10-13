@@ -38,6 +38,7 @@ import {
 import { api, post, queryClient, setSession, type Session } from "./api";
 import { syncPushSubscription } from "./push";
 import { ErrorNotice, Input } from "./ui";
+import { ObservationIndicator } from "./observation";
 // Tab bundles split per route so the Pi serves a small first paint: the shell
 // (Home/Chat/Tasks) loads first, heavier tabs load on navigation.
 import { Home, Tasks, TaskDetail, Activity, Settings } from "./workspace";
@@ -257,6 +258,7 @@ export function App() {
         </aside>
         <main id="main" className="main" tabIndex={-1}>
           <GlobalSearch />
+          <ObservationIndicator />
           {!online && (
             <div className="offline-banner" role="status">
               You are offline. Saved metadata may be stale; your unsent drafts

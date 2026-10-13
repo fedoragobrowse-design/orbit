@@ -14,9 +14,9 @@ use chrono::Utc;
 use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
 use orbit_computer_node_protocol::{
-    Capabilities, Challenge, Envelope, Error, ExecutionRequest, FileEvent, MAX_FILE, MAX_PAGE,
-    MAX_TEXT, MessageType, NodeConfig, PublicRoot, Result, RootGrant, RootMode, normalize_path,
-    sign_challenge,
+    Capabilities, Challenge, DesktopObservationCapability, DesktopObservationState, Envelope, Error,
+    ExecutionRequest, FileEvent, MAX_FILE, MAX_PAGE, MAX_TEXT, MessageType, NodeConfig, ObserveDirective,
+    PublicRoot, Result, RootGrant, RootMode, normalize_path, sign_challenge,
 };
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
@@ -43,6 +43,11 @@ pub struct Node {
     watch_rx: std::sync::mpsc::Receiver<observation::ObserveWake>,
     watch_overflow: std::sync::Arc<std::sync::atomic::AtomicBool>,
     watcher: Option<notify::RecommendedWatcher>,
+    /// Explicit local pause (`observe pause`). Halts pixels like a server
+    /// pause, but lives in transport so only explicit local intent —
+    /// `observe start` or `observe stop` — can set or clear it. Never sent
+    /// to the server and never set by server directives.
+    observe_paused_local: bool,
 }
 
 impl Node {
@@ -57,7 +62,7 @@ impl Node {
         std::fs::create_dir_all(&config.state_dir)?;
         let index = Index::open(&config.state_dir.join("index.sqlite"))?;
         let (watch_tx, watch_rx) = observation::wake_channel();
-        let mut node = Self { config, key, index, watch_tx, watch_rx, watch_overflow: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), watcher: None };
+        let mut node = Self { config, key, index, watch_tx, watch_rx, watch_overflow: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), watcher: None, observe_paused_local: false };
         node.restore_watches()?;
         Ok(node)
     }
@@ -158,6 +163,31 @@ impl Node {
                 _ = heartbeat.tick() => {
                     let roots: std::collections::HashMap<uuid::Uuid, RootGrant> = self.config.roots.iter().filter(|r|!r.revoked).map(|r|(r.id,r.clone())).collect();
                     observation::drain(&self.watch_rx, &roots, &mut self.index, &self.watch_overflow)?;
+                    // Approved desktop evidence rides the same tick as file
+                    // events: the observer already rate-limits (1/10s),
+                    // changed-only, denied-window discards, so a `Some` here
+                    // is always safe to forward and `None` means silence.
+                    // The transport-local pause gates the pump directly: a
+                    // paused node sends nothing without touching the
+                    // observer's server-pause bit.
+                    let paused_local = self.observe_paused_local;
+                    if !paused_local {
+                        if let Some(frame) = observation::desktop_poll_frame() {
+                        let frame = orbit_computer_node_protocol::DesktopObservationFrame {
+                            window_id: frame.window_id,
+                            app_id: frame.app_id,
+                            captured_at: frame.captured_at,
+                            mime_type: frame.mime_type,
+                            sha256: frame.sha256,
+                            bytes_base64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &frame.bytes),
+                        };
+                        // Oversize guard mirrors `send`: a frame that would
+                        // breach the bound is dropped, never truncated.
+                        if serde_json::to_string(&frame).map(|body| body.len()).unwrap_or(usize::MAX) <= orbit_computer_node_protocol::MAX_FRAME {
+                            self.send(&mut socket, MessageType::DesktopObservation, serde_json::to_value(&frame)?).await?;
+                        }
+                        }
+                    }
                     let pending = self.index.pending_events()?;
                     if !pending.is_empty() {
                         let events: Vec<Value> = serde_json::to_value(&pending)?.as_array().cloned().unwrap_or_default();
@@ -256,6 +286,7 @@ impl Node {
             operations,
             native_mutation_proof: "openat2+renameat2-noreplace+landlock".into(),
             roots,
+            desktop_observation: desktop_capability(self.observe_paused_local),
         }
     }
 
@@ -277,6 +308,10 @@ impl Node {
             // refused as unsupported (managed browser tools live server-side now).
             MessageType::BrowserNavigate | MessageType::BrowserFillSubmit => Err(Error::Unsupported),
             MessageType::Revoke => self.revoke(&envelope.payload),
+            // Server observation directives: narrow, pause or revoke only.
+            // There is no enable path here by design — only a local action
+            // on this machine (`observe start`) can switch pixels on.
+            MessageType::Observe => self.observe(&envelope.payload),
             other => Err(Error::Invalid(format!(
                 "unsupported message type {}",
                 label(other)
@@ -525,6 +560,17 @@ impl Node {
                 self.sync_watcher()?;
                 Ok(json!({"watch_id": id, "status": "CANCELLED"}))
             }
+            Some("observe_start") => self.observe_start(command),
+            // Local pause halts pixels immediately but keeps the session, so
+            // a later explicit local start resumes; stop drops everything.
+            Some("observe_pause") => self.observe_pause_local(),
+            Some("observe_stop") => self.observe_stop(),
+            Some("observe_status") => Ok(self.observe_report()),
+            Some("observe_acknowledge_revoke") => {
+                observation::desktop_acknowledge_revocation_local();
+                self.observe_paused_local = false;
+                Ok(self.observe_report())
+            }
             _ => Err(Error::Invalid("unknown control command".into())),
         }
     }
@@ -599,7 +645,90 @@ impl Node {
             "watches":self.index.watches().unwrap_or_default().iter().map(|w| json!({"watch_id":w.id,"root_id":w.root,"relative_path":w.path,"types":w.types,"status": if self.config.roots.iter().any(|r|r.id==w.root && r.revoked) {"GAP"} else {"ACTIVE"}})).collect::<Vec<_>>(),
             "semantic_available":self.config.embedding.is_some(),
             "operations":self.capabilities().operations,
+            "desktop_observation":self.observe_report(),
         })
+    }
+
+    /// Live desktop-observation report: portal support, running / paused /
+    /// denied state, picker denial and session activity. A local pause or a
+    /// server revoke folds to the same PAUSED / OFF the wire reports.
+    pub fn observe_report(&self) -> Value {
+        observe_report(self.observe_paused_local)
+    }
+
+    fn observe_pause_local(&mut self) -> Result<Value> {
+        // Only an enabled observer can be paused: pausing OFF is a no-op
+        // that still reports, so scripts stay idempotent.
+        if observation::desktop_status() != observation::DesktopStatus::Disabled {
+            self.observe_paused_local = true;
+        }
+        Ok(self.observe_report())
+    }
+
+    fn observe_stop(&mut self) -> Result<Value> {
+        // Stop clears the local pause too: the session is gone either way.
+        self.observe_paused_local = false;
+        observation::desktop_stop();
+        Ok(self.observe_report())
+    }
+
+    /// Explicit local opt-in (`observe start`). Local action only — the
+    /// server path ([`Node::observe`]) deliberately has no enable branch.
+    /// Clears the local pause (fresh local intent wins); a sticky server
+    /// revoke still needs an explicit local acknowledge first.
+    pub fn observe_start(&mut self, command: &Value) -> Result<Value> {
+        match &command["window"] {
+            Value::Null => {}
+            Value::String(_) => {}
+            _ => return Err(Error::Invalid("window must be a string".into())),
+        }
+        // A sticky server revoke needs an explicit local acknowledge first:
+        // `enable_local` would silently no-op under revoke, so refuse here
+        // with a message that points at the ack command instead.
+        if observation::desktop_status() == observation::DesktopStatus::Revoked {
+            return Err(Error::Invalid(
+                "observation revoked by server: run `observe start --acknowledge-revoke` to acknowledge, then start again".into(),
+            ));
+        }
+        let window = command["window"].as_str();
+        match observation::desktop_start(window) {
+            Ok(session) => {
+                // Fresh local intent wins over the local pause. Reaching here
+                // means the observer really enabled (see the revoke guard).
+                self.observe_paused_local = false;
+                Ok(json!({
+                    "window_id": session.window_id,
+                    "app_id": session.app_id,
+                    "status": self.observe_report(),
+                }))
+            }
+            Err(error) => Err(error),
+        }
+    }
+    /// Server observation directives: narrow, pause or revoke only.
+    /// Unknown keys (including any `enable`) are refused by the directive
+    /// struct, never ignored — the first unknown key fails the whole frame.
+    pub fn observe(&mut self, payload: &Value) -> Result<Value> {
+        let directive: ObserveDirective = serde_json::from_value(payload.clone())?;
+        if directive.revoked.unwrap_or(false) {
+            // Revoke is the terminal state: pixels stop immediately, the
+            // session drops, and only an explicit local acknowledge plus a
+            // fresh local start can recover.
+            observation::desktop_apply_server_revoke();
+            observation::desktop_stop();
+        } else {
+            if let Some(apps) = &directive.narrowed_apps {
+                observation::desktop_apply_server_narrow(apps);
+            }
+            match directive.paused {
+                Some(true) => observation::desktop_apply_server_pause(),
+                // Resume only clears the pause flag; pixels still need the
+                // local enable flag, so resume can never enable remotely.
+                Some(false) => observation::desktop_apply_server_resume(),
+                None => {}
+            }
+        }
+        Ok(serde_json::to_value(self.capabilities())?)
     }
 
     /// (Re)attach the kernel watcher to the durable watch table. Restores
@@ -620,7 +749,55 @@ impl Node {
         let watcher = self.watcher.as_mut().ok_or(Error::Invalid("file watch failed".into()))?;
         observation::sync_watches(watcher, &self.config.roots, &self.index)
     }
+}
 
+/// Live desktop-observation report for capabilities and status surfaces:
+/// portal support, running/paused/support/denied state, picker denial and
+/// session activity. A local pause, a server pause or a server revoke folds
+/// into PAUSED / OFF here (pixels off in all three).
+pub fn observe_report(paused_local: bool) -> Value {
+    let status = observation::desktop_status();
+    // A local pause wins over READY the same way a server pause does; the
+    // observer keeps no local-pause bit of its own. `active` follows the
+    // pixels: false whenever the report is not RUNNING.
+    let state = match status {
+        observation::DesktopStatus::Disabled => "OFF",
+        observation::DesktopStatus::Ready if paused_local => "PAUSED",
+        observation::DesktopStatus::Ready => "RUNNING",
+        observation::DesktopStatus::Paused => "PAUSED",
+        observation::DesktopStatus::Unavailable if paused_local => "PAUSED",
+        observation::DesktopStatus::Unavailable => "UNAVAILABLE",
+        observation::DesktopStatus::Revoked => "OFF",
+    };
+    let active = state == "RUNNING" && observation::desktop_active();
+    json!({
+        "supported": observation::desktop_supported(),
+        "state": state,
+        "permission_denied": observation::desktop_permission_denied(),
+        "active": active,
+    })
+}
+
+/// Live capability value from the same report, so REGISTER and CAPABILITIES
+/// answers agree with the control/status surface.
+pub fn desktop_capability(paused_local: bool) -> DesktopObservationCapability {
+    let report = observe_report(paused_local);
+    let state = match report["state"].as_str() {
+        Some("RUNNING") => DesktopObservationState::Running,
+        Some("PAUSED") => DesktopObservationState::Paused,
+        Some("UNAVAILABLE") => DesktopObservationState::Unavailable,
+        _ if report["permission_denied"].as_bool() == Some(true) => {
+            DesktopObservationState::PermissionDenied
+        }
+        _ => DesktopObservationState::Off,
+    };
+    DesktopObservationCapability {
+        supported: report["supported"].as_bool().unwrap_or(false),
+        state,
+    }
+}
+
+impl Node {
     /// Re-attach persisted watches after a restart and replay any unacked
     /// queued events on the next heartbeat (the outbox is never cleared).
     pub fn restore_watches(&mut self) -> Result<()> {
@@ -628,7 +805,6 @@ impl Node {
         if watched.is_empty() { return Ok(()); }
         self.sync_watcher()
     }
-
     pub fn pending(&self) -> Result<Vec<FileEvent>> {
         self.index.pending_events()
     }
@@ -672,6 +848,8 @@ fn label(message_type: MessageType) -> &'static str {
         MessageType::Response => "RESPONSE",
         MessageType::Ack => "ACK",
         MessageType::Revoke => "REVOKE",
+        MessageType::Observe => "OBSERVE",
+        MessageType::DesktopObservation => "DESKTOP_OBSERVATION",
         MessageType::Challenge => "CHALLENGE",
         MessageType::Session => "SESSION",
     }
