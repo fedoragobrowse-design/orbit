@@ -81,6 +81,10 @@ impl PolicyEngine {
                 | "email.read"
                 | "email.search"
                 | "email.draft"
+                | "browser.session.open"
+                | "browser.session.snapshot"
+                | "browser.session.navigate"
+                | "browser.session.close"
         );
         let modifying = matches!(
             name,
@@ -91,6 +95,10 @@ impl PolicyEngine {
                 | "email.archive"
                 | "email.label"
                 | "shell.execute"
+                | "browser.session.click"
+                | "browser.session.fill"
+                | "browser.session.submit"
+                | "browser.session.download"
         );
         let explicitly_forbidden = name == "files.delete"
             || name.starts_with("payments.")

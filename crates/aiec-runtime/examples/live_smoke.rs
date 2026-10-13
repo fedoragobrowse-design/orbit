@@ -80,9 +80,10 @@ async fn main() -> Result<(), String> {
         memory_mb: 512,
         disk_mb,
         lifetime_seconds: 1680,
-        network_enabled: false,
+        network: orbit_task_runtime::NetworkMode::None,
         inputs: Vec::new(),
         egress: None,
+        web_egress: None,
     };
     // The run UUID is the POST Idempotency-Key; status polling reuses it.
     let handle = runtime

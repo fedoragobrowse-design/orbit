@@ -1,0 +1,1 @@
+{"compilerOptions": {"declaration": true, "lib": ["ES2024"], "module": "NodeNext", "moduleResolution": "NodeNext", "noFallthroughCasesInSwitch": true, "noUnusedLocals": true, "noUnusedParameters": true, "outDir": "dist", "resolveJsonModule": true, "rootDir": "src", "skipLibCheck": true, "strict": true, "target": "ES2022", "verbatimModuleSyntax": true}, "include": ["src"]}

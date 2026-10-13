@@ -58,6 +58,7 @@ const Reminders = lazy(() => import("./utility").then((m) => ({ default: m.Remin
 const Contacts = lazy(() => import("./utility").then((m) => ({ default: m.Contacts })));
 const Bookmarks = lazy(() => import("./utility").then((m) => ({ default: m.Bookmarks })));
 const Clips = lazy(() => import("./utility").then((m) => ({ default: m.Clips })));
+const BrowserPage = lazy(() => import("./browser").then((m) => ({ default: m.BrowserPage })));
 const TerminalPage = lazy(() => import("./terminal").then((m) => ({ default: m.TerminalPage })));
 const Ops = lazy(() => import("./ops").then((m) => ({ default: m.Ops })));
 const About = lazy(() => import("./ops").then((m) => ({ default: m.About })));
@@ -288,6 +289,7 @@ export function App() {
             <Route path="/calendar" element={<Navigate to="/connections/calendars" replace />} />
             <Route path="/email" element={<Navigate to="/connections/email" replace />} />
             <Route path="/computers" element={<Computers />} />
+            <Route path="/browser" element={<BrowserPage />} />
             <Route path="/terminal" element={<TerminalPage />} />
             <Route path="/home-assistant" element={<HomeAssistant />} />
             <Route path="/settings" element={<Settings />} />

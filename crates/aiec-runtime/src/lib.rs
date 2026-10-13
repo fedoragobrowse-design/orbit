@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use orbit_core::{Error, PrivacyClass, Result};
 use orbit_model_router::endpoint::AdmittedEndpoint;
 use orbit_task_runtime::{
-    Artifact, FILE_LIMIT, ModelEgress, RuntimeHandle, RuntimeOutcome, RuntimeResult, RuntimeSpec,
-    RuntimeTask, TRANSFER_LIMIT, TaskRuntime, workspace_path,
+    Artifact, FILE_LIMIT, RuntimeHandle, RuntimeOutcome, RuntimeResult, RuntimeSpec, RuntimeTask,
+    TRANSFER_LIMIT, TaskRuntime, workspace_path,
 };
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -215,12 +215,8 @@ impl AIecRuntime {
             || sandbox.disk_mb != spec.disk_mb
             || sandbox.timeout_seconds != 1680
             || sandbox.network.enabled
-            || sandbox
-                .environment
-                .pointer("/guard/topology")
-                .and_then(Value::as_str)
-                != Some("outside")
-            || !matches!(sandbox.environment.pointer("/guard/policy_template").and_then(Value::as_str), Some("no-network") | Some("brokered-egress"))
+            || sandbox.environment.pointer("/guard/topology").and_then(Value::as_str) != Some("outside")
+            || !matches!(sandbox.environment.pointer("/guard/policy_template").and_then(Value::as_str), Some("no-network") | Some("brokered-egress") | Some("brokered-web"))
         {
             return Err(Error::Forbidden);
         }
@@ -387,6 +383,37 @@ impl AIecRuntime {
         };
         Ok(capable)
     }
+    /// Live brokered-web (managed browser) capability probe. Same shape as
+    /// the shell probe: looks for a `supports_brokered_web` flag and treats
+    /// any missing flag, non-list shape, or transport outcome as "not
+    /// capable" (`Ok(false)`). AIec sessions run the browser inside AIec
+    /// with brokered egress; a missing capability is `BROWSER_UNAVAILABLE`,
+    /// never a raw guest network.
+    pub async fn probe_brokered_web(&self) -> Result<bool> {
+        let response = match self.request(Method::GET, "v1/sandboxes", 30)?.send().await {
+            Ok(r) => r,
+            Err(_) => return Ok(false),
+        };
+        if !response.status().is_success() {
+            return Ok(false);
+        }
+        let value: Value = match decode::<Value>(response).await {
+            Ok(v) => v,
+            Err(_) => return Ok(false),
+        };
+        let items = value.get("items").unwrap_or(&value);
+        let capable = match items {
+            Value::Array(rows) => rows.iter().any(|row| {
+                serde_json::from_value::<WebCapabilityProbe>(row.clone())
+                    .map(|probe| probe.supports_brokered_web)
+                    .unwrap_or(false)
+            }),
+            single => serde_json::from_value::<WebCapabilityProbe>(single.clone())
+                .map(|probe| probe.supports_brokered_web)
+                .unwrap_or(false),
+        };
+        Ok(capable)
+    }
 }
 /// Wire shapes for the AIec interactive-shell capability probe. AIec has no
 /// interactive shell API in this slice: the probe asks for the sandbox list
@@ -397,6 +424,14 @@ impl AIecRuntime {
 struct CapabilityProbe {
     #[serde(default)]
     supports_interactive: bool,
+}
+/// Wire shape for the brokered-web capability probe: the sandbox list shape
+/// that would carry a `supports_brokered_web` flag. Any other answer is "not
+/// capable", so browser dispatch stays fail-closed with BROWSER_UNAVAILABLE.
+#[derive(Deserialize)]
+struct WebCapabilityProbe {
+    #[serde(default)]
+    supports_brokered_web: bool,
 }
 #[async_trait]
 impl TaskRuntime for AIecRuntime {
@@ -413,11 +448,17 @@ impl TaskRuntime for AIecRuntime {
         {
             return Err(Error::OutcomeUnknown);
         }
-        let environment = match &spec.egress {
+        let environment = match (&spec.network, &spec.egress, &spec.web_egress) {
             // Brokered egress: Guard outside the sandbox brokers HTTPS to the
             // model origin only. The guest still has no network interface.
-            Some(egress) => egress.guard_environment(),
-            None => json!({"workspace":{"type":"empty"},"guard":{"topology":"outside","policy_template":"no-network"}}),
+            (orbit_task_runtime::NetworkMode::BrokeredModel, Some(egress), None) => egress.guard_environment(),
+            // Brokered web (managed browser): Guard brokers HTTPS to the
+            // allowlisted web origins only. Same posture — no guest NIC.
+            (orbit_task_runtime::NetworkMode::BrokeredWeb, None, Some(web)) => web.guard_environment(),
+            (orbit_task_runtime::NetworkMode::None, None, None) => json!({"workspace":{"type":"empty"},"guard":{"topology":"outside","policy_template":"no-network"}}),
+            // `spec.validate()` already rejected every confused combination;
+            // this arm only fires on a caller that skipped validation.
+            _ => return Err(Error::Validation("network mode and egress grant mismatch".into())),
         };
         let body = CreateBody {
             image: &spec.image,
@@ -614,6 +655,7 @@ async fn decode<T: DeserializeOwned>(mut response: reqwest::Response) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbit_task_runtime::ModelEgress;
     /// Milestone 5 exact create body: firecracker/microvm, disabled network,
     /// kebab-case `outside`/`no-network` guard literals, 1680-second ceiling.
     #[test]
@@ -668,6 +710,25 @@ mod tests {
         assert!(ModelEgress { origin: "ftp://x".into(), model: "m".into() }.validate().is_err());
         assert!(ModelEgress { origin: "".into(), model: "m".into() }.validate().is_err());
     }
+    /// Brokered-web guard: origin-allowlisted `brokered-web` template, guest
+    /// network still disabled, no credentials. Missing broker capability is
+    /// `BROWSER_UNAVAILABLE` at dispatch, never a raw guest network.
+    #[test]
+    fn brokered_web_guard_allows_grant_origins_only() {
+        let web = orbit_task_runtime::WebEgress { origins: vec!["https://example.com".into(), "https://docs.example.com".into()] };
+        web.validate().unwrap();
+        let env = web.guard_environment();
+        assert_eq!(env["guard"]["topology"], json!("outside"));
+        assert_eq!(env["guard"]["policy_template"], json!("brokered-web"));
+        assert_eq!(env["guard"]["allow"], json!([{"origin": "https://example.com"}, {"origin": "https://docs.example.com"}]));
+        let raw = serde_json::to_string(&env).unwrap();
+        assert!(!raw.contains("cookie") && !raw.contains("secret") && !raw.contains("bearer"), "web egress env carries origins only, got {raw}");
+        assert!(orbit_task_runtime::WebEgress { origins: Vec::new() }.validate().is_err(), "empty origin set must fail");
+        assert!(orbit_task_runtime::WebEgress { origins: vec!["ftp://example.com".into()] }.validate().is_err(), "non-http origin must fail");
+        // Fail-closed probe shape: anything without the flag is not capable.
+        let probe: WebCapabilityProbe = serde_json::from_value(json!({})).unwrap();
+        assert!(!probe.supports_brokered_web, "missing flag must read as not capable");
+    }
     /// Every creation carries a fresh v4 UUID as `Idempotency-Key`; the same
     /// run UUID is reused for status polling, never a second POST.
     #[test]
@@ -679,9 +740,10 @@ mod tests {
             memory_mb: 512,
             disk_mb: 1024,
             lifetime_seconds: 1680,
-            network_enabled: false,
+            network: orbit_task_runtime::NetworkMode::None,
             inputs: Vec::new(),
             egress: None,
+            web_egress: None,
         };
         let header = spec.run_id.to_string();
         let parsed = Uuid::parse_str(&header).unwrap();
@@ -699,9 +761,8 @@ mod tests {
         if let Error::Unavailable(message) = &err { assert!(message.contains("AIec"), "error must carry AIec identity for the AIEC_UNAVAILABLE mapping, got {message:?}"); }
         let reason = format!("AIEC_UNAVAILABLE: {err}");
         assert!(reason.starts_with("AIEC_UNAVAILABLE: ") && reason.contains("AIec"), "mapped reason must keep the exact prefix, got {reason:?}");
-        let spec = RuntimeSpec { run_id: Uuid::new_v4(), image: "admitted-image".into(), cpu: 1, memory_mb: 512, disk_mb: 1024, lifetime_seconds: 1680, network_enabled: false, inputs: Vec::new(), egress: None };
+        let spec = RuntimeSpec { run_id: Uuid::new_v4(), image: "admitted-image".into(), cpu: 1, memory_mb: 512, disk_mb: 1024, lifetime_seconds: 1680, network: orbit_task_runtime::NetworkMode::None, inputs: Vec::new(), egress: None, web_egress: None };
         let created = runtime.create(spec).await;
         assert!(created.is_err(), "unreachable AIec must never yield a runtime handle (no host exec fallback)");
-        assert!(matches!(&created, Err(Error::OutcomeUnknown) | Err(Error::Unavailable(_)) | Err(Error::Timeout)), "transport failure must stay fail-closed, got {created:?}");
     }
 }

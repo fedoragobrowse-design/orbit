@@ -1,3 +1,4 @@
+pub mod browser_routes;
 pub mod agents;
 pub mod auth;
 pub mod automations;
@@ -112,6 +113,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(control::router())
         .merge(workspace_routes::router())
         .merge(shell_routes::router())
+        .merge(browser_routes::router())
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
 }

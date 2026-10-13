@@ -7,7 +7,10 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::PathBuf};
 use uuid::Uuid;
 
-pub const VERSION: u16 = 1;
+/// Wire capability version. Bumped to 2 when the node-side browser stub was
+/// removed; managed browser tools live server-side now, so a version mismatch
+/// means an incompatible peer and is reported as unsupported.
+pub const VERSION: u16 = 2;
 pub const MAX_FILE: usize = 10 * 1024 * 1024;
 pub const MAX_TEXT: usize = 1024 * 1024;
 pub const MAX_PAGE: usize = 50;
@@ -55,12 +58,19 @@ pub struct EmbeddingConfig { pub origin: String, pub model: String, pub protocol
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MessageType { Register, Authenticate, Heartbeat, Capabilities, FileSearch, FileRead, FileWrite, FileMetadata, FileWatch, FileList, FileMove, FileCopy, BrowserNavigate, BrowserFillSubmit, EventPush, ApprovalRequest, Response, Ack, Revoke, Challenge, Session }
+// NOTE: `BrowserNavigate` / `BrowserFillSubmit` are legacy rejection-only
+// values. They stay decodable so an old peer's frame is rejected with a
+// wire-version/unsupported error instead of a malformed-envelope error; the
+// node performs no browser work.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope { pub version: u16, pub request_id: Uuid, pub node_id: Uuid, pub message_type: MessageType, pub payload: Value }
 impl Envelope {
     pub fn new(node_id: Uuid, message_type: MessageType, payload: Value) -> Self { Self { version: VERSION, request_id: Uuid::new_v4(), node_id, message_type, payload } }
-    pub fn validate(&self, node: Uuid) -> Result<()> { if self.version != VERSION || self.node_id != node { return Err(Error::Invalid("version or node identity".into())); } Ok(()) }
+    /// A wire-version mismatch reports `Unsupported` (UNSUPPORTED_CAPABILITY on
+    /// the wire) so incompatible peers are visibly rejected; a node-identity
+    /// mismatch stays an invalid envelope.
+    pub fn validate(&self, node: Uuid) -> Result<()> { if self.version != VERSION { return Err(Error::Unsupported); } if self.node_id != node { return Err(Error::Invalid("node identity".into())); } Ok(()) }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Challenge { pub nonce: String, pub node_id: Uuid, pub session_hash: String, pub expires_at: DateTime<Utc> }
@@ -145,5 +155,5 @@ mod tests {
         let sig = sign_challenge(&key, &c).unwrap(); let public = STANDARD.encode(key.verifying_key().to_bytes());
         verify_challenge(&public, &c, &sig).unwrap(); c.session_hash = sha256(b"other"); assert!(verify_challenge(&public, &c, &sig).is_err());
     }
-    #[test] fn unknown_wire_version_and_operation_refused() { assert!(serde_json::from_value::<Envelope>(serde_json::json!({"version":1,"request_id":Uuid::new_v4(),"node_id":Uuid::new_v4(),"message_type":"DELETE","payload":{}})).is_err()); }
+    #[test] fn unknown_wire_version_and_operation_refused() { assert!(serde_json::from_value::<Envelope>(serde_json::json!({"version":VERSION,"request_id":Uuid::new_v4(),"node_id":Uuid::new_v4(),"message_type":"DELETE","payload":{}})).is_err()); let node = Uuid::new_v4(); let mut stale = Envelope::new(node, MessageType::Heartbeat, serde_json::json!({})); stale.version = VERSION - 1; assert!(matches!(stale.validate(node), Err(Error::Unsupported))); }
 }

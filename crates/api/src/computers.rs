@@ -1265,8 +1265,118 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
             version: "1".into(),
             input_schema: json!({"type": "object", "required": ["node_id", "url", "fields"], "additionalProperties": false, "properties": {"node_id": {"type": "string", "format": "uuid"}, "url": {"type": "string", "minLength": 1, "maxLength": 2048}, "fields": {"type": "object", "maxProperties": 32, "additionalProperties": {"type": "string", "maxLength": 4096}}, "submit_selector": {"type": ["string", "null"], "maxLength": 512}}}),
             output_schema: json!({"type": "object", "required": ["status"], "additionalProperties": false, "properties": {"status": {"type": "string"}, "title": {"type": "string", "maxLength": 512}, "text_preview": {"type": "string", "maxLength": 8192}}}),
+            effects: ToolEffects { external: true, modifies_data: true, reversible: false, credential_access: true, affected_party: "third-party web page (untrusted)".into(), network: true },
+            default_risk: RiskLevel::High,
+            permission_keys: vec!["computer.browser".into()],
+            sandbox_required: true,
+        },
+        ToolDescriptor {
+            id: Uuid::from_u128(0x7071_8293_b4c5_d6e7_f809_1a2b_3c4d_5e6f),
+            name: "browser.session.open".into(),
+            version: "1".into(),
+            input_schema: json!({"type": "object", "required": ["url"], "additionalProperties": false, "properties": {"url": {"type": "string", "minLength": 1, "maxLength": 2048}, "task_id": {"type": ["string", "null"], "format": "uuid"}}}),
+            output_schema: json!({"type": "object", "required": ["status", "session_id"], "additionalProperties": false, "properties": {"status": {"type": "string"}, "session_id": {"type": "string", "format": "uuid"}, "dom_revision": {"type": "integer", "minimum": 0}}}),
+            // Read-adjacent session open: the page fetch itself reads untrusted
+            // bytes (no mutation, no form actuation). The risk floor carries
+            // Medium via external+!modifies_data; High belongs to actuating
+            // arms below so narrow grants can cover read-only browsing.
+            effects: ToolEffects { external: true, modifies_data: false, reversible: true, credential_access: false, affected_party: "third-party web page (untrusted)".into(), network: true },
+            default_risk: RiskLevel::Medium,
+            permission_keys: vec!["computer.browser".into()],
+            sandbox_required: true,
+        },
+        ToolDescriptor {
+            id: Uuid::from_u128(0x7182_93a4_c5d6_e7f8_0901_2b3c_4d5e_6f70),
+            name: "browser.session.snapshot".into(),
+            version: "1".into(),
+            input_schema: json!({"type": "object", "required": ["session_id"], "additionalProperties": false, "properties": {"session_id": {"type": "string", "format": "uuid"}}}),
+            output_schema: json!({"type": "object", "required": ["status", "dom_revision"], "additionalProperties": false, "properties": {"status": {"type": "string"}, "url": {"type": "string", "maxLength": 2048}, "title": {"type": "string", "maxLength": 512}, "dom_revision": {"type": "integer", "minimum": 0}, "takeover": {"type": "boolean"}}}),
+            effects: ToolEffects { external: true, modifies_data: false, reversible: true, credential_access: false, affected_party: "third-party web page (untrusted)".into(), network: true },
+            default_risk: RiskLevel::Medium,
+            permission_keys: vec!["computer.browser".into()],
+            sandbox_required: true,
+        },
+        ToolDescriptor {
+            id: Uuid::from_u128(0x8293_a4b5_d6e7_f809_0901_2b3c_4d5e_6f70),
+            name: "browser.session.navigate".into(),
+            version: "1".into(),
+            input_schema: json!({"type": "object", "required": ["session_id", "url"], "additionalProperties": false, "properties": {"session_id": {"type": "string", "format": "uuid"}, "url": {"type": "string", "minLength": 1, "maxLength": 2048}}}),
+            output_schema: json!({"type": "object", "required": ["status", "dom_revision"], "additionalProperties": false, "properties": {"status": {"type": "string"}, "url": {"type": "string", "maxLength": 2048}, "dom_revision": {"type": "integer", "minimum": 0}}}),
+            effects: ToolEffects { external: true, modifies_data: false, reversible: true, credential_access: false, affected_party: "third-party web page (untrusted)".into(), network: true },
+            default_risk: RiskLevel::Medium,
+            permission_keys: vec!["computer.browser".into()],
+            sandbox_required: true,
+        },
+        ToolDescriptor {
+            id: Uuid::from_u128(0x93a4_b5c6_e7f8_0901_1a2b_2b3c_4d5e_6f70),
+            name: "browser.session.click".into(),
+            version: "1".into(),
+            // Stale DOM guard: `expected_dom_revision` pins the snapshot the
+            // coordinates came from. A mismatch never dispatches stale coords;
+            // the executor returns STALE_SNAPSHOT with a fresh snapshot instead.
+            input_schema: json!({"type": "object", "required": ["session_id", "target", "expected_dom_revision"], "additionalProperties": false, "properties": {"session_id": {"type": "string", "format": "uuid"}, "target": {"type": "string", "minLength": 1, "maxLength": 512}, "expected_dom_revision": {"type": "integer", "minimum": 0}, "mutating": {"type": ["boolean", "null"]}}}),
+            output_schema: json!({"type": "object", "required": ["status", "dom_revision"], "additionalProperties": false, "properties": {"status": {"type": "string"}, "dom_revision": {"type": "integer", "minimum": 0}}}),
+            // Clicks may actuate page controls (navigation, dialogs, checkout
+            // steps). `modifies_data` forces the classifier floor to Medium
+            // and — with High default — the HIGH_RISK_CONSENT_CEILING, so any
+            // click parks for approval unless a narrow grant covers it; a
+            // `mutating: true` click is always approval-gated at settle time.
             effects: ToolEffects { external: true, modifies_data: true, reversible: false, credential_access: false, affected_party: "third-party web page (untrusted)".into(), network: true },
             default_risk: RiskLevel::High,
+            permission_keys: vec!["computer.browser".into()],
+            sandbox_required: true,
+        },
+        ToolDescriptor {
+            id: Uuid::from_u128(0xa4b5_c6d7_f809_0901_1a2b_2b3c_4d5e_6f70),
+            name: "browser.session.fill".into(),
+            version: "1".into(),
+            input_schema: json!({"type": "object", "required": ["session_id", "fields", "expected_dom_revision"], "additionalProperties": false, "properties": {"session_id": {"type": "string", "format": "uuid"}, "fields": {"type": "object", "maxProperties": 32, "additionalProperties": {"type": "string", "maxLength": 4096}}, "expected_dom_revision": {"type": "integer", "minimum": 0}}}),
+            output_schema: json!({"type": "object", "required": ["status", "dom_revision"], "additionalProperties": false, "properties": {"status": {"type": "string"}, "dom_revision": {"type": "integer", "minimum": 0}}}),
+            // Typing into page fields without submitting. Never echoes
+            // password inputs into frames/events/logs; the host masks them.
+            effects: ToolEffects { external: true, modifies_data: true, reversible: false, credential_access: true, affected_party: "third-party web page (untrusted)".into(), network: true },
+            default_risk: RiskLevel::High,
+            permission_keys: vec!["computer.browser".into()],
+            sandbox_required: true,
+        },
+        ToolDescriptor {
+            id: Uuid::from_u128(0xb5c6_d7e8_0901_1a2b_2b3c_3c4d_5e6f_7081),
+            name: "browser.session.submit".into(),
+            version: "1".into(),
+            // Form submit is the account-change/mutation boundary: approval is
+            // mandatory (HIGH_RISK_CONSENT_CEILING), clearable only by a narrow
+            // grant whose parameter_bounds pin session_id (+ url where known).
+            input_schema: json!({"type": "object", "required": ["session_id", "expected_dom_revision"], "additionalProperties": false, "properties": {"session_id": {"type": "string", "format": "uuid"}, "expected_dom_revision": {"type": "integer", "minimum": 0}, "submit_selector": {"type": ["string", "null"], "maxLength": 512}}}),
+            output_schema: json!({"type": "object", "required": ["status", "dom_revision"], "additionalProperties": false, "properties": {"status": {"type": "string"}, "dom_revision": {"type": "integer", "minimum": 0}}}),
+            effects: ToolEffects { external: true, modifies_data: true, reversible: false, credential_access: true, affected_party: "third-party web page (untrusted)".into(), network: true },
+            default_risk: RiskLevel::High,
+            permission_keys: vec!["computer.browser".into()],
+            sandbox_required: true,
+        },
+        ToolDescriptor {
+            id: Uuid::from_u128(0xc6d7_e8f9_1a2b_2b3c_3c4d_4d5e_6f70_8192),
+            name: "browser.session.download".into(),
+            version: "1".into(),
+            // Downloads land in the workspace Inbox as UNTRUSTED_EXTERNAL
+            // through the quarantine gates (path-traversal + archive-bomb
+            // screens); never executed, never trusted by suffix.
+            input_schema: json!({"type": "object", "required": ["session_id", "expected_dom_revision"], "additionalProperties": false, "properties": {"session_id": {"type": "string", "format": "uuid"}, "expected_dom_revision": {"type": "integer", "minimum": 0}, "target": {"type": ["string", "null"], "maxLength": 512}, "name": {"type": ["string", "null"], "maxLength": 256}}}),
+            output_schema: json!({"type": "object", "required": ["status", "artifact_id"], "additionalProperties": false, "properties": {"status": {"type": "string"}, "artifact_id": {"type": "string", "format": "uuid"}, "sha256": {"type": "string"}, "mime": {"type": "string"}}}),
+            effects: ToolEffects { external: true, modifies_data: true, reversible: false, credential_access: false, affected_party: "third-party web page (untrusted)".into(), network: true },
+            default_risk: RiskLevel::High,
+            permission_keys: vec!["computer.browser".into()],
+            sandbox_required: true,
+        },
+        ToolDescriptor {
+            id: Uuid::from_u128(0xd7e8_f90a_2b3c_3c4d_4d5e_5e6f_7081_92a3),
+            name: "browser.session.close".into(),
+            version: "1".into(),
+            input_schema: json!({"type": "object", "required": ["session_id"], "additionalProperties": false, "properties": {"session_id": {"type": "string", "format": "uuid"}}}),
+            output_schema: json!({"type": "object", "required": ["status"], "additionalProperties": false, "properties": {"status": {"type": "string"}}}),
+            // Closing releases the session, its grant, and any takeover hold.
+            // Read-adjacent teardown: Medium floor, approval only on demand.
+            effects: ToolEffects { external: true, modifies_data: false, reversible: true, credential_access: false, affected_party: "third-party web page (untrusted)".into(), network: true },
+            default_risk: RiskLevel::Medium,
             permission_keys: vec!["computer.browser".into()],
             sandbox_required: true,
         },

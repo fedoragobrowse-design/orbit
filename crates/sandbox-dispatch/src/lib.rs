@@ -9,7 +9,7 @@
 
 use orbit_core::{Error, OwnerScope, Result, RiskLevel};
 use orbit_risk::{ActionContext, ProposedAction, RiskClassifier};
-use orbit_task_runtime::{ModelEgress, RuntimeSpec, RuntimeTask, TaskRuntime, LIFETIME_SECONDS};
+use orbit_task_runtime::{ModelEgress, NetworkMode, RuntimeSpec, RuntimeTask, TaskRuntime, LIFETIME_SECONDS};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -363,9 +363,16 @@ impl GovernedExec {
             memory_mb: 512,
             disk_mb: self.disk_mb,
             lifetime_seconds: LIFETIME_SECONDS,
-            network_enabled: false,
+            network: match &self.egress {
+                // Without a model egress grant the guest stays fully offline
+                // (NONE); with one the sandbox brokers HTTPS to that origin
+                // only — the guest still gets no network interface.
+                None => NetworkMode::None,
+                Some(_) => NetworkMode::BrokeredModel,
+            },
             inputs: Vec::new(),
             egress: self.egress.clone(),
+            web_egress: None,
         };
         spec.validate()?;
         let handle = self.rt.create(spec).await?;

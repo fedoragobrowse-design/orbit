@@ -19,6 +19,7 @@ import {
   CalendarDays,
   Cpu,
   Folder,
+  Globe,
   Home as HomeIcon,
   HousePlug,
   ListTodo,
@@ -78,6 +79,7 @@ export const FAMILIES = [
     title: "Connect",
     links: [
       ["/computers", "Computers", Monitor],
+      ["/browser", "Browser", Globe],
       ["/terminal", "Terminal", SquareTerminal],
       ["/home-assistant", "Home Assistant", HousePlug],
       ["/email", "Email", Mail],

@@ -1668,3 +1668,136 @@ dialog::backdrop {
   margin-bottom: 16px;
 }
 
+.browser-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.browser-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.browser-tab[aria-selected="true"] {
+  outline: 2px solid var(--action);
+}
+.browser-new {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+.browser-new label {
+  flex: 1;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.browser-new input {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.browser-label {
+  font-size: 13px;
+  color: var(--secondary);
+}
+.browser-session {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.browser-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+.browser-urlbar {
+  flex: 1;
+  min-width: 240px;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.browser-urlbar label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.browser-urlbar input {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.browser-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--pending);
+}
+.browser-badge {
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 12px;
+}
+.browser-badge.orbit {
+  color: var(--action);
+  border-color: var(--action);
+}
+.browser-badge.owner {
+  color: var(--pending);
+  border-color: var(--pending);
+}
+.browser-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.browser-frame-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.browser-frame {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #000;
+  user-select: none;
+}
+.browser-snapshot dl > div {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+}
+.browser-snapshot dt {
+  min-width: 110px;
+  color: var(--secondary);
+}
+.browser-snapshot dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.browser-snapshot ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+.browser-meta {
+  overflow-wrap: anywhere;
+}
+.browser-task-pane {
+  margin-bottom: 16px;
+}
+

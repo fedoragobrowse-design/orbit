@@ -162,8 +162,8 @@ log "pinned release ${VERSION} staged at ${RELEASE_DIR} (compose runs here; kept
 if [ -f "$ENV_FILE" ] && [ "$UPGRADE" -eq 0 ]; then log "keeping existing ${ENV_FILE} (idempotent; --upgrade to refresh images)"; else
   need openssl
   if [ ! -f "$ENV_FILE" ] || confirm "Overwrite ${ENV_FILE} with fresh secrets?"; then
-    umask 077; DB_PW="$(openssl rand -hex 32)"; APP_PW="$(openssl rand -hex 32)"
-    { printf 'ORBIT_DB_PASSWORD=%s\n' "$DB_PW"; printf 'ORBIT_APP_DB_PASSWORD=%s\n' "$APP_PW"; printf 'ORBIT_PUBLIC_ORIGIN=%s\n' "${ORBIT_PUBLIC_ORIGIN:-http://127.0.0.1:8080}"; } > "$ENV_FILE"; chmod 600 "$ENV_FILE"
+    umask 077; DB_PW="$(openssl rand -hex 32)"; APP_PW="$(openssl rand -hex 32)"; BROWSER_PW="$(openssl rand -hex 32)"
+    { printf 'ORBIT_DB_PASSWORD=%s\n' "$DB_PW"; printf 'ORBIT_APP_DB_PASSWORD=%s\n' "$APP_PW"; printf 'ORBIT_PUBLIC_ORIGIN=%s\n' "${ORBIT_PUBLIC_ORIGIN:-http://127.0.0.1:8080}"; printf 'BROWSER_HOST_TOKEN_SECRET=%s\n' "$BROWSER_PW"; } > "$ENV_FILE"; chmod 600 "$ENV_FILE"
     log "wrote ${ENV_FILE} (0600); values not shown"
   fi
 fi

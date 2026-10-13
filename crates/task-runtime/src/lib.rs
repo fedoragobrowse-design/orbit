@@ -28,52 +28,134 @@ pub struct RuntimeSpec {
     pub memory_mb: u32,
     pub disk_mb: u32,
     pub lifetime_seconds: u64,
-    pub network_enabled: bool,
+    /// Guest network posture. The guest never gets a raw interface: `NONE`
+    /// is fully offline, `BROKERED_MODEL` brokers HTTPS to one model origin
+    /// only, `BROKERED_WEB` brokers HTTPS to an allowlisted web origin set.
+    /// The boolean this replaces confused "no egress configured" with "no
+    /// network enforced"; the enum forces the caller to name the posture.
+    pub network: NetworkMode,
     pub inputs: Vec<InputArtifact>,
-    /// Optional brokered model egress. The guest keeps `network_enabled=false`;
-    /// AIec Guard outside the sandbox brokers HTTPS to this origin only. Origin
-    /// only — credentials never enter the guest or this struct.
+    /// Brokered model egress grant. Present only with
+    /// `NetworkMode::BrokeredModel`. Origin only — credentials never enter
+    /// the guest or this struct.
     #[serde(default)]
     pub egress: Option<ModelEgress>,
+    /// Brokered web egress grant (managed browser). Present only with
+    /// `NetworkMode::BrokeredWeb`. Origins only — no credentials, no cookies.
+    #[serde(default)]
+    pub web_egress: Option<WebEgress>,
+}
+/// Guest network posture. SCREAMING_SNAKE_CASE on the wire; unknown variants
+/// fail closed at deserialization.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum NetworkMode {
+    None,
+    BrokeredModel,
+    BrokeredWeb,
+}
+/// Brokered web origin set: origins only, no credentials or client state.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebEgress {
+    pub origins: Vec<String>,
+}
+impl WebEgress {
+    pub fn validate(&self) -> Result<()> {
+        if self.origins.is_empty() || self.origins.len() > 16 {
+            return Err(Error::Validation("brokered web egress needs 1 to 16 origins".into()));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for origin in &self.origins {
+            if !is_bare_http_origin(origin) || !seen.insert(origin) {
+                return Err(Error::Validation("brokered web origin must be a unique bare http(s) origin".into()));
+            }
+        }
+        Ok(())
+    }
+    /// Guard environment JSON: outside-topology broker allowing only these
+    /// origins. Origins only — no credentials, cookies, or client state.
+    pub fn guard_environment(&self) -> serde_json::Value {
+        serde_json::json!({"workspace":{"type":"empty"},"guard":{"topology":"outside","policy_template":"brokered-web","allow":self.origins.iter().map(|origin| serde_json::json!({"origin": origin})).collect::<Vec<_>>()}})
+    }
+}
+/// Bare `http(s)://host[:port]` origin check without new dependencies:
+/// no userinfo, path, query, or fragment; host is non-empty.
+fn is_bare_http_origin(origin: &str) -> bool {
+    if origin.is_empty() || origin.len() > 256 || origin.chars().any(char::is_control) {
+        return false;
+    }
+    let rest = if let Some(rest) = origin.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = origin.strip_prefix("http://") {
+        rest
+    } else {
+        return false;
+    };
+    if rest.is_empty() || rest.contains(['/', '?', '#', '@']) {
+        return false;
+    }
+    // Host (up to an optional :port) is non-empty; port is digits only.
+    let host = rest.split(':').next().unwrap_or_default();
+    if host.is_empty() || host.len() > 253 {
+        return false;
+    }
+    if let Some(port) = rest.split(':').nth(1) {
+        if rest.matches(':').count() > 1 && !(rest.starts_with('[') && rest.contains("]:")) {
+            return false;
+        }
+        if port.is_empty() || port.len() > 5 || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+    }
+    true
 }
 /// Brokered model endpoint: origin + model name, no credentials.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelEgress {
-    pub origin: String,
-    pub model: String,
-}
-impl ModelEgress {
-    pub fn validate(&self) -> Result<()> {
-        if self.origin.is_empty() || self.origin.len() > 256 || !(self.origin.starts_with("https://") || self.origin.starts_with("http://")) || self.model.is_empty() || self.model.len() > 256 {
-            return Err(Error::Validation("invalid brokered model egress".into()));
+     pub origin: String,
+     pub model: String,
+ }
+ impl ModelEgress {
+     pub fn validate(&self) -> Result<()> {
+         if self.origin.is_empty() || self.origin.len() > 256 || !(self.origin.starts_with("https://") || self.origin.starts_with("http://")) || self.model.is_empty() || self.model.len() > 256 {
+             return Err(Error::Validation("invalid brokered model egress".into()));
+         }
+         Ok(())
+     }
+     /// Guard environment JSON: outside-topology broker allowing only this origin.
+     pub fn guard_environment(&self) -> serde_json::Value {
+         serde_json::json!({"workspace":{"type":"empty"},"guard":{"topology":"outside","policy_template":"brokered-egress","allow":[{"origin":self.origin}]}})
+     }
+ }
+ impl RuntimeSpec {
+     pub fn validate(&self) -> Result<()> {
+        if self.image.is_empty() || self.image.len() > 256 || self.cpu != 1 || self.memory_mb != 512 || self.disk_mb == 0 || self.lifetime_seconds != LIFETIME_SECONDS {
+            return Err(Error::Validation("AIec requires admitted image, 1 CPU, 512 MiB, exact disk floor and 1680-second lifetime".into()));
         }
-        Ok(())
-    }
-    /// Guard environment JSON: outside-topology broker allowing only this origin.
-    pub fn guard_environment(&self) -> serde_json::Value {
-        serde_json::json!({"workspace":{"type":"empty"},"guard":{"topology":"outside","policy_template":"brokered-egress","allow":[{"origin":self.origin}]}})
-    }
-}
-impl RuntimeSpec {
-    pub fn validate(&self) -> Result<()> {
-        if self.image.is_empty() || self.image.len() > 256 || self.cpu != 1 || self.memory_mb != 512 || self.disk_mb == 0 || self.lifetime_seconds != LIFETIME_SECONDS || self.network_enabled {
-            return Err(Error::Validation("AIec requires admitted image, 1 CPU, 512 MiB, exact disk floor, 1680-second lifetime and no network".into()));
-        }
-        let mut total = 0usize;
-        let mut paths = std::collections::BTreeSet::new();
-        for input in &self.inputs {
-            workspace_path(&input.path, false)?;
-            if !paths.insert(&input.path) || input.size > FILE_LIMIT as u64 || input.sha256.len() != 64 || !input.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err(Error::Validation("invalid or duplicate runtime input".into()));
-            }
-            total = total.checked_add(input.size as usize).ok_or_else(|| Error::Validation("transfer overflow".into()))?;
-        }
-        if total > TRANSFER_LIMIT { return Err(Error::Validation("runtime inputs exceed 10 MiB".into())); }
-        if let Some(egress) = &self.egress { egress.validate()?; }
-        Ok(())
-    }
-}
+        // The posture must name its grant exactly: NONE carries no egress,
+        // BROKERED_MODEL carries model egress only, BROKERED_WEB carries web
+        // egress only. Any other combination is a confused grant and unusable.
+        match (&self.network, &self.egress, &self.web_egress) {
+            (NetworkMode::None, None, None) => {}
+            (NetworkMode::BrokeredModel, Some(egress), None) => egress.validate()?,
+            (NetworkMode::BrokeredWeb, None, Some(web)) => web.validate()?,
+            _ => return Err(Error::Validation("network mode and egress grant mismatch: NONE carries no egress, BROKERED_MODEL carries model egress only, BROKERED_WEB carries web egress only".into())),
+         }
+         let mut total = 0usize;
+         let mut paths = std::collections::BTreeSet::new();
+         for input in &self.inputs {
+             workspace_path(&input.path, false)?;
+             if !paths.insert(&input.path) || input.size > FILE_LIMIT as u64 || input.sha256.len() != 64 || !input.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+                 return Err(Error::Validation("invalid or duplicate runtime input".into()));
+             }
+             total = total.checked_add(input.size as usize).ok_or_else(|| Error::Validation("transfer overflow".into()))?;
+         }
+         if total > TRANSFER_LIMIT { return Err(Error::Validation("runtime inputs exceed 10 MiB".into())); }
+         Ok(())
+     }
+ }
 /// Public ID is the sole remote identity; no runtime_path or host capability is exposed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RuntimeHandle {
@@ -236,4 +318,45 @@ mod tests {
     #[test] fn confines_paths() { for p in ["/workspace/../secret", "/workspace/x/", "/workspace//x", "/workspace/.orbit/../../x", "/tmp/x", "/workspace/x\\y", "/workspace/x:y"] { assert!(workspace_path(p,false).is_err(), "{p}"); } assert!(workspace_path("/workspace/input.bin",false).is_ok()); }
     #[test] fn lifetime_is_creation_based() { let h=RuntimeHandle::observed(Uuid::new_v4(),Utc::now()-chrono::Duration::seconds(1500),1680); assert!(h.require_remaining(240).is_err()); }
     #[test] fn timeout_never_succeeds() { let r=RuntimeResult{outcome:RuntimeOutcome::TimedOut,exit_code:Some(0),stdout:String::new(),stderr:String::new(),duration_ms:None,output_completeness:"UNKNOWN".into()}; assert!(!r.succeeded()); }
+    fn base_spec() -> RuntimeSpec { RuntimeSpec { run_id: Uuid::new_v4(), image: "admitted-image".into(), cpu: 1, memory_mb: 512, disk_mb: 1024, lifetime_seconds: LIFETIME_SECONDS, network: NetworkMode::None, inputs: Vec::new(), egress: None, web_egress: None } }
+    #[test] fn network_modes_name_their_grants() {
+        base_spec().validate().unwrap();
+        let mut model = base_spec();
+        model.network = NetworkMode::BrokeredModel;
+        model.egress = Some(ModelEgress { origin: "https://openrouter.ai".into(), model: "m".into() });
+        model.validate().unwrap();
+        let mut web = base_spec();
+        web.network = NetworkMode::BrokeredWeb;
+        web.web_egress = Some(WebEgress { origins: vec!["https://example.com".into()] });
+        web.validate().unwrap();
+        // Confused grants fail closed: mode without grant, grant without mode,
+        // both grants, or the wrong grant for the mode.
+        let mut bare_model = base_spec();
+        bare_model.network = NetworkMode::BrokeredModel;
+        assert!(bare_model.validate().is_err(), "BROKERED_MODEL without model egress must fail");
+        let mut stray = base_spec();
+        stray.egress = Some(ModelEgress { origin: "https://openrouter.ai".into(), model: "m".into() });
+        assert!(stray.validate().is_err(), "NONE with a stray egress grant must fail");
+        let mut both = base_spec();
+        both.network = NetworkMode::BrokeredModel;
+        both.egress = Some(ModelEgress { origin: "https://openrouter.ai".into(), model: "m".into() });
+        both.web_egress = Some(WebEgress { origins: vec!["https://example.com".into()] });
+        assert!(both.validate().is_err(), "both grants at once must fail");
+        let mut swapped = base_spec();
+        swapped.network = NetworkMode::BrokeredWeb;
+        swapped.egress = Some(ModelEgress { origin: "https://openrouter.ai".into(), model: "m".into() });
+        assert!(swapped.validate().is_err(), "BROKERED_WEB with model egress must fail");
+        let mut bad_web = base_spec();
+        bad_web.network = NetworkMode::BrokeredWeb;
+        bad_web.web_egress = Some(WebEgress { origins: vec!["ftp://example.com".into()] });
+        assert!(bad_web.validate().is_err(), "non-http web origin must fail");
+    }
+    #[test] fn network_mode_wire_is_screaming() {
+        assert_eq!(serde_json::to_value(NetworkMode::None).unwrap(), serde_json::json!("NONE"));
+        assert_eq!(serde_json::to_value(NetworkMode::BrokeredModel).unwrap(), serde_json::json!("BROKERED_MODEL"));
+        assert_eq!(serde_json::to_value(NetworkMode::BrokeredWeb).unwrap(), serde_json::json!("BROKERED_WEB"));
+        assert!(serde_json::from_value::<NetworkMode>(serde_json::json!("unrestricted")).is_err(), "unknown posture fails closed");
+        let value = serde_json::to_value(base_spec()).unwrap();
+        assert_eq!(value["network"], serde_json::json!("NONE"));
+    }
 }

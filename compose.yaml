@@ -113,6 +113,27 @@ services:
       start_period: 10s
     restart: unless-stopped
     networks: [orbit]
+  # Managed browser (plan step 5): private Unix-socket Chromium host. No
+  # ports, no host mounts, no Docker socket, no system browser import — the
+  # pinned Playwright Chromium ships in the image. The Rust server holds the
+  # socket and brokers HTTPS per session origin grant; frames flow only while
+  # a viewer/snapshot subscriber exists (JPEG, max 2fps).
+  browser-host:
+    build: {context: ., dockerfile: deploy/docker/browser-host.Dockerfile}
+    mem_limit: 1g
+    cpus: 2.0
+    environment:
+      BROWSER_HOST_SOCKET: /run/orbit/browser-host.sock
+      BROWSER_HOST_TOKEN_SECRET: ${BROWSER_HOST_TOKEN_SECRET:?Set BROWSER_HOST_TOKEN_SECRET in .env}
+    volumes: ["exec-sock:/run/orbit"]
+    healthcheck:
+      test: ["CMD", "node", "dist/healthcheck.js"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks: [orbit]
 networks:
   orbit: {}
 volumes:

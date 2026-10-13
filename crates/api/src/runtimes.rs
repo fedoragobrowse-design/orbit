@@ -330,7 +330,7 @@ struct ConsentSpec {
     memory_mb: u32,
     disk_mb: u32,
     lifetime_seconds: u64,
-    network_enabled: bool,
+    network: orbit_task_runtime::NetworkMode,
     inputs: Vec<InputArtifact>,
 }
 /// Materialize all resource and byte bindings before consent, not after approval.
@@ -399,7 +399,7 @@ pub async fn materialize(pool: &PgPool, scope: &OwnerScope, mut args: Value) -> 
         memory_mb: 512,
         disk_mb: config.disk_mb,
         lifetime_seconds: 1680,
-        network_enabled: false,
+        network: orbit_task_runtime::NetworkMode::None,
         inputs,
     };
     let task = task_from_args(&args)?;
@@ -525,7 +525,7 @@ impl ShellExecutor {
         let consent: ConsentSpec =
             serde_json::from_value(snapshot.arguments["runtime_spec"].clone())
                 .map_err(Error::from)?;
-        if consent.network_enabled
+        if consent.network != orbit_task_runtime::NetworkMode::None
             || consent.cpu != 1
             || consent.memory_mb != 512
             || consent.lifetime_seconds != 1680
@@ -571,9 +571,10 @@ impl ShellExecutor {
             memory_mb: 512,
             disk_mb: consent.disk_mb,
             lifetime_seconds: 1680,
-            network_enabled: false,
+            network: consent.network,
             inputs,
             egress: None,
+            web_egress: None,
         };
         spec.validate()?;
         let request_digest =

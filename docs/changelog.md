@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — Managed browser host + brokered network modes
+
+- Managed browser: `apps/browser-host` (Node 24, pinned Playwright Chromium 1.55.0) on a private Unix socket — launch/context/page ops, JPEG frames max 2fps only while a viewer/snapshot subscriber exists, URL/loading/title/nav events, cookie/profile bytes returned raw for the caller to seal as 30d artifacts, password values never echoed. `deploy/docker/browser-host.Dockerfile` (chromium deps, amd64+arm64, no ports/host mounts) + compose `browser-host` block (private net, socket volume, health probe); `BROWSER_HOST_TOKEN_SECRET` minted by `install.sh`.
+- RuntimeSpec network posture is now `NONE|BROKERED_MODEL|BROKERED_WEB` (SCREAMING_SNAKE_CASE, `deny_unknown_fields`), replacing the `network_enabled` bool: each mode names its grant exactly, mismatches fail closed. New `WebEgress` origin allowlist (1–16 bare http(s) origins) with `brokered-web` Guard environment. AIec fence accepts `brokered-web`; new `probe_brokered_web` capability probe — missing broker capability is `BROWSER_UNAVAILABLE`, never a raw guest network. Egress enforced at the host: http(s) only, literal-IP deny, all-resolved-addresses DNS-rebinding guard, redirect re-screen.
 ## v1.1 — 2026-10-11 — Fixes wave: layout, chat order, modals, daemon setup
 
 - Layout: pages left-align like the homepage (`.main` auto-margin

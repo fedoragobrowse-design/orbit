@@ -55,6 +55,16 @@ impl ExecutorRegistry {
                 };
                 Ok(executor.execute(scope, action).await?.output)
             }
+            _ if name.starts_with("browser.session.") => {
+                crate::browser_routes::execute_session_tool(
+                    &self.pool,
+                    &self.artifact_dir,
+                    scope,
+                    name,
+                    args,
+                )
+                .await
+            }
             _ if name.starts_with("files.") => {
                 Err(Error::Unavailable("TOOL_EXECUTOR_UNAVAILABLE".into()))
             }

@@ -34,6 +34,9 @@ import { FAMILIES, useDraft } from "./nav";
 const TaskTerminalPane = lazy(() =>
   import("./terminal").then((m) => ({ default: m.TaskTerminalPane })),
 );
+const TaskBrowserPane = lazy(() =>
+  import("./browser").then((m) => ({ default: m.TaskBrowserPane })),
+);
 const TERMINAL_TASK_STATES: Record<string, true> = {
   COMPLETED: true,
   FAILED: true,
@@ -660,6 +663,9 @@ export function TaskDetail() {
       <div className="section">
         <Suspense fallback={<p role="status">Loading terminal…</p>}>
           <TaskTerminalPane taskId={text(id)} />
+        </Suspense>
+        <Suspense fallback={<p role="status">Loading browser…</p>}>
+          <TaskBrowserPane taskId={text(id)} />
         </Suspense>
         <LiveRun taskId={text(id)} state={text(row.state)} />
       </div>
