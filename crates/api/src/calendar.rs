@@ -53,6 +53,10 @@ pub async fn sync_source(State(state): State<ApiState>, headers: HeaderMap, Path
     let src = orbit_calendar::CalendarSource { kind: cfg.get("kind").and_then(Value::as_str).unwrap_or("").into(), url: cfg.get("url").and_then(Value::as_str).unwrap_or("").into(), username: cfg.get("username").and_then(Value::as_str).map(str::to_owned), password: cfg.get("password").and_then(Value::as_str).map(str::to_owned) };
     let out = orbit_calendar::sync_source(&state.pool, &a.scope, &name, &src).await?;
     sqlx::query("UPDATE calendar_sources SET last_sync=now(),updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).execute(&state.pool).await?;
+    if out.get("stored").and_then(Value::as_i64).unwrap_or(0) > 0 {
+        let stored = out.get("stored").cloned().unwrap_or(json!(0));
+        crate::connectors::emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_CALENDAR_RECEIVED", &format!("calendar:{name}"), &format!("calendar-sync:{id}:{}", uuid::Uuid::new_v4()), json!({"source_id": id, "source": name, "stored": stored, "source_reference": format!("calendar:{name}")})).await?;
+    }
     Ok(Json(out))
 }
 #[derive(Deserialize, utoipa::ToSchema)]

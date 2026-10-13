@@ -2065,6 +2065,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
+ "http",
  "libc",
  "multer",
  "orbit-agent-backend",
@@ -2091,6 +2092,7 @@ dependencies = [
  "p256",
  "rand 0.8.8",
  "reqwest",
+ "rmcp",
  "serde",
  "serde_json",
  "sha2",
@@ -2442,6 +2444,7 @@ dependencies = [
  "sha2",
  "sqlx",
  "tokio",
+ "utoipa",
  "uuid",
 ]
 

@@ -14,14 +14,35 @@ External-source ingestion boundary. Every connector imports third-party bytes, s
 
 All MIME/body parsing of untrusted mail happens before trust elevation: `transport::parse_message` runs on raw IMAP bytes inside the `sync_batch` fetch path with byte/part/depth bounds, and bodies stay `UNTRUSTED_EXTERNAL` (`email_messages.trust_level` default, `events.trust_level='UNTRUSTED_EXTERNAL'`, `ContextKind::UNTRUSTED_EXTERNAL_CONTENT`) through storage, events, and context assembly. Nothing downstream re-parses or trusts the bytes.
 
-## Status
+## Sync receipts (step 6)
 
-| Connector | Kind | Status | Missing |
+Every successful connector sync writes one `CONNECTOR_<SOURCE>_RECEIVED`
+event plus one `event_deliveries` row for the `foundation` consumer,
+reusing the existing `events`/`event_deliveries` tables (no new store).
+The gate copies the email `sync_batch` emission rule: syncs that store at
+least one row emit; no-op syncs (zero rows stored) write nothing.
+
+| Sync path | Event | Source | Payload |
 |---|---|---|---|
-| IMAP/SMTP | `mail-imap` | LIVE-PROVEN (`crates/api/tests/email_greenmail.rs` vs fixture `greenmail/standalone:2.1.14`, host 127.0.0.1:19993 IMAPS / 127.0.0.1:19465 SMTPS in `deploy/examples/compose.test.yaml`) | — |
-| Gmail-OAuth | `mail-gmail-oauth` | UNAVAILABLE | owner OAuth client credentials |
-| Google Calendar | `cal-gcal-oauth` | UNAVAILABLE | owner OAuth client credentials |
-| Microsoft Graph | `mail-graph-oauth` | UNAVAILABLE | owner OAuth client credentials |
-| CalDAV | `cal-caldav` | UNAVAILABLE | CalDAV poller implementation (no calendar poller in `crates/email/src/`) |
+| `POST /api/v1/calendar/sources/{id}/sync` | `CONNECTOR_CALENDAR_RECEIVED` | `calendar:{name}` | `{source_id, source, stored, source_reference}` |
+| `POST /api/v1/ha/connections/{id}/sync`, `POST /api/v1/ha/sync` | `CONNECTOR_HA_RECEIVED` | `ha:{connection_id}` | `{connection_id, stored, source_reference}` |
+| `POST /api/v1/github/connections/{id}/sync` | `CONNECTOR_GITHUB_RECEIVED` | `github:{connection_id}` | `{connection_id, stored, source_reference}` |
+| `POST /api/v1/inbox/import` | `CONNECTOR_INBOX_RECEIVED` | `inbox:import` | `{imported, quarantined, source_reference}` |
 
+All four payloads satisfy `validate_event` via `source_reference`; migration
+`0042_connector_events.sql` extends the `events` type check (no new tables).
+Events land `UNTRUSTED_EXTERNAL`/`PRIVATE`, like email receipts.
+
+## Connector manifests
+
+`GET /api/v1/connectors/manifests` returns one manifest per built-in
+connector (`crates/api/src/connectors.rs::manifests`). Each manifest carries
+`id`, `description` (naming its source file), `actions`, `input_schema` /
+`output_schema`, `scopes`, sealed-store `credential` type, the emitted
+`event`, and the `cursor` column (`last_sync` / `received_at`). New sources
+start disabled/untrusted (`enabled=false`, `trusted=false`) with a
+`permission_preview` listing the scopes the owner must approve (marketplace
+install gate) before the first sync.
+
+## Status
 Roadmap: Gmail/Graph OAuth (UNAVAILABLE — owner OAuth client credentials), CalDAV poller + ICS feed (UNAVAILABLE — no poller in `crates/email/src/`). CalDAV's missing prerequisite is the poller implementation, not OAuth creds. See docs/PARITY.md roadmap.

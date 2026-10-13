@@ -111,6 +111,9 @@ pub async fn import_inbox(State(state): State<ApiState>, headers: HeaderMap, Jso
         sqlx::query("INSERT INTO ai_inbox(id,owner_id,source,title,body) VALUES($1,$2,$3,$4,$5)").bind(Uuid::new_v4()).bind(a.scope.owner_id).bind(&source).bind(&title).bind(&body).execute(&state.pool).await?;
         imported += 1;
     }
+    if imported > 0 {
+        crate::connectors::emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_INBOX_RECEIVED", "inbox:import", &format!("inbox-import:{}", uuid::Uuid::new_v4()), json!({"imported": imported, "quarantined": quarantined_count, "source_reference": "inbox:import"})).await?;
+    }
     Ok(Json(json!({"imported": imported, "quarantined": quarantined_count, "skipped": errors.len(), "errors": errors})))
 }
 #[derive(utoipa::OpenApi)]

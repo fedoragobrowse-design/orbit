@@ -452,8 +452,10 @@ function NewAgent({ onDone }: { onDone: () => void }) {
     purpose: "",
     instructions: "",
     allowed_tools: "",
+    skills: "",
     model_role: "FAST",
   });
+  const skills = useQuery({ queryKey: ["agent-skills"], queryFn: () => api<{ items: RecordData[] }>("/skills").then((r) => r.items ?? []) });
   const create = useMutation({
     mutationFn: () =>
       post<RecordData>("/agents", {
@@ -465,6 +467,10 @@ function NewAgent({ onDone }: { onDone: () => void }) {
             .split(",")
             .map((s) => s.trim())
             .filter(Boolean),
+          skills: form.skills
+            .split(",")
+            .map((s) => s.trim().toLowerCase())
+            .filter((s) => s && /^[a-z0-9-]+$/.test(s)),
           model_role: form.model_role,
           context_strategy: {
             include_memory: true,
@@ -518,6 +524,17 @@ function NewAgent({ onDone }: { onDone: () => void }) {
         value={form.allowed_tools}
         onChange={(e) => setForm({ ...form, allowed_tools: e.target.value })}
       />
+      <Input
+        label="Skills (comma-separated, lowercase)"
+        placeholder="hello-skill"
+        value={form.skills}
+        onChange={(e) => setForm({ ...form, skills: e.target.value })}
+      />
+      {skills.data && skills.data.length > 0 && (
+        <p className="muted">
+          Available: {skills.data.map((k) => `${text(k.name)}${k.state && k.state !== "ok" ? ` (${text(k.state)})` : ""}`).join(" · ")}
+        </p>
+      )}
       <Select
         label="Model role"
         value={form.model_role}
@@ -568,6 +585,7 @@ export function Agents() {
                     <th scope="col">Name</th>
                     <th scope="col">Model role</th>
                     <th scope="col">Tools</th>
+                    <th scope="col">Skills</th>
                     <th scope="col">Enabled</th>
                     <th scope="col">Rev</th>
                   </tr>
@@ -578,6 +596,7 @@ export function Agents() {
                       <th scope="row">{text(row.name)}</th>
                       <td>{label(row.model_role)}</td>
                       <td>{text(row.allowed_tools)}</td>
+                      <td>{text((row as unknown as Record<string, unknown>).skills)}</td>
                       <td>
                         <Status value={row.enabled} />
                       </td>

@@ -8,12 +8,12 @@ use std::{collections::BTreeMap,path::PathBuf};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
+pub mod catalog;
+pub mod workspace;
 #[derive(Debug,Clone,Serialize,Deserialize)]
 pub struct ToolResult {pub output:Value,pub privacy_class:orbit_core::PrivacyClass,pub trust_level:orbit_core::TrustLevel,pub source_reference:String}
-pub mod workspace;
 #[async_trait]
 pub trait ToolExecutor:Send+Sync {async fn execute(&self,scope:&OwnerScope,action:AuthorizedAction)->Result<ToolResult>;}
-
 pub fn validate_schema(schema:&Value)->Result<()> {
  if serde_json::to_vec(schema)?.len()>65536{return Err(Error::Validation("tool schema exceeds 64 KiB".into()));}
  fn depth(value:&Value,n:usize)->bool{n<=32&&match value{Value::Array(a)=>a.iter().all(|v|depth(v,n+1)),Value::Object(o)=>o.values().all(|v|depth(v,n+1)),_=>true}}
@@ -65,6 +65,17 @@ pub fn descriptors()->Vec<ToolDescriptor>{
    effects: effects.clone(),
    default_risk: RiskLevel::Low,
    permission_keys: vec!["orbit-control.skills_list".into()],
+   sandbox_required: false,
+  },
+  ToolDescriptor {
+   id: Uuid::from_u128(14),
+   name: "orbit-control.skill_read".into(),
+   version: "1".into(),
+   input_schema: json!({"type":"object","additionalProperties":false,"required":["name"],"properties":{"name":{"type":"string","minLength":1,"maxLength":120}}}),
+   output_schema: json!({"type":"object","additionalProperties":false,"required":["name","source","state","content_digest"],"properties":{"name":{"type":"string"},"source":{"type":"string"},"state":{"type":"string"},"content_digest":{"type":"string"},"description":{"type":"string"},"instructions":{"type":"string"},"trust_level":{"type":"string"},"requested_actions":{"type":"array","items":{"type":"string"}},"reason":{"type":"string"}}}),
+   effects: effects.clone(),
+   default_risk: RiskLevel::Low,
+   permission_keys: vec!["orbit-control.skill_read".into()],
    sandbox_required: false,
   },
   ToolDescriptor {
@@ -306,10 +317,17 @@ pub struct SafeTools {pub pool:PgPool,pub artifact_dir:PathBuf,pub key_dir:PathB
     // so the shared SETTLE validation below still applies unchanged.
     json!({"question_id":qid})
    },"orbit-control.skills_list"=>{
-    let rows = sqlx::query("SELECT id,name,description,enabled FROM skills WHERE owner_id=$1 AND enabled ORDER BY name LIMIT 100").bind(scope.owner_id).fetch_all(&self.pool).await?;
-    let items: Vec<Value> = rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description")})).collect();
-    let installs: Vec<Value> = sqlx::query("SELECT name,version FROM marketplace_installs WHERE owner_id=$1 LIMIT 100").bind(scope.owner_id).fetch_all(&self.pool).await.map(|rs| rs.iter().map(|r| json!({"name":r.get::<String,_>("name"),"version":r.get::<String,_>("version"),"source":"marketplace"})).collect()).unwrap_or_default();
-    json!({"items": items.into_iter().chain(installs).collect::<Vec<_>>()})
+    let rows = sqlx::query("SELECT name,description,enabled FROM skills WHERE owner_id=$1 ORDER BY name LIMIT 100").bind(scope.owner_id).fetch_all(&self.pool).await?;
+    let mut items: Vec<Value> = rows.iter().map(|r|{let enabled=r.get::<bool,_>("enabled");json!({"name":r.get::<String,_>("name"),"source":"local","description":r.get::<String,_>("description"),"enabled":enabled,"state":if enabled{"ok"}else{"off"}})}).collect();
+    let installs = sqlx::query("SELECT name,version,kind,content_digest,trust_level,capabilities FROM marketplace_installs WHERE owner_id=$1 ORDER BY name LIMIT 100").bind(scope.owner_id).fetch_all(&self.pool).await.unwrap_or_default();
+    for r in &installs{let kind=r.get::<String,_>("kind");let state=if kind=="skill"{"ok".to_owned()}else{format!("not a skill (kind {kind})")};items.push(json!({"name":r.get::<String,_>("name"),"source":"marketplace","version":r.get::<String,_>("version"),"kind":kind,"content_digest":r.get::<String,_>("content_digest"),"trust_level":r.get::<String,_>("trust_level"),"requested_actions":r.get::<Value,_>("capabilities").get("tools").cloned().unwrap_or(json!([])),"state":state}));}
+    json!({"items":items})
+   },"orbit-control.skill_read"=>{
+    let name=s.arguments["name"].as_str().unwrap_or("").trim().to_owned();
+    if name.is_empty()||name.len()>120||!name.bytes().all(|c|c.is_ascii_lowercase()||c.is_ascii_digit()||c==b'-'){return Err(Error::Validation("skill name must be lowercase letters, digits, or '-'".into()));}
+    if let Some(r)=sqlx::query("SELECT description,entrypoint,enabled FROM skills WHERE owner_id=$1 AND name=$2").bind(scope.owner_id).bind(&name).fetch_optional(&self.pool).await?{if !r.get::<bool,_>("enabled"){json!({"name":name,"source":"local","state":"off","content_digest":"","reason":"skill is switched off; switch it on in Settings to use it"})}else{json!({"name":name,"source":"local","state":"ok","content_digest":"","description":r.get::<String,_>("description"),"entrypoint":r.get::<String,_>("entrypoint"),"trust_level":"owner-curated","requested_actions":[]})}}
+    else if let Some(r)=sqlx::query("SELECT version,kind,description,content_digest,publisher_name,trust_level,capabilities FROM marketplace_installs WHERE owner_id=$1 AND name=$2").bind(scope.owner_id).bind(&name).fetch_optional(&self.pool).await?{let kind=r.get::<String,_>("kind");if kind!="skill"{json!({"name":name,"source":"marketplace","state":format!("not a skill (kind {kind})"),"content_digest":r.get::<String,_>("content_digest"),"reason":format!("marketplace package {name:?} is not a skill")})}else{json!({"name":name,"source":"marketplace","state":"ok","content_digest":r.get::<String,_>("content_digest"),"version":r.get::<String,_>("version"),"description":r.get::<String,_>("description"),"publisher_name":r.get::<String,_>("publisher_name"),"trust_level":r.get::<String,_>("trust_level"),"requested_actions":r.get::<Value,_>("capabilities").get("tools").cloned().unwrap_or(json!([])),"capabilities":r.get::<Value,_>("capabilities")})}}
+    else{json!({"name":name,"source":"unknown","state":"unknown","content_digest":"","reason":"skill is unknown; install it from the Marketplace or check the name"})}
    },"orbit-control.docs_read"=>{
     let path = s.arguments["path"].as_str().unwrap_or("");
     let content = orbit_tools_doc(path).ok_or(Error::Validation("unknown doc path".into()))?;

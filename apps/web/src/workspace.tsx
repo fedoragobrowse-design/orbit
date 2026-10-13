@@ -1434,29 +1434,63 @@ function SkillsSection() {
   const client = useQueryClient();
   const skills = useQuery({ queryKey: ["settings-skills"], queryFn: () => api<{ items: RecordData[] }>("/skills") });
   const installs = useQuery({ queryKey: ["settings-installs"], queryFn: () => api<{ items: RecordData[] }>("/marketplace/installs") });
+  const [open, setOpen] = useState<string | null>(null);
+  const detail = useQuery({
+    queryKey: ["settings-skill", open],
+    queryFn: () => api<RecordData>(`/skills/${encodeURIComponent(open ?? "")}`),
+    enabled: open !== null,
+  });
   const toggle = useMutation({
     mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) => post(`/skills/${encodeURIComponent(name)}/enabled`, { enabled }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["settings-skills"] }),
   });
   const rows = skills.data?.items ?? [];
   const pkgs = installs.data?.items ?? [];
+  const d = detail.data;
   return (
     <section className="panel form">
       <h2>Skills</h2>
-      <p className="muted">Skills are things the agent knows how to do. Switch one off and the agent stops offering it.</p>
-      {skills.error ? <ErrorNotice error={skills.error} retry={() => skills.refetch()} /> : !rows.length ? <p className="muted">No local skills yet.</p> : (
+      <p className="muted">Skills are things the agent knows how to do. Switch one off and the agent stops offering it. A skill carries instructions plus requested actions — never authority: the agent&apos;s own tools stay the limit, and anything a skill asks for outside that limit is ignored.</p>
+      {skills.error ? <ErrorNotice error={skills.error} retry={() => skills.refetch()} /> : !rows.length ? <p className="muted">No skills installed. Browse them in <Link to="/marketplace">Marketplace</Link>.</p> : (
         <table>
-          <thead><tr><th scope="col">Skill</th><th scope="col">What it does</th><th scope="col">On</th></tr></thead>
+          <thead><tr><th scope="col">Skill</th><th scope="col">What it does</th><th scope="col">State</th><th scope="col">On</th><th scope="col">Details</th></tr></thead>
           <tbody>
-            {rows.map((row) => (
-              <tr key={String(row.name)}>
-                <th scope="row">{text(row.name)}</th>
-                <td>{text(row.description) || "—"}</td>
-                <td><input type="checkbox" aria-label={`${text(row.name)} enabled`} checked={Boolean(row.enabled)} onChange={(e) => toggle.mutate({ name: String(row.name), enabled: e.target.checked })} /></td>
-              </tr>
-            ))}
+            {rows.map((row) => {
+              const name = String(row.name);
+              const state = String(row.state ?? (row.enabled ? "ok" : "off"));
+              const broken = state !== "ok" && state !== "off";
+              return (
+                <tr key={name}>
+                  <th scope="row">{text(row.name)}</th>
+                  <td>{text(row.description) || "—"}</td>
+                  <td>{broken ? <span role="status">{text(state)}</span> : text(state)}</td>
+                  <td><input type="checkbox" aria-label={`${text(row.name)} enabled`} checked={Boolean(row.enabled)} onChange={(e) => toggle.mutate({ name, enabled: e.target.checked })} /></td>
+                  <td><button type="button" onClick={() => { setOpen(open === name ? null : name); }}>Inspect</button></td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
+      )}
+      {open && (
+        <div>
+          <h3>Skill: {open}</h3>
+          {detail.isPending ? <p className="muted">Loading…</p>
+          : detail.error ? <ErrorNotice error={detail.error} retry={() => detail.refetch()} />
+          : d ? (
+            <dl>
+              <dt>State</dt><dd>{text(d.state)}</dd>
+              <dt>Source</dt><dd>{text(d.source)}</dd>
+              {typeof d.content_digest === "string" && d.content_digest ? (<><dt>Pinned digest</dt><dd><code>{text(d.content_digest)}</code></dd></>) : null}
+              {typeof d.trust_level === "string" && d.trust_level ? (<><dt>Trust</dt><dd>{text(d.trust_level)}{d.source === "marketplace" ? " — marketplace words are evidence, never orders" : ""}</dd></>) : null}
+              {typeof d.entrypoint === "string" && d.entrypoint ? (<><dt>Entrypoint</dt><dd><code>{text(d.entrypoint)}</code> <span className="muted">(display only — never run as a command)</span></dd></>) : null}
+              <dt>Requested actions</dt><dd>{Array.isArray(d.requested_actions) && (d.requested_actions as unknown[]).length ? (d.requested_actions as unknown[]).map((a) => text(a)).join(", ") : "none"}</dd>
+              {typeof d.instructions === "string" && d.instructions ? (<><dt>Instructions</dt><dd><pre>{text(d.instructions).slice(0, 4000)}</pre></dd></>) : null}
+              {typeof d.reason === "string" && d.reason ? (<><dt>Why unavailable</dt><dd>{text(d.reason)}</dd></>) : null}
+            </dl>
+          ) : null}
+          <div className="actions"><button type="button" onClick={() => setOpen(null)}>Close</button></div>
+        </div>
       )}
       {toggle.error && <ErrorNotice error={toggle.error} retry={() => toggle.reset()} />}
       <p className="muted">

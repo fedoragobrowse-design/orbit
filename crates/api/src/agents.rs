@@ -54,6 +54,24 @@ fn command_argv(args: &Value) -> Option<Vec<String>> {
     }
 }
 
+/// Journal-input admission for non-loop callers (gateway `execute_action`):
+/// runs the shared registry + schema + risk + policy pipeline with the
+/// owner's enabled registry as the grant set, without an agent definition
+/// row. Discovery already resolved the id against the live catalog; this
+/// re-verifies the registry row and schema here so execute enforces grants
+/// even if the catalog changed between search and execute.
+pub async fn journal_proposal(
+    pool: &sqlx::PgPool,
+    scope: &orbit_core::OwnerScope,
+    task: uuid::Uuid,
+    name: &str,
+    args: serde_json::Value,
+    proposal_key: &str,
+) -> orbit_core::Result<(serde_json::Value, String, serde_json::Value, String, serde_json::Value, serde_json::Value, String)> {
+    AgentDispatcher { pool: pool.clone(), key_dir: std::path::PathBuf::new(), artifact_dir: std::path::PathBuf::new(), origin: String::new() }
+        .journal_gateway_proposal(scope, task, name, args, proposal_key)
+        .await
+}
 #[derive(Clone)]
 pub struct AgentDispatcher {
     pub pool: sqlx::PgPool,
@@ -223,7 +241,27 @@ impl orbit_agent_runtime::Dispatcher for AgentDispatcher {
         agent: &orbit_agent_runtime::AgentDefinition,
         query: &str,
     ) -> orbit_core::Result<Vec<orbit_core::ContextBlock>> {
-        orbit_memory::search_for_agent(&self.pool, scope, agent.id, query).await
+        {
+        let mut blocks = orbit_memory::search_for_agent(&self.pool, scope, agent.id, query).await?;
+        let selected: Vec<String> = agent.config.skills.clone();
+        if !selected.is_empty() {
+            let (resolved, problems) = crate::skills::load_for_agent(&self.pool, scope, &selected).await;
+            for s in &resolved {
+                let extra: Vec<String> = s.requested_actions.iter().filter(|a| !agent.config.allowed_tools.iter().any(|t| t == *a)).cloned().collect();
+                if !extra.is_empty() {
+                    blocks.push(orbit_core::ContextBlock {
+                        kind: orbit_core::ContextKind::ToolOutput,
+                        text_or_reference: format!("Skill {} requests actions outside this agent's tools ({}); those requests are ignored", s.name, extra.join(", ")),
+                        privacy_class: orbit_core::PrivacyClass::Private,
+                        trust_level: orbit_core::TrustLevel::UntrustedExternal,
+                        source_reference: format!("skill:{}", s.name),
+                    });
+                }
+            }
+            blocks.extend(crate::skills::context_blocks(&resolved, &problems));
+        }
+        Ok(blocks)
+    }
     }
     async fn propose(
         &self,
@@ -614,6 +652,144 @@ impl AgentDispatcher {
         }
         .route(scope, task, agent, &tool_name, &args, action)
         .await
+    }
+    /// Gateway variant of the propose journal inputs: same registry +
+    /// schema + risk + policy checks, but the grant set is the owner's live
+    /// enabled catalog (no agent definition row). Returns the same tuple
+    /// the loop's propose persists, minus the agent-bound snapshot id.
+    async fn journal_gateway_proposal(
+        &self,
+        scope: &orbit_core::OwnerScope,
+        task: Uuid,
+        name: &str,
+        args: Value,
+        proposal_key: &str,
+    ) -> Result<(Value, String, Value, String, Value, Value, String), Error> {
+        if orbit_core::ContextBlock::looks_like_injection(&args.to_string()) {
+            return Err(Error::Forbidden);
+        }
+        let descriptor: Value = sqlx::query_scalar(
+            "SELECT descriptor FROM tool_registry WHERE owner_id=$1 AND name=$2 AND enabled",
+        )
+        .bind(scope.owner_id)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(Error::Forbidden)?;
+        let descriptor: orbit_core::ToolDescriptor =
+            serde_json::from_value(descriptor).map_err(|_| Error::Forbidden)?;
+        orbit_tools::validate_value(&descriptor.input_schema, &args)?;
+        let risk = orbit_risk::RiskClassifier::classify_action(
+            &orbit_risk::ProposedAction { tool_name: name.into(), arguments: args.clone() },
+            &descriptor,
+            &orbit_risk::ActionContext { optional_escalation: None },
+        )?
+        .level;
+        if let Some(argv) = command_argv(&args) {
+            if orbit_sandbox_dispatch::decide_with_threshold(&argv, 0.8).verdict
+                == orbit_sandbox_dispatch::Verdict::Block
+            {
+                return Err(Error::Forbidden);
+            }
+        }
+        let policy = self.policy_decision(scope, name, &args, &descriptor, risk).await?;
+        let denied = policy.get("denied").and_then(Value::as_bool).unwrap_or(true);
+        if denied {
+            return Err(Error::Forbidden);
+        }
+        let epoch = sqlx::query_scalar::<_, i64>(
+            "SELECT revision FROM authorization_epochs WHERE owner_id=$1",
+        )
+        .bind(scope.owner_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(Error::Forbidden)?;
+        let revision = sqlx::query_scalar::<_, i64>("SELECT revision FROM policies WHERE owner_id=$1")
+            .bind(scope.owner_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .unwrap_or(1);
+        let expires_at = chrono::Utc::now() + chrono::Duration::hours(1);
+        let snapshot = orbit_core::ActionSnapshot {
+            action_id: Uuid::new_v4(),
+            owner_id: scope.owner_id,
+            principal_id: scope.principal_id,
+            // Gateway calls carry no agent row: bind to the nil agent so the
+            // ExecutorRegistry binding check (agent_id == Some(agent)) passes
+            // exactly for the Uuid::nil() the gateway handler routes with.
+            agent_id: Some(Uuid::nil()),
+            task_id: task,
+            tool_name: name.into(),
+            tool_version: descriptor.version.clone(),
+            arguments: args.clone(),
+            input_artifact_digests: BTreeMap::new(),
+            scope_revisions: BTreeMap::new(),
+            policy_revision: revision,
+            authorization_epoch: epoch,
+            requires_sandbox: descriptor.sandbox_required,
+            expires_at,
+        };
+        let hash = orbit_approvals::canonical_hash(&snapshot)?;
+        let descriptor_value = serde_json::to_value(&descriptor)?;
+        let digest = orbit_computer_node_protocol::sha256(&serde_json::to_vec(&descriptor)?);
+        let risk_value = serde_json::to_value(&risk)?;
+        let decision_value = policy;
+        let state = if is_registry_routable(name) { "PROPOSED" } else { "WAITING_FOR_APPROVAL" }.to_owned();
+        let _ = proposal_key;
+        Ok((serde_json::to_value(&snapshot)?, hash, descriptor_value, digest, risk_value, decision_value, state))
+    }
+    /// Shared policy evaluation (grants + engine + sandbox annotation) used
+    /// by both the loop admission and the gateway journal path.
+    async fn policy_decision(
+        &self,
+        scope: &orbit_core::OwnerScope,
+        name: &str,
+        args: &Value,
+        descriptor: &orbit_core::ToolDescriptor,
+        risk: orbit_core::RiskLevel,
+    ) -> Result<Value, Error> {
+        let settings: Value = sqlx::query_scalar("SELECT value FROM settings WHERE owner_id=$1")
+            .bind(scope.owner_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .unwrap_or(json!({}));
+        let autonomy: orbit_core::AutonomyMode = serde_json::from_value(
+            settings.get("autonomy_mode").cloned().unwrap_or(Value::Null),
+        )
+        .unwrap_or(orbit_core::AutonomyMode::Observe);
+        let row = sqlx::query("SELECT revision,rules FROM policies WHERE owner_id=$1")
+            .bind(scope.owner_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        let (revision, rules) = match &row {
+            Some(r) => (r.get("revision"), serde_json::from_value(r.get::<Value, _>("rules")).unwrap_or_default()),
+            None => (1, vec![]),
+        };
+        let grants: Vec<orbit_policy::ScopeGrant> = sqlx::query_scalar(
+            "SELECT to_jsonb(g)-'owner_id' FROM scope_grants g WHERE owner_id=$1 AND tool_name=$2",
+        )
+        .bind(scope.owner_id)
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect();
+        let scope_revisions: BTreeMap<String, i64> = grants
+            .iter()
+            .map(|grant| (grant.scope_key.clone(), grant.scope_revision))
+            .collect();
+        let mut decision = orbit_policy::PolicyEngine { revision, autonomy, rules, grants }
+            .evaluate(scope, name, args, descriptor, risk, &scope_revisions);
+        if decision.policy_revision != revision {
+            return Err(Error::Conflict("policy changed during evaluation".into()));
+        }
+        if !settings.get("sandbox_enabled").and_then(Value::as_bool).unwrap_or(false)
+            && !decision.reason_codes.iter().any(|c| c == "SANDBOX_DISABLED")
+        {
+            decision.reason_codes.push("SANDBOX_DISABLED".into());
+        }
+        Ok(serde_json::to_value(&decision)?)
     }
 }
 

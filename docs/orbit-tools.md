@@ -32,3 +32,28 @@ approval or run under a standing grant (Connections → MCP). Standing
 grants are owner-revocable any time. The agent can add MCP servers only
 when `agent_may_manage_mcp` is on, and additions land disabled until
 the owner reviews them.
+
+## Hybrid catalog: search + execute (gateway)
+
+- `search_actions{query, limit?}` (limit 1–10, default 5) — ranked search
+  over the caller's executable action catalog: registered + enabled
+  descriptors, minus rows whose owning connection is disabled, minus
+  names outside the caller's grants. Discovery only: every hit still
+  passes schema/risk/propose/submit before any effect.
+- `execute_action{action_id, arguments, task_id?, idempotency_key?}` —
+  resolves the id against the live catalog (unknown ids are NOT_FOUND,
+  never invented), then re-enters the governed propose/submit pipeline:
+  admission re-checks grants, schema and policy run as usual, and the
+  result settles exactly like any other tool call. `ask_owner` parks
+  (`WAITING_FOR_INPUT`); approval-gated tools report
+  `WAITING_FOR_APPROVAL` with the consent id. `idempotency_key` replays
+  the same proposal instead of double-executing.
+- `docs_read` and `ask_owner` stay promoted: always discoverable,
+  always ranked for vague queries ("help").
+- Legacy names (`memory.*`, `shell.*`, `browser.*`, `files.*`,
+  `email.*`, bare `mcp.*`) never match catalog entries. Migration 0041
+  rewrites the statically mappable names (`memory.search` →
+  `orbit-data.memory_search`, `files.read` → `orbit-data.workspace_read`,
+  …) and drops the rest; owners re-grant dropped names (notably `mcp.*`,
+  whose connection segment is per-owner) deliberately. An empty
+  allowlist stays empty — no fallback grant is ever added.

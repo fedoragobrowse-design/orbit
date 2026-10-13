@@ -51,4 +51,6 @@ orbit-scheduler = { path = "../scheduler" }
 orbit-email = { path = "../email" }
 orbit-calendar = { path = "../calendar" }
 orbit-mcp = { path = "../mcp" }
+http = "1"
+rmcp = { version = "=3.4.1", default-features = false, features = ["server", "transport-streamable-http-server"] }
 multer = "3"

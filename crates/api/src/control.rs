@@ -250,8 +250,33 @@ pub async fn cancel_question(
 #[utoipa::path(get,path="/api/v1/skills",responses((status=200,body=Value)))]
 pub async fn list_skills(State(state): State<ApiState>,headers: HeaderMap)->Result<Json<Value>,ApiError>{
  let a=authenticate(&state,&headers,false).await?;
- let items: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',id,'name',name,'description',description,'enabled',enabled) FROM skills WHERE owner_id=$1 ORDER BY name LIMIT 100").bind(a.scope.owner_id).fetch_all(&state.pool).await?;
- Ok(Json(json!({"items":items})))
+ Ok(Json(crate::skills::inventory(&state.pool,&a.scope).await.map_err(ApiError::from)?))
+}
+#[utoipa::path(get,path="/api/v1/skills/{name}",params(("name"=String,Path)),responses((status=200,body=Value)))]
+pub async fn read_skill(State(state): State<ApiState>,headers: HeaderMap,Path(name): Path<String>)->Result<Json<Value>,ApiError>{
+ let a=authenticate(&state,&headers,false).await?;
+ let clean = crate::skills::valid_skill_name(&name).map_err(ApiError::from)?;
+ if let Some(r) = sqlx::query("SELECT description,entrypoint,enabled FROM skills WHERE owner_id=$1 AND name=$2").bind(a.scope.owner_id).bind(&clean).fetch_optional(&state.pool).await? {
+  use sqlx::Row as _;
+  let body = crate::skills::read_bundled_skill(&clean);
+  let (st, digest) = match &body {
+   Ok(b) if !b.trim().is_empty() && b.len() <= crate::skills::MAX_SKILL_BODY_CHARS => ("ok".to_owned(), format!("sha256:{}", orbit_computer_node_protocol::sha256(b.as_bytes()))),
+   Ok(_) => ("broken: SKILL.md empty or exceeds 32 KiB".to_owned(), String::new()),
+   Err(e) => (format!("broken: {e}"), String::new()),
+  };
+  let st = if !r.get::<bool,_>("enabled") { "off".to_owned() } else { st };
+  return Ok(Json(json!({"name":clean,"source":"local","description":r.get::<String,_>("description"),"entrypoint":r.get::<String,_>("entrypoint"),"enabled":r.get::<bool,_>("enabled"),"state":st,"content_digest":digest,"instructions":body.unwrap_or_default(),"trust_level":"owner-curated","requested_actions":[]})));
+ }
+ if let Some(r) = sqlx::query("SELECT version,kind,description,content_digest,publisher_name,trust_level,capabilities FROM marketplace_installs WHERE owner_id=$1 AND name=$2").bind(a.scope.owner_id).bind(&clean).fetch_optional(&state.pool).await? {
+  use sqlx::Row as _;
+  let kind: String = r.get("kind");
+  let caps: Value = r.get("capabilities");
+  if kind != "skill" { return Ok(Json(json!({"name":clean,"source":"marketplace","state":format!("not a skill (kind {kind})"),"content_digest":r.get::<String,_>("content_digest"),"reason":format!("marketplace package {clean:?} is not a skill")}))); }
+  let snapshot: &str = caps.get("skill_snapshot").and_then(|v| v.get("skill_md")).and_then(Value::as_str).unwrap_or("");
+  if snapshot.trim().is_empty() { return Ok(Json(json!({"name":clean,"source":"marketplace","state":"needs content: SKILL.md pinned by digest only; reinstall with inspection","content_digest":r.get::<String,_>("content_digest"),"reason":"skill content is not pinned locally","skill_file_pin":caps.get("skill_file_pin").cloned().unwrap_or(Value::Null)}))); }
+  return Ok(Json(json!({"name":clean,"source":"marketplace","state":"ok","content_digest":r.get::<String,_>("content_digest"),"version":r.get::<String,_>("version"),"description":r.get::<String,_>("description"),"publisher_name":r.get::<String,_>("publisher_name"),"trust_level":r.get::<String,_>("trust_level"),"instructions":snapshot,"requested_actions":caps.get("tools").cloned().unwrap_or(json!([])),"capabilities":caps})));
+ }
+ Err(Error::NotFound.into())
 }
 #[derive(Deserialize,utoipa::ToSchema)] #[serde(deny_unknown_fields)] pub struct SkillToggle {pub enabled: bool}
 #[utoipa::path(post,path="/api/v1/skills/{name}/enabled",params(("name"=String,Path)),request_body=SkillToggle,responses((status=200,body=Value)))]
@@ -263,7 +288,7 @@ pub async fn set_skill_enabled(State(state): State<ApiState>,headers: HeaderMap,
  Ok(Json(row.ok_or(Error::NotFound)?))
 }
 #[derive(utoipa::OpenApi)]
-#[openapi(paths(get_doc, list_questions, answer_question, cancel_question, list_skills, set_skill_enabled))]
+#[openapi(paths(get_doc, list_questions, answer_question, cancel_question, list_skills, read_skill, set_skill_enabled))]
 pub struct ControlApi;
 pub fn router() -> Router<ApiState> {
  Router::new()
@@ -272,5 +297,6 @@ pub fn router() -> Router<ApiState> {
   .route("/api/v1/questions/{id}/answer", post(answer_question))
   .route("/api/v1/questions/{id}/cancel", post(cancel_question))
   .route("/api/v1/skills", get(list_skills))
+  .route("/api/v1/skills/{name}", get(read_skill))
   .route("/api/v1/skills/{name}/enabled", post(set_skill_enabled))
 }

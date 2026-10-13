@@ -710,6 +710,173 @@ pub async fn list_tools(
         .await?;
     Ok(Json(ListResponse { items, next_cursor: None }))
 }
+/// Hybrid catalog search: ranked actions the caller may invoke.
+/// Discovery only — every result still passes schema/risk/propose/submit
+/// before any effect. `limit` clamps to 1..=10.
+#[utoipa::path(post, path = "/api/v1/tools/search", responses((status = 200, body = Value)))]
+pub async fn search_actions(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(input): Json<orbit_tools::catalog::SearchActionsInput>,
+) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, false).await?;
+    if input.query.trim().is_empty() || input.query.len() > 500 {
+        return Err(Error::Validation("query must be 1-500 characters".into()).into());
+    }
+    let limit = input.limit.unwrap_or(5).clamp(1, 10);
+    let catalog = orbit_tools::catalog::build_catalog(&state.pool, a.scope.owner_id, None).await?;
+    let items = orbit_tools::catalog::search(&catalog, &input.query, limit as usize);
+    Ok(Json(json!({"items": items})))
+}
+/// Execute one catalog action by id. Resolves against the live catalog
+/// (enabled connections + registry rows; unknown ids are NOT_FOUND, never
+/// invented), then re-enters the governed propose/submit path: admission
+/// re-checks the caller's grants, schema and policy run as usual, and the
+/// result settles exactly like any other tool call. `task_id` reuses a
+/// caller-owned task; otherwise a fresh gateway task is journaled.
+/// `idempotency_key` replays the same proposal instead of double-executing.
+#[utoipa::path(post, path = "/api/v1/tools/execute", responses((status = 200, body = Value)))]
+pub async fn execute_action(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(input): Json<orbit_tools::catalog::ExecuteActionInput>,
+) -> Result<Json<Value>, ApiError> {
+    let a = authenticate(&state, &headers, true).await?;
+    if !input.arguments.is_object() {
+        return Err(Error::Validation("arguments must be an object".into()).into());
+    }
+    let catalog = orbit_tools::catalog::build_catalog(&state.pool, a.scope.owner_id, None).await?;
+    let entry = orbit_tools::catalog::resolve(&catalog, &input.action_id).ok_or(Error::NotFound)?;
+    let tool_name = entry.tool_name.clone();
+    if let Some(k) = &input.idempotency_key {
+        if k.trim().is_empty() || k.len() > 128 {
+            return Err(Error::Validation("idempotency_key must be 1-128 characters".into()).into());
+        }
+    }
+    // Governed execution without the lease-bound agent loop: admission
+    // (grant + registry + schema + risk + policy) via the shared journal
+    // helper, then the ExecutorRegistry route, then the shared settle
+    // update. ask_owner parks (WAITING_FOR_INPUT); approval-gated tools
+    // report WAITING_FOR_APPROVAL with the consent id.
+    let call_id = match &input.idempotency_key {
+        Some(k) => {
+            let key = format!("gateway:execute:{k}");
+            if let Some(existing) = sqlx::query("SELECT id,state,proposal_digest FROM tool_calls WHERE owner_id=$1 AND proposal_key=$2")
+                .bind(a.scope.owner_id)
+                .bind(&key)
+                .fetch_optional(&state.pool)
+                .await?
+            {
+                let state_name: String = existing.get("state");
+                if state_name == "COMPLETED" {
+                    let result: Option<Value> = sqlx::query_scalar("SELECT result FROM tool_calls WHERE owner_id=$1 AND id=$2")
+                        .bind(a.scope.owner_id)
+                        .bind(existing.get::<Uuid, _>("id"))
+                        .fetch_optional(&state.pool)
+                        .await?;
+                    return Ok(Json(json!({"call_id": existing.get::<Uuid, _>("id"), "state": state_name, "result": result.unwrap_or(Value::Null), "replayed": true})));
+                }
+                return Ok(Json(json!({"call_id": existing.get::<Uuid, _>("id"), "state": state_name, "proposal_digest": existing.get::<String, _>("proposal_digest"), "replayed": true})));
+            }
+            key
+        }
+        None => format!("gateway:execute:{}:{}", Uuid::new_v4(), entry.action_id),
+    };
+    let task = match input.task_id {
+        Some(id) => {
+            sqlx::query_scalar::<_, Uuid>("SELECT id FROM tasks WHERE owner_id=$1 AND id=$2")
+                .bind(a.scope.owner_id)
+                .bind(id)
+                .fetch_optional(&state.pool)
+                .await?
+                .ok_or(Error::NotFound)?;
+            id
+        }
+        None => {
+            let id = Uuid::new_v4();
+            let correlation = Uuid::new_v4();
+            sqlx::query("INSERT INTO tasks(id,owner_id,principal_id,correlation_id,title,consumer,checkpoint,state) VALUES($1,$2,$3,$4,$5,'gateway',$6,'RUNNING')")
+                .bind(id)
+                .bind(a.scope.owner_id)
+                .bind(a.scope.principal_id)
+                .bind(correlation)
+                .bind(format!("gateway execute {tool_name}"))
+                .bind(json!({"phase":"GATEWAY_EXECUTE"}))
+                .execute(&state.pool)
+                .await?;
+            id
+        }
+    };
+    let journal = crate::agents::journal_proposal(&state.pool, &a.scope, task, &tool_name, input.arguments.clone(), &call_id).await;
+    // Denials (unadmitted, policy-denied, injection, schema) surface as
+    // `Forbidden` from the shared journal path — execute enforces grants.
+    let (snapshot_value, hash, descriptor_value, digest, risk_value, decision_value, state_name) = journal.map_err(ApiError::from)?;
+    let call = Uuid::new_v4();
+    if state_name == "WAITING_FOR_APPROVAL" {
+        let approval = Uuid::new_v4();
+        let snapshot_parsed: orbit_core::ActionSnapshot = serde_json::from_value(snapshot_value.clone()).map_err(|e| Error::Validation(e.to_string()))?;
+        let preview = orbit_approvals::preview(&snapshot_parsed);
+        let expires_at = chrono::Utc::now() + chrono::Duration::hours(24);
+        let mut tx = state.pool.begin().await?;
+        sqlx::query("INSERT INTO tool_calls(id,owner_id,task_id,agent_id,proposal_key,proposal_digest,snapshot,action_hash,descriptor,descriptor_digest,risk,policy_decision,state,approval_id) VALUES($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)")
+            .bind(call).bind(a.scope.owner_id).bind(task).bind(&call_id).bind(&hash).bind(&snapshot_value).bind(&hash).bind(&descriptor_value).bind(&digest).bind(&risk_value).bind(&decision_value).bind(&state_name).bind(approval).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO approvals(id,owner_id,task_id,call_id,snapshot,action_hash,risk,reasons,preview,policy_decision,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
+            .bind(approval).bind(a.scope.owner_id).bind(task).bind(call).bind(&snapshot_value).bind(&hash).bind(&risk_value).bind(json!([risk_value.get("reasons")])).bind(&preview).bind(&decision_value).bind(expires_at).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(Json(json!({"call_id": call, "state": state_name, "approval_id": approval, "task_id": task})));
+    }
+    sqlx::query("INSERT INTO tool_calls(id,owner_id,task_id,agent_id,proposal_key,proposal_digest,snapshot,action_hash,descriptor,descriptor_digest,risk,policy_decision,state) VALUES($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10,$11,$12)")
+        .bind(call).bind(a.scope.owner_id).bind(task).bind(&call_id).bind(&hash).bind(&snapshot_value).bind(&hash).bind(&descriptor_value).bind(&digest).bind(&risk_value).bind(&decision_value).bind(&state_name).execute(&state.pool).await?;
+    // The journal only emits PROPOSED or WAITING_FOR_APPROVAL; anything else
+    // is an internal invariant break, never a client error.
+    if state_name != "PROPOSED" {
+        return Err(Error::Unavailable(format!("unexpected proposal state {state_name}")).into());
+    }
+    let authorization = Uuid::new_v4();
+    sqlx::query("UPDATE tool_calls SET state='SUBMITTED',authorization_id=$3,submitted_at=now() WHERE owner_id=$1 AND id=$2 AND state='PROPOSED'")
+        .bind(a.scope.owner_id).bind(call).bind(authorization).execute(&state.pool).await?;
+    let snapshot: orbit_core::ActionSnapshot = serde_json::from_value(snapshot_value).map_err(|e| Error::Validation(e.to_string()))?;
+    if orbit_approvals::canonical_hash(&snapshot)? != hash {
+        return Err(Error::Forbidden.into());
+    }
+    let action = orbit_core::AuthorizedAction::from_submission(snapshot, authorization, 1);
+    if tool_name == "orbit-control.ask_owner" {
+        use orbit_tools::ToolExecutor;
+        let output = orbit_tools::SafeTools { pool: state.pool.clone(), artifact_dir: state.artifact_dir.clone(), key_dir: state.key_dir.clone() }
+            .execute(&a.scope, action)
+            .await?
+            .output;
+        sqlx::query("UPDATE tool_calls SET state='WAITING_FOR_INPUT',result=$3,completed_at=now() WHERE owner_id=$1 AND id=$2")
+            .bind(a.scope.owner_id).bind(call).bind(json!({"question_id": output.get("question_id")})).execute(&state.pool).await?;
+        return Ok(Json(json!({"call_id": call, "state": "WAITING_FOR_INPUT", "question_id": output.get("question_id"), "task_id": task})));
+    }
+    let registry = crate::ExecutorRegistry { pool: state.pool.clone(), key_dir: state.key_dir.clone(), artifact_dir: state.artifact_dir.clone(), origin: state.origin.clone() };
+    let result = registry.route(&a.scope, task, Uuid::nil(), &tool_name, &input.arguments, action).await;
+    match result {
+        Ok(value) => {
+            sqlx::query("UPDATE tool_calls SET state='COMPLETED',result=$3,completed_at=now() WHERE owner_id=$1 AND id=$2")
+                .bind(a.scope.owner_id).bind(call).bind(&value).execute(&state.pool).await?;
+            Ok(Json(json!({"call_id": call, "state": "COMPLETED", "task_id": task, "result": value})))
+        }
+        Err(e) => {
+            let code = match &e {
+                Error::Unauthorized => "UNAUTHORIZED",
+                Error::Forbidden => "FORBIDDEN",
+                Error::NotFound => "NOT_FOUND",
+                Error::Validation(_) => "VALIDATION",
+                Error::Conflict(_) => "CONFLICT",
+                Error::Unavailable(_) => "UNAVAILABLE",
+                _ => "INTERNAL",
+            };
+            if matches!(e, Error::Forbidden | Error::Unauthorized | Error::NotFound) {
+                return Err(e.into());
+            }
+            sqlx::query("UPDATE tool_calls SET state='FAILED',result=$3,error_code=$4,completed_at=now() WHERE owner_id=$1 AND id=$2")
+                .bind(a.scope.owner_id).bind(call).bind(json!({"error": e.to_string(), "error_code": code})).bind(code).execute(&state.pool).await?;
+            Err(Error::Unavailable(format!("tool FAILED: {code}")).into())
+        }
+    }
+}
 
 #[derive(utoipa::OpenApi)]
 #[openapi(
@@ -726,6 +893,8 @@ pub async fn list_tools(
         list_tool_calls,
         tool_call_detail,
         list_tools,
+        search_actions,
+        execute_action,
     ),
     components(schemas(
         ListResponse,
@@ -750,4 +919,6 @@ pub fn router() -> Router<ApiState> {
         .route("/api/v1/tool-calls", get(list_tool_calls))
         .route("/api/v1/tool-calls/{id}", get(tool_call_detail))
         .route("/api/v1/tools", get(list_tools))
+        .route("/api/v1/tools/search", post(search_actions))
+        .route("/api/v1/tools/execute", post(execute_action))
 }

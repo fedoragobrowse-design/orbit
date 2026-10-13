@@ -13,6 +13,72 @@ use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::{ApiError, ApiState, authenticate};
+/// One `CONNECTOR_*_RECEIVED` receipt per successful sync (email `sync_batch`
+/// gate, adapted): writes when — and only when — at least one row was
+/// inserted/updated, reusing the existing `events` + `event_deliveries`
+/// tables with a `foundation` delivery. No-op syncs write nothing.
+pub(crate) async fn emit_connector_receipt(pool: &sqlx::PgPool, scope: &OwnerScope, kind: &str, source: &str, source_key: &str, payload: Value) -> Result<(), Error> {
+    let event = Uuid::new_v4();
+    let mut tx = pool.begin().await?;
+    let inserted = sqlx::query("INSERT INTO events(id,owner_id,event_type,source,principal_id,payload,trust_level,privacy_class,correlation_id,source_event_key) VALUES($1,$2,$3,$4,$5,$6,'UNTRUSTED_EXTERNAL','PRIVATE',$7,$8) ON CONFLICT(owner_id,source,source_event_key) DO NOTHING RETURNING id")
+        .bind(event).bind(scope.owner_id).bind(kind).bind(source).bind(scope.principal_id).bind(&payload).bind(event).bind(source_key)
+        .fetch_optional(&mut *tx).await?.is_some();
+    if inserted {
+        sqlx::query("INSERT INTO event_deliveries(id,owner_id,event_id,consumer) VALUES($1,$2,$3,'foundation') ON CONFLICT DO NOTHING")
+            .bind(Uuid::new_v4()).bind(scope.owner_id).bind(event).execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
+    Ok(())
+}
+/// Connector manifest schema: id + description-from-file metadata, the tool
+/// actions the connector exposes, its input/output schemas, required scopes,
+/// the sealed-store credential type, and the `CONNECTOR_*_RECEIVED` event the
+/// sync path emits. New (uninstalled) connectors start
+/// disabled/untrusted: `enabled=false`, `trusted=false`, with a permission
+/// preview naming the scopes the owner must approve before first sync.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectorManifest {
+    pub id: String,
+    pub description: String,
+    pub actions: Vec<String>,
+    pub input_schema: Value,
+    pub output_schema: Value,
+    pub scopes: Vec<String>,
+    pub credential: String,
+    pub event: String,
+    pub cursor: String,
+    pub enabled: bool,
+    pub trusted: bool,
+    pub permission_preview: Vec<String>,
+}
+fn manifest(id: &str, description: &str, actions: &[&str], scopes: &[&str], credential: &str, event: &str, cursor: &str) -> ConnectorManifest {
+    ConnectorManifest {
+        id: id.into(),
+        description: description.into(),
+        actions: actions.iter().map(|s| s.to_string()).collect(),
+        input_schema: json!({"type": "object"}),
+        output_schema: json!({"type": "object", "properties": {"synced": {"type": "boolean"}, "stored": {"type": "integer"}}}),
+        scopes: scopes.iter().map(|s| s.to_string()).collect(),
+        credential: credential.into(),
+        event: event.into(),
+        cursor: cursor.into(),
+        enabled: false,
+        trusted: false,
+        permission_preview: scopes.iter().map(|s| s.to_string()).collect(),
+    }
+}
+/// Built-in connector manifests keyed by `manifest.id`. New sources start
+/// disabled/untrusted with a permission preview; the owner flips `enabled`
+/// by approving the manifest's scopes (marketplace install gate).
+pub fn manifests() -> Vec<ConnectorManifest> {
+    vec![
+        manifest("ha", "Home Assistant states connector (crates/api/src/connectors.rs)", &["sync", "list_states", "list_entities"], &["ha:read"], "ha-token", "CONNECTOR_HA_RECEIVED", "last_sync"),
+        manifest("github", "GitHub notifications connector (crates/api/src/connectors.rs)", &["sync", "list"], &["github:notifications"], "github-token", "CONNECTOR_GITHUB_RECEIVED", "last_sync"),
+        manifest("calendar", "Calendar ICS/CalDAV connector (crates/api/src/calendar.rs)", &["sync", "list_events", "today"], &["calendar:read"], "calendar-basic", "CONNECTOR_CALENDAR_RECEIVED", "last_sync"),
+        manifest("inbox", "AI inbox import connector (crates/api/src/inbox.rs)", &["import", "list"], &["inbox:write"], "none", "CONNECTOR_INBOX_RECEIVED", "received_at"),
+    ]
+}
 const MAX_TOKEN_BYTES: usize = 8192;
 const MAX_URL_LEN: usize = 2048;
 const MAX_NAME_LEN: usize = 64;
@@ -99,6 +165,9 @@ pub async fn sync_ha(State(state): State<ApiState>, headers: HeaderMap, Path(id)
         stored += 1;
     }
     sqlx::query("UPDATE ha_connections SET last_sync=now(),updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).execute(&state.pool).await?;
+    if stored > 0 {
+        emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_HA_RECEIVED", &format!("ha:{id}"), &format!("ha-sync:{id}:{}", Uuid::new_v4()), json!({"connection_id": id, "stored": stored, "source_reference": format!("ha:{id}")})).await?;
+    }
     Ok(Json(json!({"synced": true, "stored": stored})))
 }
 #[utoipa::path(post, path = "/api/v1/ha/connections/{id}/remove", params(("id" = String, Path)), responses((status = 200, body = Value)))]
@@ -151,6 +220,9 @@ pub async fn sync_github(State(state): State<ApiState>, headers: HeaderMap, Path
         stored += 1;
     }
     sqlx::query("UPDATE github_connections SET last_sync=now(),updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).execute(&state.pool).await?;
+    if stored > 0 {
+        emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_GITHUB_RECEIVED", &format!("github:{id}"), &format!("github-sync:{id}:{}", Uuid::new_v4()), json!({"connection_id": id, "stored": stored, "source_reference": format!("github:{id}")})).await?;
+    }
     Ok(Json(json!({"synced": true, "stored": stored})))
 }
 #[utoipa::path(post, path = "/api/v1/github/connections/{id}/remove", params(("id" = String, Path)), responses((status = 200, body = Value)))]
@@ -222,15 +294,28 @@ pub async fn sync_entities(State(state): State<ApiState>, headers: HeaderMap, Js
         stored += 1;
     }
     sqlx::query("UPDATE ha_connections SET last_sync=now(),updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(input.connection_id).execute(&state.pool).await?;
+    if stored > 0 {
+        emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_HA_RECEIVED", &format!("ha:{}", input.connection_id), &format!("ha-entities-sync:{}:{}", input.connection_id, Uuid::new_v4()), json!({"connection_id": input.connection_id, "stored": stored, "source_reference": format!("ha:{}", input.connection_id)})).await?;
+    }
     Ok(Json(json!({"synced": true, "stored": stored})))
 }
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HaSync { pub connection_id: Uuid }
 pub struct ConnectorApi;
+/// Connector manifests: id, description-from-file, actions, schemas,
+/// scopes, sealed-store credential type, emitted event, and cursor.
+/// New sources start disabled/untrusted with a permission preview;
+/// installing (marketplace gate) or approving scopes flips `enabled`.
+#[utoipa::path(get, path = "/api/v1/connectors/manifests", responses((status = 200, body = Value)))]
+pub async fn list_manifests(State(_state): State<ApiState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
+    let _ = authenticate(&_state, &headers, false).await?;
+    Ok(Json(json!({"items": manifests()})))
+}
 impl ConnectorApi {
     pub fn router() -> Router<ApiState> {
         Router::new()
+            .route("/api/v1/connectors/manifests", get(list_manifests))
             .route("/api/v1/ha/connections", post(create_ha).get(list_ha))
             .route("/api/v1/ha/connections/{id}/sync", post(sync_ha))
             .route("/api/v1/ha/connections/{id}/remove", post(remove_ha))

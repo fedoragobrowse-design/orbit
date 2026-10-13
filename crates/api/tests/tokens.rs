@@ -49,7 +49,7 @@ async fn session_ctx(pool: &PgPool) -> (ApiState, HeaderMap) {
 async fn token_create_use_revoke_fails_closed() {
     let (pool, db, key_dir) = pool().await;
     let (state, write) = session_ctx(&pool).await;
-    let made = match orbit_api::tokens::create_token(State(state.clone()), write.clone(), axum::Json(TokenCreate { name: "laptop".into() })).await { Ok(v) => v, Err(_) => panic!("create token") };
+    let made = match orbit_api::tokens::create_token(State(state.clone()), write.clone(), axum::Json(TokenCreate { name: "laptop".into(), grants: vec![] })).await { Ok(v) => v, Err(_) => panic!("create token") };
     let plain = made.0["token"].as_str().unwrap().to_owned();
     assert!(plain.starts_with("orb_"), "token carries orb_ prefix");
     let id: Uuid = made.0["id"].as_str().unwrap().parse().unwrap();

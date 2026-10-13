@@ -14,7 +14,7 @@ pub use executors::ExecutorRegistry;
 pub mod gateway;
 pub mod inbox;
 pub mod marketplace;
-pub mod mcp;
+pub mod mcp_server;
 pub mod memory;
 pub mod models;
 pub mod notes;
@@ -23,6 +23,7 @@ pub mod push;
 pub mod runtimes;
 pub mod search;
 pub mod shell_routes;
+pub mod skills;
 pub mod updates;
 pub mod tokens;
 pub mod uploads;
@@ -94,7 +95,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(automations::router())
         .merge(runtimes::router())
         .merge(email::router())
-        .merge(mcp::router())
+        .merge(mcp_server::router(state.clone()))
         .merge(marketplace::router())
         .merge(computers::router())
         .merge(agents::router())

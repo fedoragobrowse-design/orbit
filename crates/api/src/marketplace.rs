@@ -128,8 +128,15 @@ pub async fn install(State(state): State<ApiState>, headers: HeaderMap, Json(inp
     let mut tx = state.pool.begin().await?;
     sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE").bind(auth.scope.owner_id).fetch_one(&mut *tx).await?;
     let id = Uuid::new_v4();
+    let mut caps = manifest.get("requested_capabilities").cloned().unwrap_or(json!({}));
+    if manifest.get("kind").and_then(Value::as_str) == Some("skill") {
+        let pin = manifest.get("files").and_then(Value::as_array).and_then(|fs| fs.iter().find(|f| f.get("path").and_then(Value::as_str) == Some("SKILL.md"))).cloned().unwrap_or(Value::Null);
+        if !pin.is_null() {
+            if let Some(o) = caps.as_object_mut() { o.insert("skill_file_pin".into(), pin); }
+        }
+    }
     sqlx::query("INSERT INTO marketplace_installs(id,owner_id,name,version,kind,description,content_digest,publisher_name,publisher_key_id,trust_level,capabilities,sandbox_only) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true) ON CONFLICT(owner_id,name) DO UPDATE SET version=EXCLUDED.version,kind=EXCLUDED.kind,description=EXCLUDED.description,content_digest=EXCLUDED.content_digest,publisher_name=EXCLUDED.publisher_name,publisher_key_id=EXCLUDED.publisher_key_id,trust_level=EXCLUDED.trust_level,capabilities=EXCLUDED.capabilities,sandbox_only=true,installed_at=now()")
-        .bind(id).bind(auth.scope.owner_id).bind(&name).bind(manifest.get("version").and_then(Value::as_str).unwrap_or_default()).bind(manifest.get("kind").and_then(Value::as_str).unwrap_or_default()).bind(manifest.get("description").and_then(Value::as_str).unwrap_or_default()).bind(manifest.get("content_digest").and_then(Value::as_str).unwrap_or_default()).bind(manifest.pointer("/publisher/name").and_then(Value::as_str).unwrap_or_default()).bind(manifest.pointer("/publisher/key_id").and_then(Value::as_str).unwrap_or_default()).bind(manifest.get("trust_level").and_then(Value::as_str).unwrap_or_default()).bind(manifest.get("requested_capabilities").cloned().unwrap_or(json!({}))).execute(&mut *tx).await?;
+        .bind(id).bind(auth.scope.owner_id).bind(&name).bind(manifest.get("version").and_then(Value::as_str).unwrap_or_default()).bind(manifest.get("kind").and_then(Value::as_str).unwrap_or_default()).bind(manifest.get("description").and_then(Value::as_str).unwrap_or_default()).bind(manifest.get("content_digest").and_then(Value::as_str).unwrap_or_default()).bind(manifest.pointer("/publisher/name").and_then(Value::as_str).unwrap_or_default()).bind(manifest.pointer("/publisher/key_id").and_then(Value::as_str).unwrap_or_default()).bind(manifest.get("trust_level").and_then(Value::as_str).unwrap_or_default()).bind(caps).execute(&mut *tx).await?;
     sqlx::query("UPDATE authorization_epochs SET revision=revision+1 WHERE owner_id=$1").bind(auth.scope.owner_id).execute(&mut *tx).await?;
     orbit_audit::append(&mut tx, &auth.scope, Uuid::new_v4(), None, None, "MARKETPLACE_INSTALLED", "owner installed marketplace package (sandbox-only execution)", json!({"name": name, "version": manifest.get("version"), "digest": manifest.get("content_digest"), "signature_valid": sig_valid, "over_broad": flags, "index_source": source})).await?;
     tx.commit().await?;

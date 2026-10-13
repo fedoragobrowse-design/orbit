@@ -25,3 +25,4 @@ orbit-model-router = { path = "../model-router" }
 reqwest.workspace = true
 orbit-workspace = { path = "../workspace" }
 orbit-agent-runtime = { path = "../agent-runtime" }
+utoipa.workspace = true
