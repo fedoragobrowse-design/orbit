@@ -30,6 +30,7 @@ import {
   Settings as SettingsIcon,
   Info as InfoIcon,
   ShieldCheck,
+  SquareTerminal,
   StickyNote,
   Store,
   Users,
@@ -77,6 +78,7 @@ export const FAMILIES = [
     title: "Connect",
     links: [
       ["/computers", "Computers", Monitor],
+      ["/terminal", "Terminal", SquareTerminal],
       ["/home-assistant", "Home Assistant", HousePlug],
       ["/email", "Email", Mail],
       ["/connections", "Connections", Plug],

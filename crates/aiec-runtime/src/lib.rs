@@ -358,6 +358,45 @@ impl AIecRuntime {
         }
         Ok(())
     }
+    /// Live interactive-shell capability probe. GETs the sandbox list and
+    /// looks for a `supports_interactive` flag; any missing flag, non-list
+    /// shape, or transport outcome means "not capable" (`Ok(false)`), never
+    /// an error that could be mistaken for a dispatch failure.
+    pub async fn probe_interactive(&self) -> Result<bool> {
+        let response = match self.request(Method::GET, "v1/sandboxes", 30)?.send().await {
+            Ok(r) => r,
+            Err(_) => return Ok(false),
+        };
+        if !response.status().is_success() {
+            return Ok(false);
+        }
+        let value: Value = match decode::<Value>(response).await {
+            Ok(v) => v,
+            Err(_) => return Ok(false),
+        };
+        let items = value.get("items").unwrap_or(&value);
+        let capable = match items {
+            Value::Array(rows) => rows.iter().any(|row| {
+                serde_json::from_value::<CapabilityProbe>(row.clone())
+                    .map(|probe| probe.supports_interactive)
+                    .unwrap_or(false)
+            }),
+            single => serde_json::from_value::<CapabilityProbe>(single.clone())
+                .map(|probe| probe.supports_interactive)
+                .unwrap_or(false),
+        };
+        Ok(capable)
+    }
+}
+/// Wire shapes for the AIec interactive-shell capability probe. AIec has no
+/// interactive shell API in this slice: the probe asks for the sandbox list
+/// shape that would carry a `supports_interactive` flag and treats any other
+/// answer as "not capable", so `session_*` stay fail-closed with
+/// `INTERACTIVE_SHELL_UNAVAILABLE` until the capability lands server-side.
+#[derive(Deserialize)]
+struct CapabilityProbe {
+    #[serde(default)]
+    supports_interactive: bool,
 }
 #[async_trait]
 impl TaskRuntime for AIecRuntime {
@@ -503,6 +542,32 @@ impl TaskRuntime for AIecRuntime {
             Some(s) if s.state == "destroyed" => Ok(()),
             _ => Err(Error::OutcomeUnknown),
         }
+    }
+    fn supports_interactive(&self) -> bool {
+        // Capability probe: not capable until AIec advertises interactive
+        // shells. Synchronous by trait contract, so this reports the
+        // statically known answer; `probe_interactive` below is the live
+        // check the shell route calls before dispatching.
+        false
+    }
+    async fn session_start(&self, spec: orbit_task_runtime::InteractiveSpec) -> Result<orbit_task_runtime::InteractiveHandle> {
+        spec.validate()?;
+        let _ = self.probe_interactive().await?;
+        Err(Error::Unavailable(orbit_task_runtime::INTERACTIVE_SHELL_UNAVAILABLE.into()))
+    }
+    async fn session_input(&self, _handle: &orbit_task_runtime::InteractiveHandle, text: &str) -> Result<()> {
+        orbit_task_runtime::validate_interactive_text(text)?;
+        let _ = self.probe_interactive().await?;
+        Err(Error::Unavailable(orbit_task_runtime::INTERACTIVE_SHELL_UNAVAILABLE.into()))
+    }
+    async fn session_resize(&self, _handle: &orbit_task_runtime::InteractiveHandle, cols: u32, rows: u32) -> Result<()> {
+        orbit_task_runtime::InteractiveSpec { cols, rows, cwd: "/".into() }.validate()?;
+        let _ = self.probe_interactive().await?;
+        Err(Error::Unavailable(orbit_task_runtime::INTERACTIVE_SHELL_UNAVAILABLE.into()))
+    }
+    async fn session_stop(&self, _handle: orbit_task_runtime::InteractiveHandle) -> Result<()> {
+        let _ = self.probe_interactive().await?;
+        Err(Error::Unavailable(orbit_task_runtime::INTERACTIVE_SHELL_UNAVAILABLE.into()))
     }
 }
 fn unknown_result() -> RuntimeResult {

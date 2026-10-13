@@ -138,6 +138,63 @@ pub struct Artifact {
     #[serde(skip)]
     pub bytes: Vec<u8>,
 }
+/// `TaskRuntime::session_*` fail-closed marker. No host, process, or Docker
+/// fallback exists: callers surface this `Unavailable` as 503.
+pub const INTERACTIVE_SHELL_UNAVAILABLE: &str = "INTERACTIVE_SHELL_UNAVAILABLE";
+/// Interactive shell request: absolute subtree-relative cwd (`/` is the
+/// staged root) plus initial pty size. Bounds mirror the shell-sessions API.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InteractiveSpec {
+    pub cols: u32,
+    pub rows: u32,
+    pub cwd: String,
+}
+impl InteractiveSpec {
+    pub fn validate(&self) -> Result<()> {
+        if !(1..=1024).contains(&self.cols) || !(1..=1024).contains(&self.rows) {
+            return Err(Error::Validation("pty size out of bounds".into()));
+        }
+        validate_interactive_cwd(&self.cwd)?;
+        Ok(())
+    }
+}
+/// Opaque handle to a started interactive shell.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InteractiveHandle {
+    pub id: Uuid,
+}
+/// Subtree-relative absolute path: `/` plus per-segment workspace names
+/// (no traversal, separators, NUL, or control characters).
+pub fn validate_interactive_cwd(cwd: &str) -> Result<()> {
+    if cwd.is_empty() || cwd.len() > 1024 || !cwd.starts_with('/') {
+        return Err(Error::Validation("cwd must be an absolute subtree path".into()));
+    }
+    if cwd == "/" {
+        return Ok(());
+    }
+    for segment in cwd[1..].split('/') {
+        if segment.is_empty()
+            || segment.len() > 255
+            || segment == "."
+            || segment == ".."
+            || segment.contains('\0')
+            || segment.contains('\\')
+            || segment.chars().any(char::is_control)
+        {
+            return Err(Error::Validation("invalid cwd segment".into()));
+        }
+    }
+    Ok(())
+}
+/// Interactive shell text bound: one input intent per call (agent commands
+/// stay one proposal per command; shell input is never an agent proposal).
+pub fn validate_interactive_text(text: &str) -> Result<()> {
+    if text.is_empty() || text.len() > 65536 || text.contains('\0') {
+        return Err(Error::Validation("shell input must be 1 byte to 64 KiB".into()));
+    }
+    Ok(())
+}
 #[async_trait]
 pub trait TaskRuntime: Send + Sync {
     async fn create(&self, spec: RuntimeSpec) -> Result<RuntimeHandle>;
@@ -145,6 +202,28 @@ pub trait TaskRuntime: Send + Sync {
     async fn put_file(&self, handle: &RuntimeHandle, path: &str, bytes: &[u8]) -> Result<()>;
     async fn collect_artifacts(&self, handle: &RuntimeHandle) -> Result<Vec<Artifact>>;
     async fn destroy(&self, handle: RuntimeHandle) -> Result<()>;
+    /// Start an interactive shell. Default: fail closed with
+    /// `INTERACTIVE_SHELL_UNAVAILABLE` (503 at the API layer).
+    async fn session_start(&self, _spec: InteractiveSpec) -> Result<InteractiveHandle> {
+        Err(Error::Unavailable(INTERACTIVE_SHELL_UNAVAILABLE.into()))
+    }
+    /// Send one bounded input intent to a started shell.
+    async fn session_input(&self, _handle: &InteractiveHandle, _text: &str) -> Result<()> {
+        Err(Error::Unavailable(INTERACTIVE_SHELL_UNAVAILABLE.into()))
+    }
+    /// Resize a started shell's pty.
+    async fn session_resize(&self, _handle: &InteractiveHandle, _cols: u32, _rows: u32) -> Result<()> {
+        Err(Error::Unavailable(INTERACTIVE_SHELL_UNAVAILABLE.into()))
+    }
+    /// Stop a started shell. Idempotent at the API layer via revision CAS.
+    async fn session_stop(&self, _handle: InteractiveHandle) -> Result<()> {
+        Err(Error::Unavailable(INTERACTIVE_SHELL_UNAVAILABLE.into()))
+    }
+    /// Whether this runtime can host interactive shells. Probes capability
+    /// without starting anything; `false` means `session_*` fail closed.
+    fn supports_interactive(&self) -> bool {
+        false
+    }
 }
 /// Reject ambiguous lexical paths before any remote request, even when the guest is untrusted.
 pub fn workspace_path(path: &str, allow_root: bool) -> Result<()> {

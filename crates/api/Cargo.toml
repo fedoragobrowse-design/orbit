@@ -23,6 +23,7 @@ async-stream.workspace = true
 futures-util.workspace = true
 utoipa.workspace = true
 tracing.workspace = true
+libc.workspace = true
 base64.workspace = true
 ed25519-dalek.workspace = true
 reqwest.workspace = true
@@ -42,6 +43,7 @@ orbit-agent-runtime = { path = "../agent-runtime" }
 orbit-agent-backend = { path = "../agent-backend" }
 orbit-sandbox-dispatch = { path = "../sandbox-dispatch" }
 orbit-task-runtime = { path = "../task-runtime" }
+orbit-workspace = { path = "../workspace" }
 orbit-aiec-runtime = { path = "../aiec-runtime" }
 orbit-computer-node-protocol = { path = "../computer-node-protocol" }
 orbit-memory = { path = "../memory" }

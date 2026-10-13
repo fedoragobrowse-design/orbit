@@ -21,6 +21,7 @@ pub mod ops;
 pub mod push;
 pub mod runtimes;
 pub mod search;
+pub mod shell_routes;
 pub mod updates;
 pub mod tokens;
 pub mod uploads;
@@ -110,6 +111,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(inbox::router())
         .merge(control::router())
         .merge(workspace_routes::router())
+        .merge(shell_routes::router())
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
 }

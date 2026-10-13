@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import {
   Link,
   useNavigate,
@@ -31,6 +31,9 @@ import {
 } from "./api";
 import { enablePush } from "./push";
 import { FAMILIES, useDraft } from "./nav";
+const TaskTerminalPane = lazy(() =>
+  import("./terminal").then((m) => ({ default: m.TaskTerminalPane })),
+);
 const TERMINAL_TASK_STATES: Record<string, true> = {
   COMPLETED: true,
   FAILED: true,
@@ -655,6 +658,9 @@ export function TaskDetail() {
         </aside>
       </div>
       <div className="section">
+        <Suspense fallback={<p role="status">Loading terminal…</p>}>
+          <TaskTerminalPane taskId={text(id)} />
+        </Suspense>
         <LiveRun taskId={text(id)} state={text(row.state)} />
       </div>
     </>

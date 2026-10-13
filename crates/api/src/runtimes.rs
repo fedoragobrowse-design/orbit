@@ -306,8 +306,8 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         id: Uuid::from_u128(0x65d70d8d_4fe0_40d1_a647_2ff1e8771150),
         name: "shell.execute".into(),
         version: "1".into(),
-        input_schema: json!({"type":"object","required":["image","argv","working_directory","timeout_seconds","input_artifact_ids","output_paths"],"properties":{"image":{"type":"string"},"argv":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"}},"working_directory":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":120},"input_artifact_ids":{"type":"array","maxItems":10,"items":{"type":"string","format":"uuid"}},"output_paths":{"type":"array","maxItems":10,"items":{"type":"string"}},"runtime_spec":{"type":"object"}},"additionalProperties":false}),
-        output_schema: json!({"type":"object","required":["runtime_id","result","artifacts","cleanup"],"properties":{"runtime_id":{"type":"string"},"result":{"type":"object"},"artifacts":{"type":"array"},"cleanup":{"type":"string"}},"additionalProperties":false}),
+        input_schema: json!({"type":"object","required":["image","argv","working_directory","timeout_seconds","input_artifact_ids","output_paths"],"properties":{"image":{"type":"string"},"argv":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"}},"working_directory":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":120},"input_artifact_ids":{"type":"array","maxItems":10,"items":{"type":"string"}},"output_paths":{"type":"array","maxItems":10,"items":{"type":"string"}},"workspace_id":{"type":"string"},"cwd":{"type":"string"},"session_id":{"type":"string"},"runtime_spec":{"type":"object"}},"additionalProperties":false}),
+        output_schema: json!({"type":"object","required":["runtime_id","result","artifacts","cleanup"],"properties":{"runtime_id":{"type":"string"},"result":{"type":"object"},"artifacts":{"type":"array"},"cleanup":{"type":"string"},"execution_mode":{"type":"string"},"receipt":{"type":"object"}},"additionalProperties":false}),
         effects: ToolEffects {
             external: true,
             modifies_data: true,
@@ -438,10 +438,32 @@ fn task_from_args(args: &Value) -> Result<RuntimeTask> {
 /// runtime fence is separate from the task fence and claims cleanup.
 pub const CREATOR_LEASE_SECONDS: i64 = 60;
 pub const CREATOR_RENEW_SECONDS: i64 = 20;
-/// The real dispatch path for `shell.execute`. There is no non-sandbox
-/// executor: every authorized action runs create → uploads → execute →
-/// collect → trusted artifact persistence → destroy/reconciliation against the
-/// admitted AIec origin only. No host, process, or Docker fallback exists.
+/// Sandbox routing for `shell.execute` (plan step 4).
+///
+/// The executor reads the owner's `sandbox_enabled` setting and dispatches
+/// exactly one way — never both, never the server host:
+/// * sandbox on → the admitted AIec connection (existing path below), with a
+///   dispatch receipt (argv hash + workspace diff) for owner recovery;
+///   unreachable AIec parks `WAITING_FOR_RESOURCE` (`SANDBOX_UNAVAILABLE`).
+/// * sandbox off → the isolated execution-host service as a non-root child
+///   process group confined to the staged workspace subtree, labeled
+///   `Unsandboxed` in the UI (`execution_mode='unsandboxed'` in audit).
+/// Session identity (`workspace_id`/`cwd`/`session_id`) rides on the tool
+/// args; every execution-host dispatch records it before spawning anything.
+pub const EXECUTION_MODE_SANDBOXED: &str = "sandboxed";
+pub const EXECUTION_MODE_UNSANDBOXED: &str = "unsandboxed";
+/// UI label for sandbox-off runs. The only unsandboxed marker the frontend
+/// renders; audit rows carry the same string as `execution_mode`.
+pub const EXECUTION_LABEL_UNSANDBOXED: &str = "Unsandboxed";
+/// 1 MiB: outputs above this spill to a persisted artifact; only the digest
+/// rides inline in the tool result.
+pub const OUTPUT_INLINE_LIMIT: usize = 1024 * 1024;
+/// The real dispatch path for `shell.execute`. The owner's `sandbox_enabled`
+/// setting routes every authorized action exactly one way: sandbox on runs
+/// create → uploads → execute → collect → trusted artifact persistence →
+/// destroy/reconciliation against the admitted AIec origin only; sandbox off
+/// runs on the isolated execution-host service as a non-root process group
+/// labeled `Unsandboxed`. No server-host execution path exists.
 pub struct ShellExecutor {
     pub pool: PgPool,
     pub artifact_dir: std::path::PathBuf,
@@ -455,10 +477,51 @@ impl orbit_tools::ToolExecutor for ShellExecutor {
         action: orbit_core::AuthorizedAction,
     ) -> Result<orbit_tools::ToolResult> {
         orbit_tools::verify_submission(&self.pool, scope, &action).await?;
-        let snapshot = action.snapshot();
+        // Clone the snapshot: the branch helpers take `action` by value for
+        // fence checks, so the borrow must end here.
+        let snapshot = action.snapshot().clone();
         if snapshot.tool_name != "shell.execute" {
             return Err(Error::Forbidden);
         }
+        // Sandbox choice is read per dispatch from the owner's setting and
+        // recorded on the run: sandbox on → admitted AIec; sandbox off →
+        // execution-host, labeled Unsandboxed. No third path exists.
+        let identity = ShellIdentity::from_args(&snapshot.arguments)?;
+        if sandbox_enabled(&self.pool, scope.owner_id).await {
+            return self.execute_sandboxed(scope, action, &snapshot, identity).await;
+        }
+        self.execute_unsandboxed(scope, action, &snapshot, identity).await
+    }
+}
+impl ShellExecutor {
+    async fn execute_sandboxed(
+        &self,
+        scope: &OwnerScope,
+        action: orbit_core::AuthorizedAction,
+        snapshot: &orbit_core::ActionSnapshot,
+        identity: ShellIdentity,
+    ) -> Result<orbit_tools::ToolResult> {
+        // Identity rides on the sandboxed run too: the audit row names the
+        // workspace subtree, cwd, and live session, matching the
+        // execution-host path so both modes stay comparable.
+        let correlation: Uuid =
+            sqlx::query_scalar("SELECT correlation_id FROM tasks WHERE owner_id=$1 AND id=$2")
+                .bind(scope.owner_id)
+                .bind(snapshot.task_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or(Error::NotFound)?;
+        audit_execution_mode(
+            &self.pool,
+            scope,
+            correlation,
+            Some(snapshot.task_id),
+            snapshot.action_id,
+            EXECUTION_MODE_SANDBOXED,
+            &identity,
+            "shell.execute dispatched to the admitted AIec connection (sandbox on); image-allowlisted and receipted",
+        )
+        .await?;
         let consent: ConsentSpec =
             serde_json::from_value(snapshot.arguments["runtime_spec"].clone())
                 .map_err(Error::from)?;
@@ -640,7 +703,15 @@ impl orbit_tools::ToolExecutor for ShellExecutor {
                 "UNRESOLVED"
             }
         };
-        let output = json!({"runtime_id": snapshot.action_id, "result": outcome_value, "artifacts": persisted, "cleanup": cleanup});
+        // Dispatch receipt: argv hash plus the admitted-env marker so an
+        // owner can recover exactly what ran where. Workspace diffs do not
+        // apply to the sandboxed path (outputs persist as sealed artifacts);
+        // the receipt records that explicitly rather than omitting it.
+        let argv_hash = orbit_aiec_runtime::sha256(
+            &serde_json::to_vec(&snapshot.arguments["argv"]).map_err(Error::from)?,
+        );
+        let receipt = json!({"argv_sha256": argv_hash, "execution_mode": EXECUTION_MODE_SANDBOXED, "workspace_diff": "not-applicable-sandboxed-outputs-are-sealed-artifacts"});
+        let output = json!({"runtime_id": snapshot.action_id, "result": outcome_value, "artifacts": persisted, "cleanup": cleanup, "execution_mode": EXECUTION_MODE_SANDBOXED, "receipt": receipt});
         orbit_tools::validate_value(&descriptors()[0].output_schema, &output)?;
         let state = if outcome.succeeded() && cleanup == "DESTROYED" {
             "COMPLETED"
@@ -662,7 +733,7 @@ impl orbit_tools::ToolExecutor for ShellExecutor {
             Some(snapshot.task_id),
             "RUNTIME_DISPATCH_SETTLED",
             "shell.execute dispatch settled through AIec",
-            json!({"call_id": snapshot.action_id, "state": state, "cleanup": cleanup}),
+            json!({"call_id": snapshot.action_id, "state": state, "cleanup": cleanup, "receipt": receipt}),
         )
         .await?;
         tx.commit().await?;
@@ -672,6 +743,563 @@ impl orbit_tools::ToolExecutor for ShellExecutor {
             trust_level: orbit_core::TrustLevel::UntrustedExternal,
             source_reference: format!("runtime-run:{}", snapshot.action_id),
         })
+    }
+    /// Sandbox-off dispatch: the isolated execution-host service, never the
+    /// server host. The workspace subtree stages to a temp dir, the command
+    /// runs as a non-root child in its own process group confined to that
+    /// dir with a scrubbed environment, output is secret-scrubbed before it
+    /// touches any row (1 MiB+ spills to an artifact), and the run settles
+    /// with an argv-hash + workspace-diff receipt labeled `Unsandboxed`.
+    async fn execute_unsandboxed(
+        &self,
+        scope: &OwnerScope,
+        action: orbit_core::AuthorizedAction,
+        snapshot: &orbit_core::ActionSnapshot,
+        identity: ShellIdentity,
+    ) -> Result<orbit_tools::ToolResult> {
+        let task: RuntimeTask = task_from_args(&snapshot.arguments)?;
+        task.validate()?;
+        let correlation: Uuid =
+            sqlx::query_scalar("SELECT correlation_id FROM tasks WHERE owner_id=$1 AND id=$2")
+                .bind(scope.owner_id)
+                .bind(snapshot.task_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or(Error::NotFound)?;
+        // Session identity lands on the run before anything spawns: the
+        // audit row names the workspace subtree, cwd, and live session so
+        // an owner can tell which terminal a command belonged to.
+        audit_execution_mode(
+            &self.pool,
+            scope,
+            correlation,
+            Some(snapshot.task_id),
+            snapshot.action_id,
+            EXECUTION_MODE_UNSANDBOXED,
+            &identity,
+            "shell.execute dispatched to execution-host without a sandbox (sandbox off); Jev-gated and policy-checked",
+        )
+        .await?;
+        let argv_hash = orbit_aiec_runtime::sha256(
+            &serde_json::to_vec(&task.argv).map_err(Error::from)?,
+        );
+        let outcome = run_on_execution_host(scope, &task, &identity, &self.pool).await;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                park_execution_host_waiting(
+                    &self.pool,
+                    scope,
+                    snapshot.task_id,
+                    action.task_fence(),
+                    correlation,
+                    snapshot.action_id,
+                    &e,
+                )
+                .await?;
+                return Err(e);
+            }
+        };
+        // Secret scrub before persist: stdout/stderr pass the scrubber before
+        // any row write, artifact spill, or receipt. Bearer-looking tokens
+        // and the owner's sealed secret bytes are redacted first.
+        let stdout = scrub_secrets(&self.pool, &self.key_dir, scope, &outcome.stdout).await?;
+        let stderr = scrub_secrets(&self.pool, &self.key_dir, scope, &outcome.stderr).await?;
+        let (stdout_value, stderr_value, mut spilled) =
+            spill_large_outputs(self, scope, snapshot, &action, &stdout, &stderr).await?;
+        // Workspace diff: commit what the command left behind in the staged
+        // subtree back to the owner's workspace entries.
+        let diff = commit_staged_diff(self, scope, &outcome, snapshot.task_id).await?;
+        spilled.push(json!({"kind": "WORKSPACE_DIFF", "diff": diff}));
+        let receipt = json!({"argv_sha256": argv_hash, "execution_mode": EXECUTION_MODE_UNSANDBOXED, "label": EXECUTION_LABEL_UNSANDBOXED, "workspace_diff": diff});
+        let output = json!({"runtime_id": snapshot.action_id, "execution_mode": EXECUTION_MODE_UNSANDBOXED, "label": EXECUTION_LABEL_UNSANDBOXED, "exit_code": outcome.exit_code, "timed_out": outcome.timed_out, "stdout": stdout_value, "stderr": stderr_value, "artifacts": spilled, "receipt": receipt});
+        let state = if outcome.exit_code == 0 && !outcome.timed_out {
+            "COMPLETED"
+        } else {
+            "FAILED"
+        };
+        sqlx::query("UPDATE tool_calls SET state=$3,result=$4,completed_at=now() WHERE owner_id=$1 AND id=$2")
+            .bind(scope.owner_id).bind(snapshot.action_id).bind(state).bind(&output).execute(&self.pool).await?;
+        sqlx::query("UPDATE tasks SET state=$3,wait_reason=NULL,revision=revision+1,updated_at=now() WHERE owner_id=$1 AND id=$2")
+            .bind(scope.owner_id).bind(snapshot.task_id).bind(if state == "COMPLETED" { "COMPLETED" } else { "FAILED" }).execute(&self.pool).await?;
+        let mut tx = self.pool.begin().await?;
+        orbit_audit::append(
+            &mut tx,
+            scope,
+            correlation,
+            None,
+            Some(snapshot.task_id),
+            "RUNTIME_DISPATCH_SETTLED",
+            "shell.execute dispatch settled through execution-host (Unsandboxed)",
+            json!({"call_id": snapshot.action_id, "state": state, "execution_mode": EXECUTION_MODE_UNSANDBOXED, "receipt": receipt}),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(orbit_tools::ToolResult {
+            output,
+            privacy_class: orbit_core::PrivacyClass::Private,
+            trust_level: orbit_core::TrustLevel::UntrustedExternal,
+            source_reference: format!("execution-host-run:{}", snapshot.action_id),
+        })
+    }
+}
+/// Workspace/cwd/session identity carried on `shell.execute` args. The
+/// descriptor accepts all three as optional; dispatch resolves them against
+/// the owner's workspace (explicit id, else the owner root) exactly like the
+/// live shell sessions do, so tool runs and terminals share one namespace.
+#[derive(Clone, Debug)]
+struct ShellIdentity {
+    workspace_id: Option<Uuid>,
+    cwd: String,
+    session_id: Option<Uuid>,
+}
+impl ShellIdentity {
+    fn from_args(args: &Value) -> Result<Self> {
+        let workspace_id = args
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| Error::Validation("workspace_id must be a UUID".into()))?;
+        let cwd = args
+            .get("cwd")
+            .and_then(Value::as_str)
+            .unwrap_or("/")
+            .to_string();
+        check_shell_cwd(&cwd)?;
+        let session_id = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| Error::Validation("session_id must be a UUID".into()))?;
+        Ok(Self { workspace_id, cwd, session_id })
+    }
+    fn audit(&self, root: Uuid) -> Value {
+        json!({"workspace_id": root, "cwd": self.cwd, "session_id": self.session_id})
+    }
+}
+/// Subtree-relative absolute path: `/` plus per-segment workspace names.
+/// Mirrors the live-session validator; segments are names only — never
+/// server paths, traversal, or separators.
+fn check_shell_cwd(cwd: &str) -> Result<()> {
+    if cwd.is_empty() || cwd.len() > 1024 || !cwd.starts_with('/') {
+        return Err(Error::Validation("cwd must be an absolute subtree path".into()));
+    }
+    if cwd == "/" {
+        return Ok(());
+    }
+    for segment in cwd[1..].split('/') {
+        if segment.is_empty()
+            || segment.len() > 255
+            || segment == "."
+            || segment == ".."
+            || segment.contains('\0')
+            || segment.contains('\\')
+            || segment.chars().any(char::is_control)
+        {
+            return Err(Error::Validation("invalid cwd segment".into()));
+        }
+    }
+    Ok(())
+}
+async fn sandbox_enabled(pool: &PgPool, owner: Uuid) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT COALESCE((value->>'sandbox_enabled')::boolean, false) FROM settings WHERE owner_id=$1",
+    )
+    .bind(owner)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(false)
+}
+/// Resolve the staged root: explicit `workspace_id`, else the owner's
+/// workspace root. Owner-scoped; foreign ids are 404.
+async fn resolve_shell_root(pool: &PgPool, owner: Uuid, workspace_id: Option<Uuid>) -> Result<Uuid> {
+    if let Some(id) = workspace_id {
+        let hit: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM workspace_entries WHERE owner_id=$1 AND id=$2 AND kind='DIRECTORY' AND trashed_at IS NULL",
+        )
+        .bind(owner)
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+        return hit.ok_or(Error::NotFound);
+    }
+    sqlx::query_scalar(
+        "SELECT id FROM workspace_entries WHERE owner_id=$1 AND parent_id IS NULL AND trashed_at IS NULL LIMIT 1",
+    )
+    .bind(owner)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(Error::Validation("workspace is not initialized".into()))
+}
+/// Journal the sandbox choice before dispatch. The audit row carries
+/// `execution_mode` (`sandboxed`/`unsandboxed`) plus the workspace/cwd/
+/// session identity, so the UI label and the audit trail always agree.
+async fn audit_execution_mode(
+    pool: &PgPool,
+    scope: &OwnerScope,
+    correlation: Uuid,
+    task: Option<Uuid>,
+    call: Uuid,
+    execution_mode: &str,
+    identity: &ShellIdentity,
+    reason: &str,
+) -> Result<Uuid> {
+    let root = resolve_shell_root(pool, scope.owner_id, identity.workspace_id).await?;
+    let mut metadata = identity.audit(root);
+    metadata["call_id"] = json!(call);
+    metadata["execution_mode"] = json!(execution_mode);
+    metadata["sandboxed"] = json!(execution_mode == EXECUTION_MODE_SANDBOXED);
+    let mut tx = pool.begin().await?;
+    orbit_audit::append(
+        &mut tx,
+        scope,
+        correlation,
+        None,
+        task,
+        "SHELL_EXECUTION_MODE",
+        reason,
+        metadata,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(root)
+}
+/// Outcome of one execution-host run: combined exit plus captured streams.
+struct ExecutionHostOutcome {
+    exit_code: i32,
+    timed_out: bool,
+    stdout: String,
+    stderr: String,
+    staged: orbit_workspace::staging::StagedTree,
+}
+/// Run the command on the execution-host service: a non-root child in its
+/// own process group, confined to the staged workspace subtree with a
+/// scrubbed environment. The server container runs as the `orbit` user
+/// (uid 10001, never root); the child additionally leads its own process
+/// group (`process_group(0)`, unix setsid semantics) so timeout kills reach
+/// exactly this run's descendants — the same `-pgid` discipline the
+/// execution-host PTY service applies to live sessions. No Docker socket,
+/// no host mounts, no inherited secrets: the env is rebuilt from scratch.
+async fn run_on_execution_host(
+    scope: &OwnerScope,
+    task: &RuntimeTask,
+    identity: &ShellIdentity,
+    pool: &PgPool,
+) -> Result<ExecutionHostOutcome> {
+    if unsafe { libc::geteuid() } == 0 {
+        return Err(Error::Unavailable(
+            "EXECUTION_HOST_UNAVAILABLE: execution-host refuses to run as root".into(),
+        ));
+    }
+    let staged = orbit_workspace::staging::stage_subtree(
+        pool,
+        &std::env::temp_dir(),
+        scope,
+        resolve_shell_root(pool, scope.owner_id, identity.workspace_id).await?,
+    )
+    .await
+    .map_err(|e| match e {
+        Error::Unavailable(_) => {
+            Error::Unavailable(format!("EXECUTION_HOST_UNAVAILABLE: staging failed: {e}"))
+        }
+        other => other,
+    })?;
+    let mut run_dir = staged.path().to_path_buf();
+    if identity.cwd != "/" {
+        // `check_shell_cwd` admitted only clean segments, so this join cannot
+        // escape the staged root; the canonicalization check below proves it.
+        run_dir = run_dir.join(&identity.cwd[1..]);
+    }
+    let canonical_root = staged
+        .path()
+        .canonicalize()
+        .map_err(|_| Error::Unavailable("EXECUTION_HOST_UNAVAILABLE: staged root unreadable".into()))?;
+    // Missing cwd dirs are a caller error, not a host outage — but only
+    // after proving the path stays inside the staged root.
+    let canonical_dir = run_dir
+        .canonicalize()
+        .map_err(|_| Error::Validation("cwd does not exist in the staged subtree".into()))?;
+    if !canonical_dir.starts_with(&canonical_root) {
+        return Err(Error::Forbidden);
+    }
+    let argv: Vec<String> = task.argv.clone();
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| Error::Validation("invalid bounded runtime command".into()))?;
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args(args)
+        .current_dir(&canonical_dir)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &canonical_root)
+        .env("LANG", "C.UTF-8")
+        .env("TERM", "xterm-256color")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        // Own process group: the timeout path below signals `-pgid`, which
+        // reaches exactly this run's descendants, never host processes.
+        command.process_group(0);
+    }
+    let child = command.spawn().map_err(|_| {
+        Error::Unavailable("EXECUTION_HOST_UNAVAILABLE: execution-host spawn failed".into())
+    })?;
+    // The child's pid doubles as its process-group id (`process_group(0)`
+    // above); capture it before `wait_with_output` takes ownership.
+    let child_pid = child.id();
+    let timeout = std::time::Duration::from_secs(task.timeout_seconds.max(1) as u64);
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(_)) => {
+            return Err(Error::Unavailable(
+                "EXECUTION_HOST_UNAVAILABLE: execution-host output unreadable".into(),
+            ));
+        }
+        Err(_) => {
+            kill_execution_host_group(child_pid);
+            return Ok(ExecutionHostOutcome {
+                exit_code: -1,
+                timed_out: true,
+                stdout: String::new(),
+                stderr: format!("timed out after {}s", task.timeout_seconds),
+                staged,
+            });
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    Ok(ExecutionHostOutcome {
+        exit_code: output.status.code().unwrap_or(-1),
+        timed_out: false,
+        stdout,
+        stderr,
+        staged,
+    })
+}
+/// Signal the whole run process group (negative pgid). Never the host: the
+/// child leads its own group, so `-pgid` reaches only its descendants.
+fn kill_execution_host_group(pid: Option<u32>) {
+    #[cfg(unix)]
+    {
+        if let Some(pid) = pid {
+            // Negative pgid = the group; the child was spawned with
+            // `process_group(0)`, so the group id equals the child pid.
+            unsafe {
+                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
+}
+/// Park the owner task in WAITING_FOR_RESOURCE when the execution-host
+/// service is unreachable, mirroring the AIec park path so the same safe
+/// owner recovery routes (resume/retry/reconcile) apply.
+async fn park_execution_host_waiting(
+    pool: &PgPool,
+    scope: &OwnerScope,
+    task: Uuid,
+    fence: i64,
+    correlation: Uuid,
+    run: Uuid,
+    error: &Error,
+) -> Result<()> {
+    let reason = match error {
+        Error::Unavailable(message) => format!("EXECUTION_HOST_UNAVAILABLE: {message}"),
+        Error::Timeout => "EXECUTION_HOST_UNAVAILABLE: execution-host request timed out".into(),
+        other => format!("EXECUTION_HOST_UNAVAILABLE: {other}"),
+    };
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE tasks SET state='WAITING_FOR_RESOURCE',wait_reason=$4,lease_until=NULL,revision=revision+1,updated_at=now() WHERE owner_id=$1 AND id=$2 AND fence=$3")
+        .bind(scope.owner_id).bind(task).bind(fence).bind(reason.clone()).execute(&mut *tx).await?;
+    sqlx::query("UPDATE tool_calls SET error_code='EXECUTION_HOST_UNAVAILABLE',evidence=evidence||$3::jsonb WHERE owner_id=$1 AND id=$2")
+        .bind(scope.owner_id).bind(run).bind(json!([{"wait_reason": reason}])).execute(&mut *tx).await?;
+    orbit_audit::append(
+        &mut tx,
+        scope,
+        correlation,
+        None,
+        Some(task),
+        "TASK_WAITING_FOR_RESOURCE",
+        &reason,
+        json!({"run_id": run, "execution_mode": EXECUTION_MODE_UNSANDBOXED}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+/// Scrub secret material from command output before it touches any row.
+/// Two layers: bearer-looking tokens are shape-redacted, and the owner's
+/// sealed secret bytes (read through the secret store, never logged) are
+/// replaced wholesale. Unknown shapes fail closed downstream by spilling.
+async fn scrub_secrets(
+    pool: &PgPool,
+    key_dir: &std::path::Path,
+    scope: &OwnerScope,
+    output: &str,
+) -> Result<String> {
+    let mut scrubbed = redact_token_shapes(output);
+    // Owner secret bytes: decrypt owner-scoped live rows and redact exact
+    // matches. Bounded to 64 rows; short secrets (<8 bytes) are skipped —
+    // they collide with ordinary words.
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM secrets_metadata WHERE owner_id=$1 AND revoked_at IS NULL",
+    )
+    .bind(scope.owner_id)
+    .fetch_all(pool)
+    .await?;
+    if !ids.is_empty() {
+        if let Ok(store) = SecretStore::open(pool.clone(), key_dir).await {
+            for id in ids.into_iter().take(64) {
+                if let Ok(secret) = store.get(scope, id).await {
+                    if secret.len() < 8 || secret.len() > 4096 {
+                        continue;
+                    }
+                    if let Ok(text) = std::str::from_utf8(&secret) {
+                        if !text.trim().is_empty() && scrubbed.contains(text) {
+                            scrubbed = scrubbed.replace(text, "[REDACTED]");
+                        }
+                    }
+                    // Non-UTF8 secrets cannot appear in UTF-8 output; skip.
+                }
+            }
+        }
+    }
+    Ok(scrubbed)
+}
+/// Shape redaction for bearer-looking tokens. Pure function over text:
+/// no I/O, no secrets, safe to unit test.
+fn redact_token_shapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &text[i..];
+        // `PREFIX<token>` shapes: the prefix plus 8+ token chars redacts.
+        let mut matched: Option<usize> = None;
+        for prefix in ["sk-", "ghp_", "gho_", "xoxb-", "xoxp-", "Bearer ", "BEARER "] {
+            if let Some(tail) = rest.strip_prefix(prefix) {
+                let token_len = tail
+                    .bytes()
+                    .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-' || *b == b'.')
+                    .count();
+                if token_len >= 8 {
+                    matched = Some(prefix.len() + token_len);
+                    break;
+                }
+            }
+        }
+        if let Some(len) = matched {
+            out.push_str("[REDACTED]");
+            i += len;
+        } else {
+            // `eyJ...` JWT-ish blobs (three base64url segments) redact whole.
+            if rest.starts_with("eyJ") {
+                let blob_len = rest
+                    .bytes()
+                    .take_while(|b| {
+                        b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-' || *b == b'.'
+                    })
+                    .count();
+                if blob_len >= 24 && rest.as_bytes()[..blob_len].contains(&b'.') {
+                    out.push_str("[REDACTED]");
+                    i += blob_len;
+                    continue;
+                }
+            }
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+/// Spill streams above 1 MiB to persisted private artifacts. Returns the
+/// inline-safe values (digest reference when spilled) plus the artifact
+/// rows for the receipt. Scrubbed text enters; raw bytes never persist.
+async fn spill_large_outputs(
+    executor: &ShellExecutor,
+    scope: &OwnerScope,
+    snapshot: &orbit_core::ActionSnapshot,
+    action: &orbit_core::AuthorizedAction,
+    stdout: &str,
+    stderr: &str,
+) -> Result<(Value, Value, Vec<Value>)> {
+    let mut spilled = Vec::new();
+    let stdout_value = spill_one_stream(executor, scope, snapshot, action, "stdout", stdout, &mut spilled).await?;
+    let stderr_value = spill_one_stream(executor, scope, snapshot, action, "stderr", stderr, &mut spilled).await?;
+    Ok((stdout_value, stderr_value, spilled))
+}
+async fn spill_one_stream(
+    executor: &ShellExecutor,
+    scope: &OwnerScope,
+    snapshot: &orbit_core::ActionSnapshot,
+    action: &orbit_core::AuthorizedAction,
+    name: &str,
+    stream: &str,
+    spilled: &mut Vec<Value>,
+) -> Result<Value> {
+    if stream.len() <= OUTPUT_INLINE_LIMIT {
+        return Ok(json!(stream));
+    }
+    let bytes = stream.as_bytes().to_vec();
+    let artifact = orbit_task_runtime::Artifact {
+        id: Uuid::new_v4(),
+        safe_name: format!("shell-{name}-spill.log"),
+        mime_type: "text/plain".into(),
+        size: bytes.len() as u64,
+        sha256: orbit_aiec_runtime::sha256(&bytes),
+        privacy_class: orbit_core::PrivacyClass::Private,
+        provenance: format!("execution-host-spill:{name}"),
+        private_storage_reference: String::new(),
+        bytes,
+    };
+    let handle =
+        orbit_task_runtime::RuntimeHandle::observed(snapshot.action_id, chrono::Utc::now(), 1680);
+    let row = persist_artifact(
+        &executor.pool,
+        &executor.artifact_dir,
+        scope,
+        snapshot,
+        action,
+        &handle,
+        &artifact,
+    )
+    .await?;
+    spilled.push(json!({"kind": "OUTPUT_SPILL", "stream": name, "artifact": row}));
+    Ok(json!({"spilled_to_artifact": row}))
+}
+/// Commit the staged subtree's post-run state back to the workspace and
+/// report the diff for the receipt. Bytes flow through the sealed artifact
+/// store; conflicts preserve rather than overwrite.
+async fn commit_staged_diff(
+    executor: &ShellExecutor,
+    scope: &OwnerScope,
+    outcome: &ExecutionHostOutcome,
+    task: Uuid,
+) -> Result<Value> {
+    match orbit_workspace::staging::diff_commit(
+        &executor.pool,
+        &executor.artifact_dir,
+        scope,
+        &outcome.staged,
+        Some(task),
+    )
+    .await
+    {
+        Ok(diff) => Ok(json!({"updated": diff.updated, "created": diff.created, "unchanged": diff.unchanged, "preserved_conflicts": diff.preserved_conflicts.len()})),
+        Err(e) => Ok(json!({"error": e.to_string()})),
     }
 }
 /// Unreachable AIec is never a mock success: transport-level failures map to

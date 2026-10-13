@@ -91,6 +91,28 @@ services:
     volumes: ["hass:/config"]
     restart: unless-stopped
     networks: [orbit]
+
+  # Live shell sessions (plan step 4): private Unix-socket PTY host. No ports,
+  # no host mounts, no Docker socket. The Rust server mints short-lived
+  # session tokens and proxies terminal I/O; workspaces live on exec-work.
+  execution-host:
+    build: {context: ., dockerfile: deploy/docker/execution-host.Dockerfile}
+    mem_limit: 256m
+    cpus: 1.0
+    environment:
+      EXEC_HOST_SOCKET: /run/orbit/exec-host.sock
+      EXEC_HOST_WORKSPACE_ROOT: /var/lib/orbit/sessions
+      EXEC_HOST_IDLE_TIMEOUT_SECS: ${EXEC_HOST_IDLE_TIMEOUT_SECS:-900}
+      EXEC_HOST_TOKEN_SECRET: ${EXEC_HOST_TOKEN_SECRET:?Set EXEC_HOST_TOKEN_SECRET in .env}
+    volumes: ["exec-sock:/run/orbit", "exec-work:/var/lib/orbit/sessions"]
+    healthcheck:
+      test: ["CMD", "node", "dist/healthcheck.js"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks: [orbit]
 networks:
   orbit: {}
 volumes:
@@ -102,3 +124,5 @@ volumes:
   tls-data: {}
   tls-config: {}
   prod-tls: {}
+  exec-sock: {}
+  exec-work: {}
