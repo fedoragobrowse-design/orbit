@@ -24,6 +24,7 @@ import {
   post,
   put,
   queryClient,
+  remove,
   text,
   timestamp,
   type RecordData,
@@ -678,6 +679,11 @@ export function TaskDetail() {
 }
 type TaskRun = {
   task_id: string;
+  parent_task_id?: unknown;
+  parent_run_id?: unknown;
+  conversation_id?: unknown;
+  title?: unknown;
+  state?: unknown;
   sources?: unknown;
   phase: unknown;
   model_calls: unknown;
@@ -686,6 +692,13 @@ type TaskRun = {
   depth: unknown;
   tool_calls: unknown;
   tokens: unknown;
+  result?: unknown;
+};
+type TaskRuns = {
+  task_id: string;
+  parent_task_id?: unknown;
+  children: TaskRun[];
+  items?: TaskRun[];
 };
 const RUN_STEPS: Record<string, string> = {
   CONTEXT: "Reading your request",
@@ -702,7 +715,7 @@ function LiveRun({ taskId, state }: { taskId: string; state: string }) {
   const active = !TERMINAL_TASK_STATES[state];
   const runs = useQuery({
     queryKey: ["task-runs", taskId],
-    queryFn: () => api<{ items: TaskRun[] }>(`/tasks/${taskId}/runs`),
+    queryFn: () => api<TaskRuns>(`/tasks/${taskId}/runs`),
     enabled: !!taskId,
     refetchInterval: active ? 2000 : false,
   });
@@ -712,36 +725,57 @@ function LiveRun({ taskId, state }: { taskId: string; state: string }) {
     enabled: !!taskId,
     refetchInterval: active ? 2000 : false,
   });
-  const items = runs.data?.items ?? [];
+  // Explicit parent linkage only: `children` holds runs whose dispatch
+  // persisted this task as parent. An empty set renders as no helpers —
+  // never a synthesized progress row. `items` stays as a legacy fallback
+  // for stale cached responses, never fabricated.
+  const children: TaskRun[] =
+    runs.data?.children ?? runs.data?.items ?? [];
+  const parentId = text(runs.data?.parent_task_id);
   const toolItems = (calls_q.data?.items ?? []).filter((c) => text(c.task_id) === taskId);
-  const calls = items.reduce((n, r) => n + (Number(r.model_calls) || 0), 0);
-  const retries = items.reduce((n, r) => n + (Number(r.model_retries) || 0), 0);
-  const tokens = items.reduce((n, r) => n + (Number(r.tokens) || 0), 0);
-  const tools = items.reduce((n, r) => n + (Number(r.tool_calls) || 0), 0);
+  const calls = children.reduce((n, r) => n + (Number(r.model_calls) || 0), 0);
+  const retries = children.reduce((n, r) => n + (Number(r.model_retries) || 0), 0);
+  const tokens = children.reduce((n, r) => n + (Number(r.tokens) || 0), 0);
+  const tools = children.reduce((n, r) => n + (Number(r.tool_calls) || 0), 0);
+  // Session link: the conversation is the run's own chat thread.
+  const sessionId = text(children[0]?.conversation_id);
   return (
     <section className="panel">
       <h2>Live run</h2>
       {runs.isPending && <p role="status">Loading run…</p>}
       {runs.error && <ErrorNotice error={runs.error} retry={() => runs.refetch()} />}
-      {runs.data && !items.length && (
+      {!!parentId && (
+        <p className="muted">
+          Helper of <Link className="safe-link" to={`/tasks/${parentId}`}>{parentId}</Link>.
+        </p>
+      )}
+      {runs.data && !children.length && (
         <p className="muted">No agent run recorded for this task yet.</p>
       )}
-      {!!items.length && (
+      {!!children.length && (
         <>
           <p className="muted">
             {calls} model {calls === 1 ? "call" : "calls"} · {retries}{" "}
             {retries === 1 ? "retry" : "retries"} · {tools} tool{" "}
             {tools === 1 ? "call" : "calls"} · {tokens} tokens counted
             {active ? " · updating every 2 seconds" : " · final"}.
+            {!!sessionId && (
+              <> <Link className="safe-link" to={`/chat?conversation=${sessionId}`}>Open session</Link></>
+            )}
           </p>
-          {items.map((r) => {
+          {children.map((r) => {
             const phase = text(r.phase);
             const seen = RUN_ORDER.indexOf(phase.replace("MODEL_INFLIGHT", "MODEL"));
             const depth = Number(r.depth) || 0;
+            const childState = text(r.state);
+            const result = text((r.result as RecordData | null | undefined)?.text ?? (typeof r.result === "string" ? r.result : ""));
             return (
               <div key={text(r.task_id)} style={{ marginLeft: depth * 16 }}>
                 <div className="row-meta">
-                  <Status value={phase} />
+                  <Status value={childState || phase} />
+                  <Link className="safe-link" to={`/tasks/${text(r.task_id)}`}>
+                    {text(r.title) || text(r.task_id)}
+                  </Link>
                   <span>
                     {RUN_STEPS[phase] ?? label(phase)}
                     {depth > 0 ? ` · helper level ${depth}` : ""}
@@ -755,6 +789,7 @@ function LiveRun({ taskId, state }: { taskId: string; state: string }) {
                   {Number(r.model_calls) === 1 ? "call" : "calls"} ·{" "}
                   {text(r.tokens)} tokens counted
                 </p>
+                {!!result && <p>{result}</p>}
               </div>
             );
           })}
@@ -768,7 +803,7 @@ function LiveRun({ taskId, state }: { taskId: string; state: string }) {
               </ul>
             </>
           )}
-          <RunSources items={items} />
+          <RunSources items={children} />
         </>
       )}
     </section>
@@ -1378,6 +1413,9 @@ export function Settings() {
         </form>
       )}
       <UpdaterSection />
+      <SourcesSection />
+      <GrantsSection />
+      <BudgetsSection />
       <DesktopObservationSection />
       <McpSection />
       <SkillsSection />
@@ -1418,7 +1456,11 @@ function UpdaterSection() {
   return (
     <section className="panel form">
       <h2>Updates</h2>
-      <p className="muted">Check for a new release, then stage it. Orbit never restarts itself — you restart when ready.</p>
+      <p className="muted">
+        Check for a new release, then request it. Requesting stages the
+        version only — Orbit never installs or restarts itself. You restart
+        when ready.
+      </p>
       <div className="actions"><button disabled={check.isPending} onClick={() => check.mutate()}>Check for updates</button></div>
       {state && <p role="status">{state}</p>}
       {check.data?.notes ? <p className="muted">{text(check.data.notes)}</p> : null}
@@ -1431,7 +1473,7 @@ function UpdaterSection() {
               <tr key={String(row.version)}>
                 <th scope="row">{text(row.version)}</th>
                 <td>{text(row.notes) || "—"}</td>
-                <td><div className="actions"><button className="secondary" disabled={apply.isPending} onClick={() => apply.mutate(String(row.version))}>Use this version</button></div></td>
+                <td><div className="actions"><button className="secondary" disabled={apply.isPending} onClick={() => apply.mutate(String(row.version))}>Request this version</button></div></td>
               </tr>
             ))}
           </tbody>
@@ -1441,6 +1483,212 @@ function UpdaterSection() {
     </section>
   );
 }
+function BudgetsSection() {
+  const client = useQueryClient();
+  const budgets = useQuery({
+    queryKey: ["settings-budgets"],
+    queryFn: () => api<RecordData>("/budgets"),
+  });
+  const [taskUsd, setTaskUsd] = useState("");
+  const [dayUsd, setDayUsd] = useState("");
+  const [monthUsd, setMonthUsd] = useState("");
+  const [seeded, setSeeded] = useState(false);
+  useEffect(() => {
+    if (budgets.data && !seeded) {
+      setTaskUsd(String(budgets.data.task_usd ?? ""));
+      setDayUsd(String(budgets.data.day_usd ?? ""));
+      setMonthUsd(String(budgets.data.month_usd ?? ""));
+      setSeeded(true);
+    }
+  }, [budgets.data, seeded]);
+  const save = useMutation({
+    mutationFn: () =>
+      put("/budgets", {
+        task_usd: Number(taskUsd),
+        day_usd: Number(dayUsd),
+        month_usd: Number(monthUsd),
+      }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["settings-budgets"] }),
+  });
+  return (
+    <section className="panel form">
+      <h2>Spending limits</h2>
+      <p className="muted">
+        Caps on what Orbit may spend on models, per task, per day, and per
+        month. Work stops before it spends past these.
+      </p>
+      {budgets.isPending && <p role="status">Loading limits…</p>}
+      {budgets.error && (
+        <ErrorNotice error={budgets.error} retry={() => budgets.refetch()} />
+      )}
+      {budgets.data && (
+        <form
+          aria-label="Spending limits"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save.mutate();
+          }}
+        >
+          <Input
+            label="Per task (USD)"
+            inputMode="decimal"
+            value={taskUsd}
+            onChange={(e) => setTaskUsd(e.target.value)}
+          />
+          <Input
+            label="Per day (USD)"
+            inputMode="decimal"
+            value={dayUsd}
+            onChange={(e) => setDayUsd(e.target.value)}
+          />
+          <Input
+            label="Per month (USD)"
+            inputMode="decimal"
+            value={monthUsd}
+            onChange={(e) => setMonthUsd(e.target.value)}
+          />
+          {save.error && (
+            <ErrorNotice error={save.error} retry={() => save.reset()} />
+          )}
+          <div className="actions">
+            <button type="submit" disabled={save.isPending}>
+              {save.isPending ? "Saving…" : "Save limits"}
+            </button>
+          </div>
+        </form>
+      )}
+      <p className="muted">
+        Quiet hours live on each rule: open{" "}
+        <Link to="/automations">Automations</Link>, pick a rule, and set when
+        it may run.
+      </p>
+    </section>
+  );
+}
+function GrantsSection() {
+  const client = useQueryClient();
+  const grants = useQuery({
+    queryKey: ["settings-grants-list"],
+    queryFn: () => api<{ items: RecordData[] }>("/grants?limit=50"),
+  });
+  const revoke = useMutation({
+    mutationFn: (id: string) => remove(`/grants/${id}`),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["settings-grants-list"] }),
+  });
+  const rows = grants.data?.items ?? [];
+  return (
+    <section className="panel form">
+      <h2>Permissions given</h2>
+      <p className="muted">
+        Tools Orbit may use without asking again. Revoking one means the
+        next use waits in <Link to="/approvals">Approvals</Link>.
+      </p>
+      {grants.isPending && <p role="status">Loading permissions…</p>}
+      {grants.error && (
+        <ErrorNotice error={grants.error} retry={() => grants.refetch()} />
+      )}
+      {!grants.isPending && !grants.error && rows.length === 0 && (
+        <p className="muted">No standing permissions. Everything asks first.</p>
+      )}
+      {rows.length > 0 && (
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Tool</th>
+              <th scope="col">Scope</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={String(row.id)}>
+                <th scope="row">{text(row.tool_name)}</th>
+                <td>{text(row.scope_key) || "—"}</td>
+                <td>
+                  <div className="actions">
+                    <button
+                      className="danger"
+                      disabled={revoke.isPending}
+                      onClick={() => revoke.mutate(String(row.id))}
+                    >
+                      Revoke
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {revoke.error && (
+        <ErrorNotice error={revoke.error} retry={() => revoke.reset()} />
+      )}
+    </section>
+  );
+}
+function SourcesSection() {
+  const calendar = useQuery({
+    queryKey: ["settings-calendar-sources"],
+    queryFn: () => api<{ items: RecordData[] }>("/calendar/sources"),
+  });
+  const computers = useQuery({
+    queryKey: ["settings-computers"],
+    queryFn: () => api<{ items: RecordData[] }>("/computers"),
+  });
+  const providers = useQuery({
+    queryKey: ["settings-providers"],
+    queryFn: () => api<{ items: RecordData[] }>("/providers"),
+  });
+  const calendars = calendar.data?.items ?? [];
+  const nodes = computers.data?.items ?? [];
+  const models = providers.data?.items ?? [];
+  return (
+    <section className="panel form">
+      <h2>Sources and capabilities</h2>
+      <p className="muted">
+        Where Orbit reads from and what it can do with. Manage each list
+        where it lives.
+      </p>
+      {calendar.isPending || computers.isPending || providers.isPending ? (
+        <p role="status">Loading sources…</p>
+      ) : calendar.error || computers.error || providers.error ? (
+        <ErrorNotice
+          error={(calendar.error ?? computers.error ?? providers.error)!}
+          retry={() => {
+            calendar.refetch();
+            computers.refetch();
+            providers.refetch();
+          }}
+        />
+      ) : (
+        <dl>
+          <dt>Calendars</dt>
+          <dd>
+            {calendars.length
+              ? calendars.map((c) => text(c.name)).filter(Boolean).join(" · ")
+              : "None connected"}{" "}
+            · <Link to="/calendar">Calendar</Link>
+          </dd>
+          <dt>Computers</dt>
+          <dd>
+            {nodes.length
+              ? `${nodes.length} enrolled`
+              : "None enrolled"}{" "}
+            · <Link to="/computers">Computers</Link>
+          </dd>
+          <dt>Model providers</dt>
+          <dd>
+            {models.length
+              ? `${models.length} configured`
+              : "None configured"}{" "}
+            · <Link to="/models">Models</Link>
+          </dd>
+        </dl>
+      )}
+    </section>
+  );
+}
+
 function McpSection() {
   const conns = useQuery({ queryKey: ["settings-mcp"], queryFn: () => api<{ items: RecordData[] }>("/mcp/connections") });
   const grants = useQuery({ queryKey: ["settings-grants"], queryFn: () => api<{ items: RecordData[] }>("/grants?limit=50") });

@@ -24,7 +24,7 @@ import { api, post, text, type RecordData } from "./api";
 import { Empty, ErrorNotice, PageHeader, Select } from "./ui";
 
 const BODY_LIMIT = 64_000;
-const POLL_MS = 2000;
+const POLL_MS = 4000;
 
 type WorkspaceEntry = {
   id: string;

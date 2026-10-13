@@ -246,7 +246,7 @@ function SessionView({
   const detail = useQuery({
     queryKey: ["browser", "session", sessionId],
     queryFn: () => api<RecordData>(sessionPath(sessionId)),
-    refetchInterval: 5000,
+    refetchInterval: (query) => (query.state.data ? 15000 : 4000),
   });
   const snapshot = useQuery({
     queryKey: ["browser", "snapshot", sessionId],

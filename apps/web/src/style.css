@@ -15,6 +15,7 @@
   --danger: #a43256;
   --secondary: #655e70;
   --line: #ddd7e5;
+  --warning: #b45309;
   color-scheme: light;
   font-size: 16px;
   line-height: 1.5;
@@ -24,14 +25,15 @@
 }
 body {
   margin: 0;
+  overflow-x: hidden;
 }
 ::selection {
   background: #d2e9df;
   color: #30263f;
 }
 * {
-  scrollbar-color: #655e70 #f4f2f7;
-  caret-color: #176b58;
+  scrollbar-color: var(--secondary) var(--ground);
+  caret-color: var(--action);
 }
 a {
   color: var(--action);
@@ -66,15 +68,15 @@ button:disabled {
   cursor: not-allowed;
 }
 button.secondary {
-  background: white;
+  background: var(--surface);
   color: var(--ink);
   border-color: var(--line);
 }
 button.mini {
-  min-height: 0;
-  padding: 2px 10px;
+  min-height: 44px;
+  padding: 8px 16px;
   border-radius: 999px;
-  font-size: 0.8rem;
+  font-size: 0.875rem;
   font-weight: 500;
 }
 button.quiet {
@@ -104,7 +106,7 @@ textarea {
   min-height: 44px;
   padding: 10px 12px;
   color: var(--ink);
-  background: white;
+  background: var(--surface);
   border: 1px solid #b8afc5;
   border-radius: 8px;
 }
@@ -228,7 +230,7 @@ dd {
 }
 .nav-group-label {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   font-size: 12px;
   font-weight: 600;
@@ -236,6 +238,7 @@ dd {
   text-transform: uppercase;
   color: #a99ec2;
   margin: 0 12px 6px;
+  min-height: 44px;
   cursor: pointer;
   user-select: none;
 }
@@ -283,9 +286,10 @@ dd {
 .main {
   min-width: 0;
   padding: 40px 48px 64px;
-  max-width: 1600px;
+  max-width: min(1600px, 100%);
   width: 100%;
   margin: 0;
+  overflow-x: clip;
 }
 .page-heading {
   display: flex;
@@ -314,7 +318,8 @@ dd {
   gap: 32px;
 }
 .panel {
-  background: white;
+  background: var(--surface);
+  color: var(--ink);
   border-radius: 12px;
   padding: 24px;
 }
@@ -325,6 +330,7 @@ dd {
   border-bottom: 1px solid var(--line);
   padding: 16px 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: start;
   gap: 16px;
 }
@@ -515,6 +521,7 @@ dd {
   margin: 0;
   padding: 0;
   list-style: none;
+  min-width: 0;
 }
 .toolbar {
   display: flex;
@@ -545,7 +552,9 @@ dd {
   margin-bottom: 24px;
 }
 .tabs a {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   padding: 12px 16px;
   text-decoration: none;
   color: var(--secondary);
@@ -563,7 +572,7 @@ dd {
 }
 .message {
   padding: 20px 24px;
-  background: white;
+  background: var(--surface);
   border-radius: 12px;
   max-width: 78ch;
   white-space: pre-wrap;
@@ -581,7 +590,7 @@ dd {
   margin-bottom: 8px;
 }
 .composer {
-  background: white;
+  background: var(--surface);
   border-radius: 12px;
   padding: 24px;
 }
@@ -608,7 +617,7 @@ dd {
   align-items: start;
 }
 .chat-sidebar {
-  background: white;
+  background: var(--surface);
   border-radius: 12px;
   padding: 16px;
   display: flex;
@@ -645,7 +654,7 @@ dd {
   line-height: 1.6;
 }
 .message.assistant {
-  background: white;
+  background: var(--surface);
   border: 1px solid var(--line);
   margin-right: auto;
 }
@@ -861,8 +870,9 @@ pre.rich-code {
   margin-top: 12px;
 }
 .chat-image img {
-  max-width: 320px;
+  max-width: min(320px, 100%);
   max-height: 240px;
+  height: auto;
   border-radius: 8px;
   border: 1px solid var(--line);
   display: block;
@@ -879,7 +889,9 @@ pre.rich-code {
   color: var(--secondary);
 }
 .attach-image {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -949,6 +961,7 @@ pre.rich-code {
   flex-shrink: 0;
 }
 .file-row button {
+  min-height: 44px;
   padding: 8px 0;
   text-align: left;
   justify-content: start;
@@ -985,7 +998,10 @@ dialog {
   border-radius: 12px;
   padding: 32px;
   max-width: min(560px, calc(100% - 32px));
+  max-height: calc(100dvh - 64px);
+  overflow: auto;
   color: var(--ink);
+  background: var(--surface);
   box-shadow: 0 16px 48px #30263f33;
 }
 dialog::backdrop {
@@ -1056,7 +1072,7 @@ dialog::backdrop {
 .ok { color: var(--action); font-weight: 600; }
 .bad { color: var(--danger); font-weight: 600; }
 .caps { display: grid; gap: 8px; margin: 12px 0; }
-.caps > div { display: grid; grid-template-columns: 160px 1fr; gap: 12px; }
+.caps > div { display: grid; grid-template-columns: minmax(120px, 160px) minmax(0, 1fr); gap: 12px; }
 .caps dt { font-weight: 600; }
 .preview { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
 .consent { display: flex; gap: 12px; align-items: start; margin-top: 16px; font-weight: 600; }
@@ -1074,7 +1090,8 @@ dialog::backdrop {
     display: flex;
     position: fixed;
     inset: 64px auto 0 0;
-    width: 260px;
+    width: min(300px, calc(100vw - 64px));
+    max-width: 100vw;
     height: calc(100dvh - 64px);
     z-index: 10;
   }
@@ -1098,6 +1115,18 @@ dialog::backdrop {
     background: #493b5b;
     color: white;
     padding: 8px 12px;
+    min-height: 44px;
+  }
+  .rail-scrim {
+    position: fixed;
+    inset: 64px 0 0 0;
+    background: #30263f66;
+    border: 0;
+    padding: 0;
+    border-radius: 0;
+    z-index: 9;
+    min-height: 0;
+    width: 100%;
   }
   .main {
     padding: 32px;
@@ -1131,6 +1160,9 @@ dialog::backdrop {
   }
 }
 @media (max-width: 767px) {
+  .shell {
+    overflow-x: clip;
+  }
   .main {
     padding: 24px 16px 48px;
   }
@@ -1169,6 +1201,11 @@ dialog::backdrop {
   }
   .toolbar {
     align-items: stretch;
+  }
+  .toolbar .field,
+  .toolbar select,
+  .toolbar input {
+    min-width: 0;
   }
   .toolbar > .field {
     flex-basis: 100%;
@@ -1209,16 +1246,18 @@ dialog::backdrop {
 }
 .spend-range {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 16px;
 }
 .spend-range button {
   border: 1px solid var(--line);
-  background: white;
+  background: var(--surface);
   color: var(--ink);
   border-radius: 8px;
   padding: 6px 12px;
   font-size: 14px;
+  min-height: 44px;
 }
 .spend-range-active {
   background: var(--ink);
@@ -1289,8 +1328,9 @@ dialog::backdrop {
   border: 1px solid var(--line);
   background: var(--ground);
   border-radius: 8px;
-  padding: 6px 12px;
+  padding: 8px 12px;
   font-size: 14px;
+  min-height: 44px;
 }
 .memory-folder-active {
   background: var(--ink);
@@ -1324,9 +1364,10 @@ dialog::backdrop {
 }
 .notes-shell {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+  min-width: 0;
 }
 @media (max-width: 720px) {
   .notes-shell {
@@ -1359,7 +1400,8 @@ dialog::backdrop {
   background: none;
   border: 1px solid transparent;
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 10px;
+  min-height: 44px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1370,7 +1412,7 @@ dialog::backdrop {
   border-color: var(--line);
 }
 .notes-active {
-  background: white;
+  background: var(--surface);
   border-color: var(--line);
 }
 .notes-item-title {
@@ -1396,7 +1438,7 @@ dialog::backdrop {
 }
 .cal-grid {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 4px;
 }
 .cal-dow {
@@ -1412,7 +1454,7 @@ dialog::backdrop {
   min-height: 64px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: white;
+  background: var(--surface);
   padding: 4px 6px;
   display: flex;
   flex-direction: column;
@@ -1471,14 +1513,15 @@ dialog::backdrop {
   padding-top: 12px;
 }
 .mail-toolbar {
-  max-width: 320px;
+  max-width: min(320px, 100%);
   margin-bottom: 8px;
 }
 .mail-panes {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+  min-width: 0;
 }
 @media (max-width: 720px) {
   .mail-panes {
@@ -1501,7 +1544,8 @@ dialog::backdrop {
   background: none;
   border: 1px solid transparent;
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 10px;
+  min-height: 44px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1530,7 +1574,7 @@ dialog::backdrop {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 14px 16px;
-  background: white;
+  background: var(--surface);
   min-height: 200px;
 }
 .mail-body {
@@ -1596,11 +1640,14 @@ dialog::backdrop {
   margin: 6px 0 2px;
 }
 .source-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
   font-size: 12px;
   color: var(--secondary);
   border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 2px 10px;
+  padding: 8px 12px;
   background: var(--ground);
 }
 .terminal-pane {
@@ -1828,5 +1875,91 @@ dialog::backdrop {
 }
 .browser-task-pane {
   margin-bottom: 16px;
+}
+@media (max-width: 767px) {
+  .caps {
+    overflow-x: clip;
+  }
+  .caps > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .terminal-controls .field,
+  .terminal-cwd,
+  .terminal-send label:first-child,
+  .browser-new label,
+  .browser-urlbar {
+    min-width: 0;
+    width: 100%;
+  }
+  .browser-frame {
+    max-height: 60dvh;
+  }
+}
+@media (max-width: 480px) {
+  .cal-grid {
+    gap: 2px;
+  }
+  .cal-day {
+    min-height: 56px;
+    padding: 2px 4px;
+  }
+}
+img,
+svg,
+video,
+canvas {
+  max-width: 100%;
+}
+table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+pre,
+code {
+  max-width: 100%;
+}
+.attention-card {
+  border-bottom: 1px solid var(--line);
+  padding: 16px 0;
+}
+.attention-card:first-child {
+  padding-top: 0;
+}
+.attention-card:last-child {
+  border-bottom: 0;
+}
+.attention-facts {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+.attention-fact-label {
+  color: var(--secondary);
+  font-size: 14px;
+  font-weight: 600;
+}
+.memory-source {
+  margin: 8px 0 0;
+}
+.memory-source dt {
+  color: var(--secondary);
+  font-size: 14px;
+}
+.memory-source dd {
+  margin: 4px 0;
+}
+.workspace-shell { display: grid; grid-template-columns: 240px minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.workspace-back { display: none; }
+.workspace-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.workspace-crumbs { margin-bottom: 8px; }
+@media (max-width: 900px) {
+  .workspace-shell { grid-template-columns: 1fr; }
+  .workspace-tree, .workspace-list, .workspace-detail { display: none; }
+  .workspace-tree.workspace-active, .workspace-list.workspace-active, .workspace-detail.workspace-active { display: block; }
+  .workspace-back { display: block; margin-bottom: 8px; }
 }
 

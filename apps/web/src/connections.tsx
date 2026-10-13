@@ -1,4 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ArrowLeft,
+  File as FileIcon,
+  FileText,
+  Film,
+  Folder,
+  HardDrive,
+  Image as ImageIcon,
+  LayoutGrid,
+  List as ListViewIcon,
+  Music,
+} from "lucide-react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -1367,7 +1379,7 @@ export function Computers() {
     if (!pairing.data || freshLive) return;
     const timer = setInterval(() => {
       void client.invalidateQueries({ queryKey: ["computers-tab"] });
-    }, 4000);
+    }, 15000);
     return () => clearInterval(timer);
   }, [pairing.data, freshLive, client]);
   if (nodes.isPending)
@@ -1564,117 +1576,596 @@ export function Computers() {
   );
 }
 
+type WorkspaceEntry = {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  kind: string;
+  head_artifact_id: string | null;
+  revision: number;
+  trashed: boolean;
+};
+type WorkspaceMount = {
+  id: string;
+  alias: string;
+  node_id: string;
+  root_id: string;
+  mode: string;
+  revision: number;
+};
+type MountNode = {
+  id: string;
+  display_name: string;
+  live: boolean;
+  last_seen: unknown;
+  roots: { id: string; display_name: string; mode: string; revision: number; mutation_available: boolean }[];
+};
+function asEntry(row: RecordData): WorkspaceEntry {
+  return {
+    id: String(row.id),
+    parent_id: row.parent_id == null ? null : String(row.parent_id),
+    name: text(row.name),
+    kind: text(row.kind) === "FILE" ? "FILE" : "DIRECTORY",
+    head_artifact_id: row.head_artifact_id == null ? null : String(row.head_artifact_id),
+    revision: Number(row.revision ?? 1),
+    trashed: Boolean(row.trashed),
+  };
+}
+function asMount(row: RecordData): WorkspaceMount {
+  return {
+    id: String(row.id),
+    alias: text(row.alias),
+    node_id: String(row.node_id),
+    root_id: String(row.root_id),
+    mode: text(row.mode) === "WRITE" ? "WRITE" : "READ",
+    revision: Number(row.revision ?? 1),
+  };
+}
 export function Files() {
-  const [nodeId, setNodeId] = useState("");
-  const [rootId, setRootId] = useState("");
-  const [path, setPath] = useState("");
-  const [browse, setBrowse] = useState<{
-    node_id: string;
-    root_id: string;
-    relative_path: string;
-  } | null>(null);
+  const client = useQueryClient();
+  const [stack, setStack] = useState<WorkspaceEntry[]>([]);
+  const [folderId, setFolderId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [showTrash, setShowTrash] = useState(false);
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<"name" | "kind">("name");
+  const [grid, setGrid] = useState(false);
+  const [modal, setModal] = useState<
+    | { kind: "folder" }
+    | { kind: "upload" }
+    | { kind: "move"; entry: WorkspaceEntry }
+    | { kind: "trash"; entry: WorkspaceEntry }
+    | { kind: "restore"; entry: WorkspaceEntry }
+    | null
+  >(null);
+  const [moveTarget, setMoveTarget] = useState("");
+  const [mobilePane, setMobilePane] = useState<"tree" | "list" | "detail">("list");
+  const listing = useQuery({
+    queryKey: ["workspace-tree", folderId],
+    queryFn: () =>
+      api<{ parent_id: string; items: RecordData[]; next_cursor: string | null }>(
+        folderId ? `/workspace/tree?parent_id=${encodeURIComponent(folderId)}&limit=200` : "/workspace/tree?limit=200",
+      ),
+  });
   const nodes = useQuery({
+    queryKey: ["computers-tab"],
+    queryFn: () => api<{ items: RecordData[] }>("/computers/tab"),
+  });
+  const mounts = useQuery({
+    queryKey: ["workspace-mounts"],
+    queryFn: () => api<{ items: RecordData[] }>("/workspace/mounts"),
+  });
+  const entries = (listing.data?.items ?? []).map(asEntry);
+  const visible = entries
+    .filter((e) => (showTrash ? e.trashed : !e.trashed))
+    .filter((e) => (search ? e.name.toLowerCase().includes(search.toLowerCase()) : true))
+    .sort((a, b) => (sort === "kind" && a.kind !== b.kind ? (a.kind === "DIRECTORY" ? -1 : 1) : a.name.localeCompare(b.name)));
+  const current = stack.length ? stack[stack.length - 1] : null;
+  const crumbs = useMemo(() => [{ id: null as string | null, name: "Workspace" }, ...stack.map((e) => ({ id: e.id as string | null, name: e.name }))], [stack]);
+  const selectedEntry = selectedId ? (entries.find((e) => e.id === selectedId) ?? null) : null;
+  const versions = useQuery({
+    queryKey: ["workspace-versions", selectedEntry?.id],
+    queryFn: () => api<{ entry_id: string; items: RecordData[] }>(`/workspace/entries/${selectedEntry!.id}/versions`),
+    enabled: selectedEntry?.kind === "FILE",
+  });
+  const mountNodes: MountNode[] = useMemo(
+    () =>
+      (nodes.data?.items ?? []).map((n) => ({
+        id: String(n.id),
+        display_name: text(n.display_name) || "Computer",
+        live: Boolean(n.live ?? n.connected),
+        last_seen: n.last_seen,
+        roots: [],
+      })),
+    [nodes.data],
+  );
+  const fullNodes = useQuery({
     queryKey: ["computers"],
     queryFn: () => api<{ items: RecordData[] }>("/computers"),
   });
-  const listing = useQuery({
-    queryKey: ["files", browse],
-    enabled: browse !== null,
-    queryFn: () =>
-      api<RecordData>(
-        `/files/list?node_id=${encodeURIComponent(browse!.node_id)}&root_id=${encodeURIComponent(browse!.root_id)}${browse!.relative_path ? `&relative_path=${encodeURIComponent(browse!.relative_path)}` : ""}`,
-      ),
+  const nodesWithRoots: MountNode[] = useMemo(() => {
+    const full = fullNodes.data?.items ?? [];
+    if (!full.length) return mountNodes;
+    return full.map((n) => {
+      const tab = mountNodes.find((m) => m.id === String(n.id));
+      const roots = Array.isArray(n.roots) ? (n.roots as RecordData[]) : [];
+      return {
+        id: String(n.id),
+        display_name: text(n.display_name) || tab?.display_name || "Computer",
+        live: tab?.live ?? Boolean(n.connected),
+        last_seen: n.last_seen ?? tab?.last_seen,
+        roots: roots.map((r) => ({
+          id: String(r.id),
+          display_name: text(r.display_name) || "Shared folder",
+          mode: text(r.mode) || "READ",
+          revision: Number(r.revision ?? 1),
+          mutation_available: Boolean(r.mutation_available),
+        })),
+      };
+    });
+  }, [fullNodes.data, mountNodes]);
+  const invalidateTree = () => {
+    client.invalidateQueries({ queryKey: ["workspace-tree"] });
+    client.invalidateQueries({ queryKey: ["workspace-versions"] });
+  };
+  const openFolder = (entry: WorkspaceEntry) => {
+    setStack((s) => [...s, entry]);
+    setFolderId(entry.id);
+    setSelectedId(null);
+    setMobilePane("list");
+  };
+  const goCrumb = (index: number) => {
+    const next = stack.slice(0, index);
+    setStack(next);
+    setFolderId(next.length ? next[next.length - 1].id : null);
+    setSelectedId(null);
+    setMobilePane("list");
+  };
+  const goBack = () => {
+    if (mobilePane === "detail") {
+      setMobilePane("list");
+      return;
+    }
+    goCrumb(stack.length - 1);
+    setMobilePane("tree");
+  };
+  const createFolder = useMutation({
+    mutationFn: (name: string) =>
+      post<RecordData>("/workspace/entries", { parent_id: folderId ?? listing.data?.parent_id, name, kind: "DIRECTORY" }),
+    onSuccess: () => {
+      setModal(null);
+      invalidateTree();
+    },
   });
-  const nodeItems = nodes.data?.items ?? [];
-  const selected = nodeItems.find((n) => String(n.id) === nodeId);
-  const roots = Array.isArray(selected?.roots)
-    ? (selected.roots as RecordData[])
-    : [];
+  const upload = useMutation({
+    mutationFn: async (picked: { name: string; file: File }) => {
+      const form = new FormData();
+      form.append("file", picked.file, picked.name);
+      const stored = await api<RecordData>(`/files/import?filename=${encodeURIComponent(picked.name)}`, { method: "POST", body: form });
+      return post<RecordData>("/workspace/entries", {
+        parent_id: folderId ?? listing.data?.parent_id,
+        name: picked.name,
+        kind: "FILE",
+        artifact_id: stored.id,
+      });
+    },
+    onSuccess: () => {
+      setModal(null);
+      invalidateTree();
+    },
+  });
+  const moveEntry = useMutation({
+    mutationFn: (input: { entry: WorkspaceEntry; target: string }) =>
+      api<RecordData>(`/workspace/entries/${input.entry.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ expected_revision: input.entry.revision, parent_id: input.target }),
+      }),
+    onSuccess: () => {
+      setModal(null);
+      setMoveTarget("");
+      invalidateTree();
+    },
+  });
+  const trashEntry = useMutation({
+    mutationFn: (entry: WorkspaceEntry) => post<RecordData>(`/workspace/entries/${entry.id}/trash`, { expected_revision: entry.revision }),
+    onSuccess: () => {
+      setModal(null);
+      setSelectedId(null);
+      invalidateTree();
+    },
+  });
+  const restoreEntry = useMutation({
+    mutationFn: (entry: WorkspaceEntry) => post<RecordData>(`/workspace/entries/${entry.id}/restore`, { expected_revision: entry.revision }),
+    onSuccess: () => {
+      setModal(null);
+      invalidateTree();
+    },
+  });
+  const restoreVersion = useMutation({
+    mutationFn: (input: { entry: WorkspaceEntry; version_id: string }) =>
+      post<RecordData>(`/workspace/entries/${input.entry.id}/restore-version`, {
+        expected_revision: input.entry.revision,
+        version_id: input.version_id,
+      }),
+    onSuccess: invalidateTree,
+  });
+  const pending = createFolder.isPending || upload.isPending || moveEntry.isPending || trashEntry.isPending || restoreEntry.isPending;
+  const mountItems = (mounts.data?.items ?? []).map(asMount);
+  const seedNames = ["Inbox", "Projects", "Outputs", "Trash"];
   return (
     <>
-      <PageHeader title="Files" description="Files Orbit can see." />
-      <div className="panel">
-        <h2>Browse files</h2>
-        <p>
-          <small>
-            Reads go through the paired node over its live channel, scoped to
-            the roots you approved for that machine.
-          </small>
-        </p>
-        {!nodeItems.length ? (
-          <Empty title="No machines paired yet">
-            Pair a machine on the Computers page first — file browsing needs
-            a live node with approved roots.
-          </Empty>
-        ) : (
+      <PageHeader title="Files" description="Your workspace, mounted machines, and stored imports." />
+      <div className="workspace-back">
+        <button type="button" className="secondary mini" onClick={goBack} disabled={!stack.length && mobilePane !== "detail"}>
+          <ArrowLeft size={14} /> Back
+        </button>
+      </div>
+      <div className="workspace-shell">
+        <nav className={`workspace-tree${mobilePane === "tree" ? " workspace-active" : ""}`} aria-label="Workspace folders">
+          <h2>Workspace</h2>
+          <ul>
+            <li>
+              <button type="button" className={!stack.length && !showTrash ? "notes-active" : ""} onClick={() => { setStack([]); setFolderId(null); setShowTrash(false); setSelectedId(null); setMobilePane("list"); }}>
+                <span className="notes-item-title"><Folder size={14} /> Everything</span>
+              </button>
+            </li>
+            {seedNames.map((name) => (
+              <li key={name}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const hit = entries.find((e) => e.name === name && e.kind === "DIRECTORY");
+                    if (hit) openFolder(hit);
+                    else {
+                      setStack([]);
+                      setFolderId(null);
+                      setSearch(name);
+                    }
+                    setShowTrash(name === "Trash");
+                    setMobilePane("list");
+                  }}
+                >
+                  <span className="notes-item-title"><Folder size={14} /> {name}</span>
+                </button>
+              </li>
+            ))}
+            <li>
+              <button type="button" className={showTrash ? "notes-active" : ""} onClick={() => { setShowTrash((v) => !v); setMobilePane("list"); }}>
+                <span className="notes-item-title">Trash</span>
+                <span className="notes-item-meta">{showTrash ? "Showing trashed items" : "Show trashed items"}</span>
+              </button>
+            </li>
+          </ul>
+          <h2>Mounts</h2>
+          {mounts.isPending ? (
+            <p role="status">Loading mounts…</p>
+          ) : mounts.error ? (
+            <ErrorNotice error={mounts.error} retry={() => mounts.refetch()} />
+          ) : !mountItems.length ? (
+            <p className="muted"><small>No mounts yet — pair a machine on the Computers page, then mount one of its shared folders.</small></p>
+          ) : (
+            <ul>
+              {mountItems.map((m) => {
+                const node = nodesWithRoots.find((n) => n.id === m.node_id);
+                const root = node?.roots.find((r) => r.id === m.root_id);
+                const online = node?.live ?? false;
+                const writable = m.mode === "WRITE" && (root?.mutation_available || root?.mode === "READ_WRITE");
+                return (
+                  <li key={m.id}>
+                    <span className="notes-item-title"><HardDrive size={14} /> {m.alias}</span>
+                    <span className="notes-item-meta">
+                      {node ? node.display_name : "Unknown machine"} · {root ? root.display_name : "Revoked root"}
+                    </span>
+                    <span className="notes-item-meta">
+                      {online ? <span className="status good">Online</span> : <span className="status bad">Offline</span>}{" "}
+                      {writable ? <span className="status good">Writable</span> : <span className="status pending">Read-only</span>}{" "}
+                      <span className="status pending">Untrusted</span>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {nodesWithRoots.length > 0 && (
+            <>
+              <h2>Machines</h2>
+              <ul>
+                {nodesWithRoots.map((n) => (
+                  <li key={n.id}>
+                    <span className="notes-item-title">{n.display_name}</span>
+                    <span className="notes-item-meta">
+                      {n.live ? <span className="status good">Online</span> : <span className="status bad">Offline</span>}{" "}
+                      {n.roots.length ? `${n.roots.length} shared folder${n.roots.length === 1 ? "" : "s"}` : "No shared folders"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </nav>
+        <section className={`workspace-list${mobilePane === "list" ? " workspace-active" : ""}`} aria-label="Folder contents">
+          <nav className="workspace-crumbs" aria-label="Breadcrumb">
+            {crumbs.map((c, i) => (
+              <span key={c.id ?? "root"}>
+                {i > 0 && " / "}
+                <button type="button" className="quiet mini" onClick={() => goCrumb(i)}>
+                  {c.name}
+                </button>
+              </span>
+            ))}
+          </nav>
+          <div className="toolbar">
+            <Input label="Search this folder" placeholder="Filter by name…" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <Select label="Sort" value={sort} onChange={(e) => setSort(e.target.value as "name" | "kind")}>
+              <option value="name">Name</option>
+              <option value="kind">Folders first</option>
+            </Select>
+            <button type="button" className="secondary mini" onClick={() => setGrid((g) => !g)} aria-pressed={grid}>
+              {grid ? <ListViewIcon size={14} /> : <LayoutGrid size={14} />} {grid ? "List" : "Grid"}
+            </button>
+          </div>
+          <div className="actions">
+            <button type="button" className="secondary" onClick={() => setModal({ kind: "folder" })}>New folder</button>
+            <button type="button" className="secondary" onClick={() => setModal({ kind: "upload" })}>Upload</button>
+          </div>
+          {listing.isPending ? (
+            <p role="status">Loading folder…</p>
+          ) : listing.error ? (
+            <ErrorNotice error={listing.error} retry={() => listing.refetch()} />
+          ) : !visible.length ? (
+            <Empty title={search ? "No matches in this folder" : showTrash ? "Trash is empty" : "This folder is empty"}>
+              {search ? "Clear the search or pick another folder." : "Create a folder or upload a file to get started."}
+            </Empty>
+          ) : (
+            <ul className={grid ? "workspace-grid" : "memory-files"} aria-label={current ? `Contents of ${current.name}` : "Workspace contents"}>
+              {visible.map((e) => (
+                <li key={e.id}>
+                  <button
+                    type="button"
+                    className={selectedId === e.id ? "notes-active" : ""}
+                    onClick={() => {
+                      if (e.kind === "DIRECTORY") openFolder(e);
+                      else {
+                        setSelectedId(e.id);
+                        setMobilePane("detail");
+                      }
+                    }}
+                    style={{ width: "100%", textAlign: "left", background: "none", border: "1px solid transparent", borderRadius: "8px", padding: "8px 10px", cursor: "pointer", color: "inherit" }}
+                  >
+                    <span className="notes-item-title">{e.kind === "DIRECTORY" ? <Folder size={14} /> : <FileIcon size={14} />} {e.name}</span>
+                    <span className="notes-item-meta">
+                      {e.kind === "DIRECTORY" ? "Folder" : "File"} · revision {e.revision}{e.trashed ? " · Trashed" : ""}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <aside className={`workspace-detail${mobilePane === "detail" ? " workspace-active" : ""}`} aria-label={selectedEntry ? "Entry details" : "No entry selected"}>
+          {!selectedEntry ? (
+            <Empty title="Pick a file or folder">Details, preview, and history live here.</Empty>
+          ) : (
+            <>
+              <h3>{selectedEntry.name}</h3>
+              <p className="muted">
+                {selectedEntry.kind === "DIRECTORY" ? "Folder" : "File"} · revision {selectedEntry.revision}
+                {selectedEntry.trashed ? " · Trashed" : ""} <span className="status pending">Untrusted</span>
+              </p>
+              {selectedEntry.kind === "FILE" && selectedEntry.head_artifact_id && (
+                <ArtifactPreview artifactId={selectedEntry.head_artifact_id} name={selectedEntry.name} />
+              )}
+              <div className="actions">
+                {!selectedEntry.trashed ? (
+                  <>
+                    <button type="button" className="secondary" onClick={() => { setMoveTarget(""); setModal({ kind: "move", entry: selectedEntry }); }}>Move</button>
+                    <button type="button" className="danger" onClick={() => setModal({ kind: "trash", entry: selectedEntry })}>Trash</button>
+                  </>
+                ) : (
+                  <button type="button" className="secondary" onClick={() => setModal({ kind: "restore", entry: selectedEntry })}>Restore</button>
+                )}
+              </div>
+              {(moveEntry.error || trashEntry.error || restoreEntry.error || restoreVersion.error) && (
+                <ErrorNotice
+                  error={moveEntry.error ?? trashEntry.error ?? restoreEntry.error ?? restoreVersion.error}
+                  retry={() => {
+                    moveEntry.reset();
+                    trashEntry.reset();
+                    restoreEntry.reset();
+                    restoreVersion.reset();
+                  }}
+                />
+              )}
+              {selectedEntry.kind === "FILE" && (
+                <section aria-label="Version history">
+                  <h3>History</h3>
+                  {versions.isPending ? (
+                    <p role="status">Loading history…</p>
+                  ) : versions.error ? (
+                    <ErrorNotice error={versions.error} retry={() => versions.refetch()} />
+                  ) : !(versions.data?.items?.length) ? (
+                    <p className="muted"><small>No earlier versions yet.</small></p>
+                  ) : (
+                    <ul className="memory-files">
+                      {versions.data.items.map((v) => (
+                        <li key={String(v.id)}>
+                          <span className="notes-item-title">Revision {text(v.revision)}</span>
+                          <span className="notes-item-meta">{timestamp(v.created_at)}{v.created_by_task_id ? ` · task ${text(v.created_by_task_id).slice(0, 8)}` : ""}</span>
+                          <button
+                            type="button"
+                            className="secondary mini"
+                            disabled={restoreVersion.isPending}
+                            onClick={() => restoreVersion.mutate({ entry: selectedEntry, version_id: String(v.id) })}
+                          >
+                            Restore this version
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              )}
+            </>
+          )}
+        </aside>
+      </div>
+      {modal?.kind === "folder" && (
+        <Modal title="New folder" onClose={() => !pending && setModal(null)} pending={pending}>
+          <FolderForm
+            pending={createFolder.isPending}
+            error={createFolder.error}
+            onSubmit={(name) => createFolder.mutate(name)}
+            onRetry={() => createFolder.reset()}
+          />
+        </Modal>
+      )}
+      {modal?.kind === "upload" && (
+        <Modal title="Upload a file" onClose={() => !pending && setModal(null)} pending={pending}>
+          <UploadForm pending={upload.isPending} error={upload.error} onSubmit={(v) => upload.mutate(v)} onRetry={() => upload.reset()} />
+        </Modal>
+      )}
+      {modal?.kind === "move" && (
+        <Modal title={`Move ${modal.entry.name}`} onClose={() => !pending && setModal(null)} pending={pending}>
           <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              setBrowse({ node_id: nodeId, root_id: rootId, relative_path: path });
-              try { localStorage.setItem("orbit.files.context", JSON.stringify({ node_id: nodeId, root_id: rootId })); } catch { /* private mode: header files search stays memory-only */ }
+            aria-label="Move entry"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (moveTarget) moveEntry.mutate({ entry: modal.entry, target: moveTarget });
             }}
           >
-            <Field label="Machine">
-              <select
-                required
-                value={nodeId}
-                onChange={(e) => {
-                  setNodeId(e.target.value);
-                  setRootId("");
-                }}
-              >
-                <option value="">Choose a machine…</option>
-                {nodeItems.map((n) => (
-                  <option key={String(n.id)} value={String(n.id)}>
-                    {text(n.display_name)}
-                  </option>
-                ))}
-              </select>
+            <Field label="Destination folder">
+              <input value={moveTarget} onChange={(e) => setMoveTarget(e.target.value)} placeholder="Paste a folder id" required autoFocus />
             </Field>
-            {!!roots.length && (
-              <Field label="Root">
-                <select
-                  required
-                  value={rootId}
-                  onChange={(e) => setRootId(e.target.value)}
-                >
-                  <option value="">Choose a root…</option>
-                  {roots.map((r) => (
-                    <option key={String(r.id)} value={String(r.id)}>
-                      {text(r.display_name)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            )}
-            <Input
-              label="Subdirectory (optional)"
-              placeholder="documents"
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-            />
+            <p className="muted"><small>Tip: open the destination folder first — its id is the last crumb. Moving pins revision {modal.entry.revision}, so a concurrent edit reports a conflict instead of overwriting.</small></p>
+            {moveEntry.error && <ErrorNotice error={moveEntry.error} retry={() => moveEntry.reset()} />}
             <div className="actions">
-              <button type="submit" disabled={!nodeId || !rootId}>
-                List files
-              </button>
+              <button type="submit" disabled={!moveTarget || moveEntry.isPending}>{moveEntry.isPending ? "Moving…" : "Move here"}</button>
             </div>
           </form>
-        )}
-      </div>
-      {browse && (
-        <div className="panel">
-          <h2>Listing</h2>
-          {listing.isPending && <p role="status">Loading…</p>}
-          {listing.error && (
-            <ErrorNotice error={listing.error} retry={() => listing.refetch()} />
-          )}
-          {listing.data && <Json value={listing.data} />}
-        </div>
+        </Modal>
+      )}
+      {modal?.kind === "trash" && (
+        <Confirm
+          title={`Trash ${modal.entry.name}?`}
+          action="Move to trash"
+          pending={trashEntry.isPending}
+          onClose={() => !pending && setModal(null)}
+          onConfirm={() => trashEntry.mutate(modal.entry)}
+        >
+          <p>The entry stays recoverable from Trash until it is deleted there. Revision {modal.entry.revision} is pinned so a concurrent edit reports a conflict.</p>
+          {trashEntry.error && <ErrorNotice error={trashEntry.error} retry={() => trashEntry.reset()} />}
+        </Confirm>
+      )}
+      {modal?.kind === "restore" && (
+        <Modal title={`Restore ${modal.entry.name}?`} onClose={() => !pending && setModal(null)} pending={pending}>
+          <p>Restore puts the entry back under its old name. A name collision reports a conflict instead of overwriting.</p>
+          {restoreEntry.error && <ErrorNotice error={restoreEntry.error} retry={() => restoreEntry.reset()} />}
+          <div className="actions">
+            <button type="button" disabled={restoreEntry.isPending} onClick={() => restoreEntry.mutate(modal.entry)}>
+              {restoreEntry.isPending ? "Restoring…" : "Restore"}
+            </button>
+          </div>
+        </Modal>
       )}
       <StoredFiles />
       <Documents />
     </>
   );
+}
+function FolderForm({ pending, error, onSubmit, onRetry }: { pending: boolean; error: unknown; onSubmit: (name: string) => void; onRetry: () => void }) {
+  const [name, setName] = useState("");
+  return (
+    <form
+      aria-label="New folder"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (name.trim()) onSubmit(name.trim());
+      }}
+    >
+      <Field label="Folder name">
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="projects" required maxLength={255} autoFocus />
+      </Field>
+      {error ? <ErrorNotice error={error} retry={onRetry} /> : null}
+      <div className="actions">
+        <button type="submit" disabled={!name.trim() || pending}>{pending ? "Creating…" : "Create folder"}</button>
+      </div>
+    </form>
+  );
+}
+function UploadForm({ pending, error, onSubmit, onRetry }: { pending: boolean; error: unknown; onSubmit: (v: { name: string; file: File }) => void; onRetry: () => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  return (
+    <form
+      aria-label="Upload file"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (file) onSubmit({ name: file.name, file });
+      }}
+    >
+      <Input label="File" type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+      {error ? <ErrorNotice error={error} retry={onRetry} /> : null}
+      <div className="actions">
+        <button type="submit" disabled={!file || pending}>{pending ? "Uploading…" : "Upload"}</button>
+      </div>
+    </form>
+  );
+}
+function ArtifactPreview({ artifactId, name }: { artifactId: string; name: string }) {
+  const meta = useQuery({
+    queryKey: ["file-meta", artifactId],
+    queryFn: () => api<RecordData>(`/files/${artifactId}`),
+  });
+  const mime = text(meta.data?.mime_type ?? "");
+  const isImage = mime.startsWith("image/");
+  const isText = mime.startsWith("text/") || mime === "application/json";
+  return (
+    <section aria-label="Preview">
+      {meta.isPending ? (
+        <p role="status">Loading preview…</p>
+      ) : meta.error ? (
+        <ErrorNotice error={meta.error} retry={() => meta.refetch()} />
+      ) : (
+        <>
+          <p className="muted">
+            <small>{mime || "Unknown type"} · {meta.data ? fileSize(meta.data.size) : ""} <span className="status pending">Untrusted</span></small>
+          </p>
+          {isImage && (
+            <img loading="lazy" src={`/api/v1/files/${artifactId}/content`} alt={name} style={{ maxWidth: "100%", borderRadius: "8px" }} />
+          )}
+          {isText && <TextPreview artifactId={artifactId} />}
+          {!isImage && !isText && (
+            <p className="muted"><small>No inline preview for this type — the bytes stay sealed and untrusted.</small></p>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+function TextPreview({ artifactId }: { artifactId: string }) {
+  const [body, setBody] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setBody(null);
+    setFailed(false);
+    fetch(`/api/v1/files/${artifactId}/content`, { credentials: "same-origin" })
+      .then((r) => {
+        if (!r.ok) throw new Error(`Preview failed (${r.status}).`);
+        return r.text();
+      })
+      .then((t) => {
+        if (live) setBody(t.slice(0, 4000));
+      })
+      .catch(() => {
+        if (live) setFailed(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, [artifactId]);
+  if (failed) return <p className="muted"><small>Text preview is unavailable for this file.</small></p>;
+  if (body == null) return <p role="status">Loading text…</p>;
+  return <pre className="file-preview">{body}</pre>;
 }
 function Documents() {
   const client = useQueryClient();
@@ -1828,13 +2319,12 @@ export function HomeAssistant() {
     </>
   );
 }
-function fileIcon(mime: string): string {
-  if (mime.startsWith("image/")) return "🖼";
-  if (mime.startsWith("video/")) return "🎬";
-  if (mime.startsWith("audio/")) return "🎵";
-  if (mime === "application/pdf") return "📕";
-  if (mime.startsWith("text/")) return "📄";
-  return "📦";
+function fileIcon(mime: string) {
+  if (mime.startsWith("image/")) return <ImageIcon size={14} />;
+  if (mime.startsWith("video/")) return <Film size={14} />;
+  if (mime.startsWith("audio/")) return <Music size={14} />;
+  if (mime === "application/pdf" || mime.startsWith("text/")) return <FileText size={14} />;
+  return <FileIcon size={14} />;
 }
 function fileSize(n: unknown): string {
   const v = Number(n ?? 0);

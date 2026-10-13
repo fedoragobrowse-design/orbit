@@ -147,10 +147,13 @@ function sourceHref(s: RunSource): string | null {
 function SourceChips({ taskId }: { taskId: string }) {
   const runs = useQuery({
     queryKey: ["chat-sources", taskId],
-    queryFn: () => api<{ items: { sources: RunSource[] }[] }>(`/tasks/${taskId}/runs`),
+    queryFn: () => api<{ children: { sources: RunSource[] }[]; items?: { sources: RunSource[] }[] }>(`/tasks/${taskId}/runs`),
     staleTime: 60000,
   });
-  const sources = (runs.data?.items ?? []).flatMap((r) => r.sources ?? []).slice(0, 6);
+  // Explicit parent linkage only: `children` holds runs whose dispatch
+  // persisted this task as parent. `items` is a legacy fallback for stale
+  // cached responses — never synthesized.
+  const sources = (runs.data?.children ?? runs.data?.items ?? []).flatMap((r) => r.sources ?? []).slice(0, 6);
   if (!sources.length) return null;
   return (
     <p className="source-chips" aria-label="What this answer used">
@@ -185,6 +188,32 @@ function SourceChips({ taskId }: { taskId: string }) {
           </span>
         );
       })}
+    </p>
+  );
+}
+// Helper lineage: delegates this run spawned, read from the same explicit
+// `children` linkage the tasks view groups by. Empty when the run spawned
+// no helpers — that renders nothing, never a placeholder row.
+function HelperLineage({ taskId }: { taskId: string }) {
+  const runs = useQuery({
+    queryKey: ["chat-helpers", taskId],
+    queryFn: () => api<{ parent_task_id?: unknown; children: { task_id: unknown; title?: unknown; state?: unknown }[]; items?: { task_id: unknown; title?: unknown; state?: unknown }[] }>(`/tasks/${taskId}/runs`),
+    staleTime: 60000,
+  });
+  const children = runs.data?.children ?? runs.data?.items ?? [];
+  if (!children.length) return null;
+  return (
+    <p className="muted" aria-label="Delegated helpers">
+      Delegated to{" "}
+      {children.map((c, i) => (
+        <span key={String(c.task_id)}>
+          {i > 0 ? ", " : ""}
+          <Link className="safe-link" to={`/tasks/${text(c.task_id)}`}>
+            {text(c.title) || text(c.task_id)}
+          </Link>
+          {text(c.state) ? ` (${text(c.state)})` : ""}
+        </span>
+      ))}.
     </p>
   );
 }
@@ -271,6 +300,7 @@ function TypingBubble() {
         <article className={m.role === "user" ? "message user" : "message assistant"} key={m.id}>
           <div className={m.role === "assistant" ? "assistant-streamed" : undefined}>{renderRich(m.content, (m as unknown as RecordData).attachments)}</div>
           {m.role === "assistant" && !!m.task_id && <SourceChips taskId={text(m.task_id)} />}
+          {m.role === "assistant" && !!m.task_id && <HelperLineage taskId={text(m.task_id)} />}
           <span className="chat-time">
             {timestamp(m.created_at)}{" "}
             {!!m.task_id && <Link to={`/tasks/${text(m.task_id)}`}>task</Link>}

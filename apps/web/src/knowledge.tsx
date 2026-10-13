@@ -82,7 +82,11 @@ function MemoryList() {
           }
         >
           {(items) => {
-            const verified = items.filter((r) => text(r.status) === "VERIFIED").length;
+            // Backend statuses are ACTIVE | SUPERSEDED | EXPIRED | FORGOTTEN;
+            // "verified" is not a status — a fact counts as verified once the
+            // owner has confirmed it (last_verified_at set).
+            const active = items.filter((r) => text(r.status) === "ACTIVE").length;
+            const verified = items.filter((r) => !!r.last_verified_at).length;
             const types: Record<string, number> = {};
             for (const r of items) {
               const t = label(r.type) || "Untyped";
@@ -98,6 +102,7 @@ function MemoryList() {
                 <p className="memory-summary" role="status">
                   Remembering <strong>{items.length}</strong>{" "}
                   {items.length === 1 ? "thing" : "things"}
+                  {" · "}{active} active
                   {verified > 0 && (
                     <> · {verified} verified</>
                   )}
@@ -163,8 +168,8 @@ function MemoryList() {
         )}
         {deleting && (
           <Confirm
-            title="Delete this memory?"
-            action="Delete"
+            title={`Forget “${text(deleting.subject) || "Untitled memory"}”?`}
+            action="Forget it"
             pending={forget.isPending}
             onClose={closeDelete}
             onConfirm={() => {
@@ -174,9 +179,12 @@ function MemoryList() {
             }}
           >
             <p>
-              {text(deleting.subject) || "This memory"} will be forgotten. Orbit
-              stops using it and keeps only an audit stub. This cannot be
-              undone.
+              Orbit stops using this memory and keeps only an audit stub.
+              Nothing happens until you confirm — close this and it stays put.
+            </p>
+            <p className="muted">
+              {label(deleting.type)} · <Status value={deleting.status} /> ·{" "}
+              {label(deleting.privacy_class)}
             </p>
           </Confirm>
         )}
@@ -249,15 +257,34 @@ function MemoryDetail({ id }: { id: string }) {
       </header>
       <h3>What Orbit believes</h3>
       <Json value={row.value} />
-      <p>
-        <small>
-          Confidence {text(row.confidence)}, privacy {label(row.privacy_class)},
-          version {text(row.version)}.
-          {row.valid_until
-            ? ` Valid until ${timestamp(row.valid_until)}.`
-            : ""}
-        </small>
-      </p>
+      <dl className="memory-source">
+        <dt>Confidence</dt>
+        <dd>{text(row.confidence) || "—"}</dd>
+        <dt>Privacy</dt>
+        <dd>{label(row.privacy_class)}</dd>
+        <dt>Version</dt>
+        <dd>v{text(row.version) || "0"}</dd>
+        <dt>Last verified</dt>
+        <dd>{row.last_verified_at ? timestamp(row.last_verified_at) : "Not yet verified"}</dd>
+        {(!!row.source_type || !!row.source_uri) && (
+          <>
+            <dt>Source</dt>
+            <dd>
+              {[label(row.source_type), text(row.source_id)].filter(Boolean).join(" · ") || "—"}
+              {!!row.source_uri && (
+                <> · <code>{text(row.source_uri)}</code></>
+              )}
+              {!!row.source_version && <> · rev {text(row.source_version)}</>}
+            </dd>
+          </>
+        )}
+        {!!row.valid_until && (
+          <>
+            <dt>Valid until</dt>
+            <dd>{timestamp(row.valid_until)}</dd>
+          </>
+        )}
+      </dl>
       <div className="actions">
         <button
           disabled={verify.isPending}

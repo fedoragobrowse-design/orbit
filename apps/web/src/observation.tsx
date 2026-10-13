@@ -37,7 +37,7 @@ export function useObservationStatus(enabled = true) {
     queryKey: ["observation-status"],
     queryFn: () => api<ObservationStatus>("/observation/status"),
     enabled,
-    refetchInterval: 15_000,
+    refetchInterval: 30_000,
   });
 }
 

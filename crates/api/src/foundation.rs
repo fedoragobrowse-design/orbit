@@ -56,8 +56,8 @@ async fn detail(state:ApiState,headers:HeaderMap,id:Uuid,table:&str)->Result<Jso
 #[utoipa::path(get,path="/api/v1/events/{id}",params(("id"=Uuid,Path)),responses((status=200,body=Value)))] pub async fn event_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{detail(s,h,id,"events").await}
 #[utoipa::path(get,path="/api/v1/activity/{id}",params(("id"=Uuid,Path)),responses((status=200,body=Value)))] pub async fn activity_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{detail(s,h,id,"audit_events").await}
 #[utoipa::path(get,path="/api/v1/notifications/{id}",params(("id"=Uuid,Path)),responses((status=200,body=Value)))] pub async fn notification_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{detail(s,h,id,"notifications").await}
-#[derive(Serialize, ToSchema)] pub struct TaskRunItem {pub task_id: Uuid,pub phase: String,pub model_calls: i32,pub model_retries: i32,pub turn: i32,pub depth: i32,pub tool_calls: i32,pub tokens: i64,pub sources: Vec<Value>}
-#[derive(Serialize, ToSchema)] pub struct TaskRuns {pub items: Vec<TaskRunItem>}
+#[derive(Serialize, ToSchema)] pub struct TaskRunItem {pub task_id: Uuid,pub parent_task_id: Option<Uuid>,pub parent_run_id: Option<Uuid>,pub conversation_id: Option<Uuid>,pub title: Option<String>,pub state: Option<String>,pub phase: String,pub model_calls: i32,pub model_retries: i32,pub turn: i32,pub depth: i32,pub tool_calls: i32,pub tokens: i64,pub result: Option<Value>,pub sources: Vec<Value>}
+#[derive(Serialize, ToSchema)] pub struct TaskRuns {pub task_id: Uuid,pub parent_task_id: Option<Uuid>,pub children: Vec<TaskRunItem>}
  #[utoipa::path(get,path="/api/v1/tasks/{id}",params(("id"=Uuid,Path)),responses((status=200,body=TaskDetail)))]
  pub async fn task_detail(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<Value>,ApiError>{
   let Json(mut v)=detail(s,h,id,"tasks").await?;let state=v["state"].as_str().unwrap_or("");let clear=v["unresolved_call_ids"].as_array().is_some_and(Vec::is_empty);let mut actions=vec![];
@@ -65,24 +65,29 @@ async fn detail(state:ApiState,headers:HeaderMap,id:Uuid,table:&str)->Result<Jso
   if !clear {actions.push("RECONCILE")} else if matches!(state,"FAILED"|"TIMED_OUT"|"CANCELLED"){actions.push("RETRY")} else if state=="WAITING_FOR_RESOURCE"&&v["consumer"]=="foundation"{actions.push("RESUME")}
   v["allowed_recovery_actions"]=json!(actions);Ok(Json(v))
  }
-/// Live subagent view: the run row for this task plus sibling runs sharing
-/// the same correlation id (subagent tasks, when present). Owner-scoped;
-/// depth falls back to the task checkpoint JSON when no subagent table row
-/// exists. Empty items when no agent run was recorded (foundation tasks).
+/// Live subagent view: this task's run plus child runs spawned from it via
+/// `tasks.parent_task_id` / `agent_runs.parent_run_id` (persisted at dispatch
+/// time, NULL for top-level runs). Grouping reads only those explicit
+/// columns — never the shared correlation_id, which siblings and retries
+/// also carry. Empty children when nothing spawned (no fictitious progress);
+/// empty entirely when no agent run was recorded (foundation tasks).
 /// Sources read `model_context_sources` receipts (one row per CONTEXT block
 /// per turn), never the live `agent_runs.context` JSON. Labels read
 /// "Provided as context" unless the run's assistant text cites the pin.
 #[utoipa::path(get,path="/api/v1/tasks/{id}/runs",params(("id"=Uuid,Path)),responses((status=200,body=TaskRuns)))]
 pub async fn task_runs(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<TaskRuns>,ApiError>{
  let a=authenticate(&s,&h,false).await?;
- let correlation:Option<Uuid>=sqlx::query_scalar("SELECT correlation_id FROM tasks WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).fetch_optional(&s.pool).await?.ok_or(Error::NotFound)?;
- let correlation=correlation.ok_or(Error::NotFound)?;
- let rows=sqlx::query("SELECT r.task_id,r.phase,r.model_calls,r.model_retries,r.turn,r.depth,r.tool_calls,r.tokens,t.checkpoint FROM agent_runs r JOIN tasks t ON t.owner_id=r.owner_id AND t.id=r.task_id WHERE r.owner_id=$1 AND (r.task_id=$2 OR t.correlation_id=$3) ORDER BY r.depth,r.task_id").bind(a.scope.owner_id).bind(id).bind(correlation).fetch_all(&s.pool).await?;
- let mut items=Vec::with_capacity(rows.len());
+ let head=sqlx::query("SELECT t.parent_task_id FROM tasks t WHERE t.owner_id=$1 AND t.id=$2").bind(a.scope.owner_id).bind(id).fetch_optional(&s.pool).await?.ok_or(Error::NotFound)?;
+ let parent_task_id:Option<Uuid>=head.get("parent_task_id");
+ // Self run row (NULL parent columns on old rows read as top-level; the
+ // task_runs query joins through tasks so stale NULLs still group honestly).
+ let rows=sqlx::query("SELECT r.task_id,r.parent_run_id,r.conversation_id,r.model_response,r.phase,r.model_calls,r.model_retries,r.turn,r.depth,r.tool_calls,r.tokens,t.parent_task_id,t.title,t.state,t.checkpoint FROM agent_runs r JOIN tasks t ON t.owner_id=r.owner_id AND t.id=r.task_id WHERE r.owner_id=$1 AND (r.task_id=$2 OR t.parent_task_id=$2) ORDER BY (r.task_id=$2) DESC,r.depth,r.task_id").bind(a.scope.owner_id).bind(id).fetch_all(&s.pool).await?;
+ let mut children=Vec::with_capacity(rows.len().saturating_sub(1));
  for r in &rows{
   let checkpoint:Value=r.get("checkpoint");
   let checkpoint_depth=checkpoint.get("depth").and_then(Value::as_i64).and_then(|d|i32::try_from(d).ok()).unwrap_or_else(||r.get("depth"));
   let task:Uuid=r.get("task_id");
+  let is_self=task==id;
   let receipts=sqlx::query("SELECT source_type,source_id,source_version,locator,trust_level,turn FROM model_context_sources WHERE owner_id=$1 AND task_id=$2 ORDER BY turn,source_type,source_id LIMIT 24").bind(a.scope.owner_id).bind(task).fetch_all(&s.pool).await.unwrap_or_default();
   // Assistant text for this run: a receipt counts as cited when the same-turn
   // reply (turn_key `assistant:{turn}`) names its pin; otherwise the chip
@@ -111,9 +116,10 @@ pub async fn task_runs(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)
    }else{false};
    sources.push(json!({"kind":source_type,"reference":locator,"source_id":source_id,"source_version":source_version,"trust":trust,"turn":q.get::<i32,_>("turn"),"cited":cited,"tombstone":tombstone,"label":if cited {"Cited by model"} else {"Provided as context"}}));
   }
-  items.push(TaskRunItem{task_id:task,phase:r.get("phase"),model_calls:r.get("model_calls"),model_retries:r.get("model_retries"),turn:r.get("turn"),depth:checkpoint_depth,tool_calls:r.get("tool_calls"),tokens:r.get("tokens"),sources});
+  let item=TaskRunItem{task_id:task,parent_task_id:r.get("parent_task_id"),parent_run_id:r.get("parent_run_id"),conversation_id:r.get("conversation_id"),title:r.get("title"),state:r.get("state"),phase:r.get("phase"),model_calls:r.get("model_calls"),model_retries:r.get("model_retries"),turn:r.get("turn"),depth:checkpoint_depth,tool_calls:r.get("tool_calls"),tokens:r.get("tokens"),result:r.get("model_response"),sources};
+  if !is_self{children.push(item);}
  }
- Ok(Json(TaskRuns{items}))
+ Ok(Json(TaskRuns{task_id:id,parent_task_id,children}))
 }
 /// Why-timeline: every row sharing one correlation_id — the triggering
 /// event, the tasks it spawned, the audit trail, and the notifications the
@@ -140,12 +146,19 @@ async fn recover(s:ApiState,h:HeaderMap,id:Uuid,input:RecoveryRequest,operation:
  let r=sqlx::query("SELECT *,expires_at>now() AS unexpired FROM tasks WHERE owner_id=$1 AND id=$2 FOR UPDATE").bind(a.scope.owner_id).bind(id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
  if r.get::<i64,_>("revision")!=input.expected_revision{return Err(Error::Conflict("task revision changed".into()).into())}let state:String=r.get("state");let unresolved:Value=r.get("unresolved_call_ids");let consumer:String=r.get("consumer");let mut result=id;
  match operation {
- "CANCEL"=>{if matches!(state.as_str(),"COMPLETED"|"FAILED"|"CANCELLED"|"TIMED_OUT"){return Err(Error::Conflict("terminal task cannot cancel".into()).into())}sqlx::query("UPDATE tasks SET state='CANCELLED',revision=revision+1,fence=fence+1,lease_until=NULL,updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).execute(&mut *tx).await?;},
- "RESUME"=>{if state!="WAITING_FOR_RESOURCE"||!r.get::<bool,_>("unexpired")||unresolved!=json!([]){return Err(Error::Conflict("task cannot safely resume".into()).into())}if consumer!="foundation"{return Err(Error::Unavailable("dependency/policy recovery requires registered consumer".into()).into())}sqlx::query("UPDATE tasks SET state='QUEUED',revision=revision+1,fence=fence+1,wait_reason=NULL,updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).execute(&mut *tx).await?;},
- "RETRY"=>{if !matches!(state.as_str(),"FAILED"|"TIMED_OUT"|"CANCELLED")||unresolved!=json!([]){return Err(Error::Conflict("task cannot retry while effects unresolved".into()).into())}if consumer!="foundation"{return Err(Error::Unavailable("consumer recovery unavailable".into()).into())}result=Uuid::new_v4();sqlx::query("INSERT INTO tasks(id,owner_id,principal_id,correlation_id,title,consumer,retry_of,checkpoint) VALUES($1,$2,$3,$4,$5,'foundation',$6,$7)").bind(result).bind(a.scope.owner_id).bind(a.scope.principal_id).bind(r.get::<Uuid,_>("correlation_id")).bind(r.get::<String,_>("title")).bind(id).bind(json!({"phase":"NOTIFICATION","source_event_id":r.get::<Option<Uuid>,_>("event_id"),"completed_effect_references":[id]})).execute(&mut *tx).await?;},_=>unreachable!()}
- orbit_audit::append(&mut tx,&a.scope,r.get("correlation_id"),r.get("event_id"),Some(id),&format!("TASK_{operation}"),"owner recovery",json!({"linked_task_id":result})).await?;
- if operation=="CANCEL"{orbit_event_bus::terminal_event(&mut tx,&a.scope,id,r.get("correlation_id"),orbit_core::TaskState::Cancelled).await?;}
- tx.commit().await?;Ok(Json(json!({"id":result})))
+ "CANCEL"=>{if matches!(state.as_str(),"COMPLETED"|"FAILED"|"CANCELLED"|"TIMED_OUT"){return Err(Error::Conflict("terminal task cannot cancel".into()).into())}sqlx::query("UPDATE tasks SET state='CANCELLED',revision=revision+1,fence=fence+1,lease_until=NULL,updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).execute(&mut *tx).await?;
+  // Parent-cancel cascades: child tasks spawned from this task (explicit
+  // parent_task_id, persisted at dispatch) cancel in the same transaction.
+  // Only non-terminal children transition; their leases clear so workers
+  // lose the fence at the next lock. Terminal-event rows fan out below.
+  let kids:Vec<(Uuid,Uuid)>=sqlx::query("SELECT id,correlation_id FROM tasks WHERE owner_id=$1 AND parent_task_id=$2 AND state NOT IN ('COMPLETED','FAILED','CANCELLED','TIMED_OUT') FOR UPDATE").bind(a.scope.owner_id).bind(id).fetch_all(&mut *tx).await?.iter().map(|k|(k.get("id"),k.get("correlation_id"))).collect();
+  for (kid,_) in &kids{sqlx::query("UPDATE tasks SET state='CANCELLED',revision=revision+1,fence=fence+1,lease_until=NULL,updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(kid).execute(&mut *tx).await?;}
+  orbit_audit::append(&mut tx,&a.scope,r.get("correlation_id"),r.get("event_id"),Some(id),"TASK_CANCEL","owner recovery",json!({"linked_task_id":result,"cancelled_children":kids.len()})).await?;
+  orbit_event_bus::terminal_event(&mut tx,&a.scope,id,r.get("correlation_id"),orbit_core::TaskState::Cancelled).await?;
+  for (kid,corr) in &kids{orbit_audit::append(&mut tx,&a.scope,*corr,r.get("event_id"),Some(*kid),"TASK_CANCEL","parent task cancelled",json!({"parent_task_id":id})).await?;orbit_event_bus::terminal_event(&mut tx,&a.scope,*kid,*corr,orbit_core::TaskState::Cancelled).await?;}
+  tx.commit().await?;return Ok(Json(json!({"id":result})));},
+ "RESUME"=>{if state!="WAITING_FOR_RESOURCE"||!r.get::<bool,_>("unexpired")||unresolved!=json!([]){return Err(Error::Conflict("task cannot safely resume".into()).into())}if consumer!="foundation"{return Err(Error::Unavailable("dependency/policy recovery requires registered consumer".into()).into())}sqlx::query("UPDATE tasks SET state='QUEUED',revision=revision+1,fence=fence+1,wait_reason=NULL,updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).execute(&mut *tx).await?;orbit_audit::append(&mut tx,&a.scope,r.get("correlation_id"),r.get("event_id"),Some(id),"TASK_RESUME","owner recovery",json!({"linked_task_id":result})).await?;tx.commit().await?;return Ok(Json(json!({"id":result})))},
+ "RETRY"=>{if !matches!(state.as_str(),"FAILED"|"TIMED_OUT"|"CANCELLED")||unresolved!=json!([]){return Err(Error::Conflict("task cannot retry while effects unresolved".into()).into())}if consumer!="foundation"{return Err(Error::Unavailable("consumer recovery unavailable".into()).into())}result=Uuid::new_v4();sqlx::query("INSERT INTO tasks(id,owner_id,principal_id,correlation_id,title,consumer,retry_of,checkpoint) VALUES($1,$2,$3,$4,$5,'foundation',$6,$7)").bind(result).bind(a.scope.owner_id).bind(a.scope.principal_id).bind(r.get::<Uuid,_>("correlation_id")).bind(r.get::<String,_>("title")).bind(id).bind(json!({"phase":"NOTIFICATION","source_event_id":r.get::<Option<Uuid>,_>("event_id"),"completed_effect_references":[id]})).execute(&mut *tx).await?;orbit_audit::append(&mut tx,&a.scope,r.get("correlation_id"),r.get("event_id"),Some(id),"TASK_RETRY","owner recovery",json!({"linked_task_id":result})).await?;tx.commit().await?;return Ok(Json(json!({"id":result})))},_=>unreachable!()}
 }
 #[utoipa::path(post,path="/api/v1/tasks/{id}/cancel",params(("id"=Uuid,Path)),request_body=RecoveryRequest,responses((status=200,body=Value)))] pub async fn cancel(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>,Json(i):Json<RecoveryRequest>)->Result<Json<Value>,ApiError>{recover(s,h,id,i,"CANCEL").await}
 #[utoipa::path(post,path="/api/v1/tasks/{id}/resume",params(("id"=Uuid,Path)),request_body=RecoveryRequest,responses((status=200,body=Value)))] pub async fn resume(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>,Json(i):Json<RecoveryRequest>)->Result<Json<Value>,ApiError>{recover(s,h,id,i,"RESUME").await}

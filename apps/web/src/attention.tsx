@@ -422,32 +422,45 @@ function CandidateCard({ candidate }: { candidate: AttentionCandidate }) {
   });
   const actionable = !!OPEN_STATES[candidate.state] && candidate.state !== "RUNNING";
   return (
-    <article className="row" aria-label={candidate.summary}>
+    <article className="attention-card" aria-label={candidate.summary}>
       <div className="row-main">
         <h3>{candidate.summary}</h3>
+        <ol className="attention-facts" aria-label="Why this needs you">
+          <li>
+            <span className="attention-fact-label">Why now</span>
+            <span>{candidate.action.reason || candidate.summary}</span>
+          </li>
+          <li>
+            <span className="attention-fact-label">Evidence</span>
+            <span><EvidenceChips refs={candidate.evidenceRefs} /></span>
+          </li>
+          <li>
+            <span className="attention-fact-label">Proposed action</span>
+            <span>{label(candidate.action.kind)}</span>
+          </li>
+          <li>
+            <span className="attention-fact-label">Mode</span>
+            <span title={modeNote(candidate.action.mode)}>{candidate.action.mode} — {modeNote(candidate.action.mode)}</span>
+          </li>
+          <li>
+            <span className="attention-fact-label">Cost</span>
+            <span>{candidate.action.cost}</span>
+          </li>
+          <li>
+            <span className="attention-fact-label">Target</span>
+            <span>{candidate.action.executionTarget}</span>
+          </li>
+        </ol>
         <div className="row-meta">
           <Status value={candidate.state} />
           <Status value={candidate.action.severity || "ACTION_REQUIRED"} />
-          <span className="source-chip" title={modeNote(candidate.action.mode)}>
-            {label(candidate.action.kind)} · {candidate.action.mode}
-          </span>
           {candidate.action.confidence !== null && (
             <span>Confidence {Math.round(candidate.action.confidence * 100)}%</span>
           )}
-          <span>Cost {candidate.action.cost}</span>
-          <span>Target {candidate.action.executionTarget}</span>
           <span>{timestamp(candidate.raw.created_at)}</span>
         </div>
-        {!!candidate.action.reason && candidate.action.reason !== candidate.summary && (
-          <p>{candidate.action.reason}</p>
-        )}
-        <p className="muted">{modeNote(candidate.action.mode)}</p>
         <h4>Proposed action</h4>
         <ActionDetail action={candidate.action} />
-        <h4>Sources</h4>
-        <p>
-          <EvidenceChips refs={candidate.evidenceRefs} />
-        </p>
         <div className="row-meta">
           {!!candidate.ruleId && (
             <Link className="safe-link" to={`/automations?rule=${candidate.ruleId}`}>

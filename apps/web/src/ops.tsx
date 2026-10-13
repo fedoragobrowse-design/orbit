@@ -92,13 +92,13 @@ export function About() {
           <h2>{text(info.data.app) || "Orbit"}</h2>
           <table>
             <tbody>
-              <tr><th scope="row">Version</th><td>v{text(info.data.version)}</td></tr>
+              <tr><th scope="row">Running version</th><td>v{text(info.data.version)} (executing now)</td></tr>
               <tr><th scope="row">Machine</th><td>{text(info.data.hostname)}</td></tr>
               <tr><th scope="row">System</th><td>{text(info.data.os)} · {text(info.data.arch)}</td></tr>
               <tr><th scope="row">Processors</th><td>{text(info.data.cpus)}</td></tr>
             </tbody>
           </table>
-          <p className="muted">Your data stays on this machine unless you connect it elsewhere.</p>
+          <p className="muted">This is the version actually executing. A version requested in Settings takes effect only after you restart.</p>
         </section>
       )}
     </>
