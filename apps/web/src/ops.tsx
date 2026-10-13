@@ -96,6 +96,7 @@ export function About() {
               <tr><th scope="row">Machine</th><td>{text(info.data.hostname)}</td></tr>
               <tr><th scope="row">System</th><td>{text(info.data.os)} · {text(info.data.arch)}</td></tr>
               <tr><th scope="row">Processors</th><td>{text(info.data.cpus)}</td></tr>
+              <tr><th scope="row">License</th><td><a href="https://polyformproject.org/licenses/noncommercial/1.0.0" target="_blank" rel="noreferrer">PolyForm-Noncommercial-1.0.0</a> — free for noncommercial use; commercial use needs a separate license.</td></tr>
             </tbody>
           </table>
           <p className="muted">This is the version actually executing. A version requested in Settings takes effect only after you restart.</p>

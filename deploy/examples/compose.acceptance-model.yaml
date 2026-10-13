@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Workstation-only live acceptance. Does not modify an existing Ollama service.
 # Start after the owner of a previous disposable probe releases loopback11435.
 services:

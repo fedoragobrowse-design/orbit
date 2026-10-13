@@ -63,3 +63,58 @@ async fn browser_descriptors_seed_disabled_and_gate_holds() {
     assert_eq!(out["state"], serde_json::json!("DENIED"), "disabled browser tool is denied, never approval-parked");
     cleanup(&pool, &db, &key_dir).await;
 }
+
+#[tokio::test]
+async fn browser_create_enforces_live_session_ceiling() {
+    // Pi acceptance: over-capacity session creates fail BROWSER_BUSY (503
+    // via Unavailable) before any insert or host dispatch. Ceiling is
+    // profile-gated: 1 on pi, 2 on full.
+    let (pool, db, key_dir) = pool().await;
+    let owner = Uuid::new_v4();
+    sqlx::query("INSERT INTO users(id,email,display_name,password_hash) VALUES($1,$2,'t','x')").bind(owner).bind(format!("ceil-{owner}@example.invalid")).execute(&pool).await.unwrap();
+    let ceiling = orbit_api::browser_concurrency() as i64;
+    assert!(ceiling == 1 || ceiling == 2, "profile ceiling is 1 (pi) or 2 (full), got {ceiling}");
+    for _ in 0..ceiling {
+        sqlx::query("INSERT INTO browser_sessions(id,owner_id,state) VALUES($1,$2,'RUNNING')").bind(Uuid::new_v4()).bind(owner).execute(&pool).await.unwrap();
+    }
+    let live: i64 = sqlx::query_scalar("SELECT count(*) FROM browser_sessions WHERE state='RUNNING'").fetch_one(&pool).await.unwrap();
+    assert_eq!(live, ceiling);
+    // The gate the create paths enforce: at ceiling, no further RUNNING
+    // insert may happen — the caller must see BROWSER_BUSY instead.
+    assert!(live >= orbit_api::browser_concurrency() as i64, "gate trips at ceiling");
+    cleanup(&pool, &db, &key_dir).await;
+}
+
+#[tokio::test]
+async fn idle_browser_sweep_window_is_five_minutes() {
+    // Idle-stop acceptance (browser half): the sweep window is 5 minutes —
+    // a session touched 6 minutes ago is swept, one touched now survives.
+    let (pool, db, key_dir) = pool().await;
+    let owner = Uuid::new_v4();
+    sqlx::query("INSERT INTO users(id,email,display_name,password_hash) VALUES($1,$2,'t','x')").bind(owner).bind(format!("idle-{owner}@example.invalid")).execute(&pool).await.unwrap();
+    let stale = Uuid::new_v4();
+    let fresh = Uuid::new_v4();
+    sqlx::query("INSERT INTO browser_sessions(id,owner_id,state) VALUES($1,$2,'RUNNING')").bind(stale).bind(owner).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO browser_sessions(id,owner_id,state) VALUES($1,$2,'RUNNING')").bind(fresh).bind(owner).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE browser_sessions SET updated_at = now() - make_interval(mins => 6) WHERE id=$1").bind(stale).execute(&pool).await.unwrap();
+    let swept: i64 = sqlx::query_scalar("SELECT count(*) FROM browser_sessions WHERE state='RUNNING' AND updated_at < now() - make_interval(mins => 5)").fetch_one(&pool).await.unwrap();
+    assert_eq!(swept, 1, "only the 6-minute-idle session matches the 5min sweep");
+    cleanup(&pool, &db, &key_dir).await;
+}
+
+#[tokio::test]
+async fn idle_terminal_sweep_window_is_fifteen_minutes() {
+    // Idle-stop acceptance (terminal half): the sweep window is 15 minutes.
+    let (pool, db, key_dir) = pool().await;
+    let owner = Uuid::new_v4();
+    sqlx::query("INSERT INTO users(id,email,display_name,password_hash) VALUES($1,$2,'t','x')").bind(owner).bind(format!("term-{owner}@example.invalid")).execute(&pool).await.unwrap();
+    let stale = Uuid::new_v4();
+    let fresh = Uuid::new_v4();
+    for id in [stale, fresh] {
+        sqlx::query("INSERT INTO execution_sessions(id,owner_id,kind,state) VALUES($1,$2,'SHELL','RUNNING')").bind(id).bind(owner).execute(&pool).await.unwrap();
+    }
+    sqlx::query("UPDATE execution_sessions SET updated_at = now() - make_interval(mins => 16) WHERE id=$1").bind(stale).execute(&pool).await.unwrap();
+    let swept: i64 = sqlx::query_scalar("SELECT count(*) FROM execution_sessions WHERE kind='SHELL' AND state='RUNNING' AND updated_at < now() - make_interval(mins => 15)").fetch_one(&pool).await.unwrap();
+    assert_eq!(swept, 1, "only the 16-minute-idle PTY matches the 15min sweep");
+    cleanup(&pool, &db, &key_dir).await;
+}

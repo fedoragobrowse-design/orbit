@@ -15,7 +15,21 @@ docker compose up -d --build
   token). Env: `DATABASE_URL` (runtime role), `ORBIT_MIGRATION_DATABASE_URL`
   (owner), `ORBIT_BIND=0.0.0.0:3000`,
   `ORBIT_PUBLIC_ORIGIN` (https, or loopback http), `ORBIT_KEY_DIR`,
-  `ORBIT_ARTIFACT_DIR`. Named volumes `keys`, `artifacts`.
+- `execution-host`: private Unix-socket PTY host, no ports/host mounts; env
+  `EXEC_HOST_SOCKET`, `EXEC_HOST_WORKSPACE_ROOT`, `EXEC_HOST_TOKEN_SECRET`
+  (minted by `install.sh`); health probe pings the socket (`ping` needs no
+  auth); named volume `exec-sock` carries the socket, `exec-work` the
+  workspaces (`/var/lib/orbit/sessions`).
+- `browser-host`: pinned Playwright Chromium 1.55.0 behind a private Unix
+  socket, no ports/host mounts (browser deps baked in at build, Chromium
+  launches lazily on first session). Health probe pings the socket; `server`
+  dials it via `ORBIT_BROWSER_HOST_SOCK` + `ORBIT_BROWSER_HOST_TOKEN` (mapped
+  from the install-minted `BROWSER_HOST_TOKEN_SECRET`).
+- `agent-runner` (profile `full` only, image `orbit-agent-runner`): AIec
+  sandbox guest, not a daemon — no ports, no volumes, no restart. Ships
+  `/workspace/omp/packages/coding-agent/scripts/omp --print` (OMP 18.10.3)
+  + `claude` CLI (claude-code 2.1.296) + claude-agent-sdk 0.3.296.
+  Build/prefetch: `docker compose --profile full build agent-runner`.
 - `web` (`127.0.0.1:8080`): static dist behind Caddy; `/api/*`, `/health`,
   `/ready` proxy to `server:3000`; CSP `default-src 'self'`.
 - `ollama` (profile `ollama`, image `ollama/ollama:0.34.0`): Models page

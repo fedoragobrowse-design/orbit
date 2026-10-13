@@ -16,8 +16,10 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 
 const SOCKET = process.env.BROWSER_HOST_SOCKET ?? "/run/orbit/browser-host.sock";
 const TOKEN_SECRET = process.env.BROWSER_HOST_TOKEN_SECRET ?? "";
-const MAX_SESSIONS = 8;
-const MAX_NAVS_PER_MIN = 20;
+// Profile-gated session ceiling: Pi fits one live Chromium context on 2GiB,
+// full keeps two. No other profile changes here — 2fps frames, launch flags,
+// and nav limits are profile-independent.
+const MAX_SESSIONS = process.env.ORBIT_PROFILE?.toLowerCase() === "pi" ? 1 : 2;
 // JPEG frames: at most one in flight per 500ms per session (2fps cap).
 const FRAME_MIN_INTERVAL_MS = 500;
 const FRAME_QUALITY = 55;
@@ -157,8 +159,9 @@ interface Session {
   lastFrameAt: number;
   frameTimer: NodeJS.Timeout | undefined;
   frameInFlight: boolean;
+  /** Last viewer/nav activity; drives the 5min idle reap (frame ticks don't count). */
+  lastActivity: number;
 }
-
 let browser: Browser | null = null;
 const sessions = new Map<string, Session>();
 
@@ -171,6 +174,12 @@ async function ensureBrowser(): Promise<Browser> {
       "--disable-gpu",
       "--hide-scrollbars",
       "--mute-audio",
+      // Pi 2GiB: cap each renderer heap (~256MB) so one live context plus
+      // the browser process stays well under the host budget; full keeps
+      // the default heap. Flags spread inside args (no extra processes).
+      ...(process.env.ORBIT_PROFILE?.toLowerCase() === "pi"
+        ? ["--js-flags=--max-old-space-size=256"]
+        : []),
     ],
   });
   return browser;
@@ -277,12 +286,45 @@ async function captureFrame(session: Session): Promise<void> {
 async function closeSession(session: Session): Promise<void> {
   sessions.delete(session.id);
   clearInterval(session.frameTimer);
+  session.frameTimer = undefined;
   for (const subscriber of session.frameSubscribers) {
-    subscriber.write(`${JSON.stringify({ event: "close", sessionId: session.id })}\n`);
+    try {
+      subscriber.write(`${JSON.stringify({ event: "close", sessionId: session.id })}\n`);
+    } catch {
+      /* viewer gone */
+    }
   }
   session.frameSubscribers.clear();
   await session.context.close().catch(() => {});
+  // No sessions left: shut down Chromium itself so an idle host holds no
+  // renderer processes. Next launch re-creates it lazily (existing path).
+  if (sessions.size === 0 && browser) {
+    try {
+      await browser.close();
+    } catch {
+      /* already closing */
+    }
+    browser = null;
+  }
 }
+
+// Idle reap: no viewer and no nav for 5 minutes closes the context (and
+// Chromium itself when nothing remains). Proven by the API-side 5min sweep
+// using the same window; recoverable state (row + events) survives there.
+const IDLE_TIMEOUT_MS = Number(process.env.BROWSER_HOST_IDLE_TIMEOUT_SECS ?? "300") * 1000;
+const IDLE_SWEEP_MS = 30_000;
+
+function reapIdleSessions(): void {
+  const now = Date.now();
+  for (const session of [...sessions.values()]) {
+    if (session.frameSubscribers.size === 0 && now - session.lastActivity > IDLE_TIMEOUT_MS) {
+      void closeSession(session);
+    }
+  }
+}
+
+const idleSweeper = setInterval(reapIdleSessions, IDLE_SWEEP_MS);
+idleSweeper.unref();
 
 // ---------------------------------------------------------------------------
 // Op dispatch (NDJSON over the Unix socket; one JSON object per line)
@@ -356,6 +398,7 @@ async function handleOp(socket: Socket, id: unknown, raw: Op): Promise<void> {
         lastFrameAt: 0,
         frameTimer: undefined,
         frameInFlight: false,
+        lastActivity: Date.now(),
       };
       sessions.set(session.id, session);
       wirePageEvents(session);
@@ -379,6 +422,7 @@ async function handleOp(socket: Socket, id: unknown, raw: Op): Promise<void> {
         return;
       }
       session.navStamps.push(now);
+      session.lastActivity = now;
       try {
         await screenUrl(raw.url, session.origins);
       } catch (err) {
@@ -461,8 +505,8 @@ async function handleOp(socket: Socket, id: unknown, raw: Op): Promise<void> {
       // snapshot starts the frame loop for this socket so the caller can
       // pair state with a live frame; frames-stop ends it.
       session.frameSubscribers.add(socket);
+      session.lastActivity = Date.now();
       maybeStartFrames(session);
-      reply(socket, id, true, sessionState(session));
       return;
     }
     case "cookies": {
@@ -495,8 +539,8 @@ async function handleOp(socket: Socket, id: unknown, raw: Op): Promise<void> {
         return;
       }
       session.frameSubscribers.add(socket);
+      session.lastActivity = Date.now();
       maybeStartFrames(session);
-      reply(socket, id, true, { streaming: true });
       return;
     }
     case "frames-stop": {

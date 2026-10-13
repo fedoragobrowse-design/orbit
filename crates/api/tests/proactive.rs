@@ -62,13 +62,17 @@ async fn seed_rule(pool: &PgPool, scope: &orbit_core::OwnerScope) -> Uuid {
 }
 
 async fn seed_observation(pool: &PgPool, scope: &orbit_core::OwnerScope) -> Uuid {
+    seed_observation_keyed(pool, scope, "doc.txt").await
+}
+async fn seed_observation_keyed(pool: &PgPool, scope: &orbit_core::OwnerScope, key: &str) -> Uuid {
     let obs = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO source_observations(id,owner_id,source_type,source_id,source_version,external_key,trust_level,privacy_class)
-         VALUES($1,$2,'file','inbox','v1','doc.txt','OWNER_AUTHENTICATED','PRIVATE')",
+         VALUES($1,$2,'file','inbox','v1',$3,'OWNER_AUTHENTICATED','PRIVATE')",
     )
     .bind(obs)
     .bind(scope.owner_id)
+    .bind(key)
     .execute(pool)
     .await
     .unwrap();
@@ -292,4 +296,28 @@ async fn candidate_transitions_cas_guard_terminal_states() {
             .await
             .unwrap();
     assert_eq!(state, "DISMISSED");
+}
+
+#[tokio::test]
+async fn pi_profile_drains_one_row_per_tick() {
+    // Pi acceptance: proactive drains one candidate per tick so observation
+    // bursts queue instead of fanning out model work on a 2GiB host.
+    let pool = pool().await;
+    let scope = owner(&pool).await;
+    seed_rule(&pool, &scope).await;
+    // Two unpublished rows; a limit-1 drain publishes exactly one.
+    seed_observation_keyed(&pool, &scope, "doc-a.txt").await;
+    seed_observation_keyed(&pool, &scope, "doc-b.txt").await;
+    let stats = orbit_api::proactive::drain_observation_outbox(&pool, 1)
+        .await
+        .unwrap();
+    assert_eq!(stats.claimed, 1);
+    let unpublished: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM observation_outbox WHERE owner_id=$1 AND published_at IS NULL",
+    )
+    .bind(scope.owner_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(unpublished, 1);
 }

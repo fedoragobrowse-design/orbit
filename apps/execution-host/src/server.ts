@@ -13,7 +13,14 @@ const SOCKET_PATH = process.env.EXEC_HOST_SOCKET ?? "/run/orbit-exec-host.sock";
 const TOKEN_SECRET = process.env.EXEC_HOST_TOKEN_SECRET ?? "";
 const WORKSPACE_ROOT = process.env.EXEC_HOST_WORKSPACE_ROOT ?? "/var/lib/orbit/sessions";
 const IDLE_TIMEOUT_MS = Number(process.env.EXEC_HOST_IDLE_TIMEOUT_SECS ?? "900") * 1000;
-const MAX_SESSIONS = Number(process.env.EXEC_HOST_MAX_SESSIONS ?? "64");
+// Profile caps (Pi: no idle PTY): one live PTY at a time on a 2GiB host
+// fits ~50MB shell + bounded scrollback; full keeps the configured max
+// (default 64). PTY count — not ulimits — is the memory control: a shell
+// spawns arbitrary children, so per-process caps can't bound a session.
+const MAX_SESSIONS =
+  process.env.ORBIT_PROFILE?.toLowerCase() === "pi"
+    ? 1
+    : Number(process.env.EXEC_HOST_MAX_SESSIONS ?? "64");
 const TOKEN_TTL_MS = Number(process.env.EXEC_HOST_TOKEN_TTL_SECS ?? "60") * 1000;
 const SHELL = process.env.EXEC_HOST_SHELL ?? "/bin/sh";
 const COLS = Number(process.env.EXEC_HOST_COLS ?? "80");

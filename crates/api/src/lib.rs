@@ -182,16 +182,53 @@ pub async fn worker(state: ApiState) {
         }
     }
 }
-/// Worker profile: task concurrency (max 2 full / 1 pi).
+/// Worker profile: Pi 4 2GiB fits one live task and one live browser at a
+/// time; full keeps two of each. Proactive drains one candidate per tick on
+/// Pi so observation bursts queue instead of fanning out model work.
 const MAX_TASK_CONCURRENCY_FULL: usize = 2;
 const MAX_TASK_CONCURRENCY_PI: usize = 1;
+const MAX_BROWSER_SESSIONS_FULL: usize = 2;
+const MAX_BROWSER_SESSIONS_PI: usize = 1;
+const PROACTIVE_DRAIN_FULL: i64 = 20;
+const PROACTIVE_DRAIN_PI: i64 = 1;
 
-fn task_concurrency() -> usize {
-    let profile = std::env::var("ORBIT_PROFILE").unwrap_or_default();
-    if profile.eq_ignore_ascii_case("pi") {
+/// True when `ORBIT_PROFILE=pi` (case-insensitive). Anything else — missing,
+/// `full`, typos — is the full profile: fail open to full capacity, never to
+/// an unbounded or zero-worker shape.
+pub fn profile_is_pi() -> bool {
+    concurrency_is_pi(&std::env::var("ORBIT_PROFILE").unwrap_or_default())
+}
+
+fn concurrency_is_pi(profile: &str) -> bool {
+    profile.eq_ignore_ascii_case("pi")
+}
+
+pub(crate) fn task_concurrency() -> usize {
+    if profile_is_pi() {
         MAX_TASK_CONCURRENCY_PI
     } else {
         MAX_TASK_CONCURRENCY_FULL
+    }
+}
+
+/// Live browser-session ceiling for this profile (1 pi / 2 full). Enforced
+/// at session create; over-capacity creates fail with `BROWSER_BUSY`
+/// (`Unavailable` → 503) so the caller retries instead of stacking
+/// Chromium contexts on a 2GiB host.
+pub fn browser_concurrency() -> usize {
+    if profile_is_pi() {
+        MAX_BROWSER_SESSIONS_PI
+    } else {
+        MAX_BROWSER_SESSIONS_FULL
+    }
+}
+
+/// Observation-outbox rows drained per housekeeping tick (1 pi / 20 full).
+pub(crate) fn proactive_drain_limit() -> i64 {
+    if profile_is_pi() {
+        PROACTIVE_DRAIN_PI
+    } else {
+        PROACTIVE_DRAIN_FULL
     }
 }
 
@@ -272,9 +309,11 @@ async fn run_housekeeping(state: &ApiState, bus: &orbit_event_bus::PostgresEvent
         tracing::error!(error=%error,"due sweep failed")
     }
     // Proactive drain: unpublished observation-outbox rows queue one
-    // candidate per matching enabled rule, in the same tx that stamps
-    // published_at (replay-safe via the UNIQUE fire-key guard).
-    if let Err(error) = crate::proactive::drain_observation_outbox(&state.pool, 20).await {
+    // candidate per matching enabled rule (replay-safe via the UNIQUE
+    // fire-key guard). The per-tick ceiling is profile-gated (1 pi / 20
+    // full) so an outbox burst on a 2GiB host queues instead of fanning
+    // out candidate inserts + downstream model work in one tick.
+    if let Err(error) = crate::proactive::drain_observation_outbox(&state.pool, proactive_drain_limit()).await {
         tracing::error!(error=%error,"proactive drain failed")
     }
     // retrieval stops returning them. Owner-scoped sweep; no-op when empty.
@@ -295,7 +334,84 @@ async fn run_housekeeping(state: &ApiState, bus: &orbit_event_bus::PostgresEvent
     if let Err(error) = bus.run_notification_tasks(worker).await {
         tracing::error!(error=%error,"task processor failed")
     }
+    // Idle session stops (timers proven below): browsers idle 5min and
+    // terminals idle 15min flip to STOPPED with recoverable state (rows +
+    // events + workspace dirs survive; only the live PTY/Chromium context
+    // dies). The host daemons own process teardown via their own timers.
+    match sweep_idle_browser_sessions(&state.pool).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(stopped = n, "idle browser sessions stopped"),
+        Err(error) => tracing::error!(error=%error, "idle browser sweep failed"),
+    }
+    match sweep_idle_terminal_sessions(&state.pool).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(stopped = n, "idle terminal sessions stopped"),
+        Err(error) => tracing::error!(error=%error, "idle terminal sweep failed"),
+    }
     Ok(())
+}
+/// Idle session sweeps: STOP idle browser sessions after 5 minutes and idle
+/// terminal sessions after 15 minutes of no `updated_at` touch. Every
+/// actuation/snapshot/input path stamps `updated_at=now()`, so a swept row
+/// was genuinely unattended. Sweeps only flip the row to `STOPPED` and
+/// release grants/holds; the browser-host/execution-host daemons own process
+/// teardown via their own idle timers (recoverable state: rows + events +
+/// workspace dirs survive, only the live PTY/Chromium context dies).
+async fn sweep_idle_browser_sessions(pool: &PgPool) -> orbit_core::Result<u64> {
+    // 5-minute browser idle window (profile-independent: a stale Chromium
+    // context is the expensive thing on either profile).
+    let rows = sqlx::query(
+        "SELECT id, owner_id FROM browser_sessions WHERE state='RUNNING' AND updated_at < now() - make_interval(mins => 5) LIMIT 50",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut stopped = 0u64;
+    for row in rows {
+        use sqlx::Row;
+        let id: Uuid = row.get("id");
+        let owner: Uuid = row.get("owner_id");
+        let mut tx = pool.begin().await?;
+        let affected = sqlx::query(
+            "UPDATE browser_sessions SET state='STOPPED', takeover=false, revision=revision+1, updated_at=now() WHERE id=$1 AND state='RUNNING'",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if affected == 1 {
+            // Release the session grant + any takeover hold with the stop so
+            // a later reopen starts from a clean grant set.
+            sqlx::query("DELETE FROM scope_grants WHERE owner_id=$1 AND scope_key=$2")
+                .bind(owner)
+                .bind(format!("browser-session:{id}"))
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(
+                "INSERT INTO run_events(owner_id, browser_session_id, kind, payload) VALUES($1, $2, 'STATUS', '{\"idle\": true}')"
+            )
+            .bind(owner)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+            stopped += 1;
+        }
+        tx.commit().await?;
+    }
+    Ok(stopped)
+}
+
+async fn sweep_idle_terminal_sessions(pool: &PgPool) -> orbit_core::Result<u64> {
+    // 15-minute terminal idle window (profile-independent). Mirror of the
+    // exec-host daemon's own reap: the row flips to STOPPED here so the API
+    // stops advertising a dead PTY; the daemon kills the process group.
+    // Scoped to SHELL rows (the PTY-backed kind); BACKEND/BROWSER rows are
+    // owned by their own lifecycles.
+    let res = sqlx::query(
+        "UPDATE execution_sessions SET state='STOPPED', updated_at=now() WHERE kind='SHELL' AND state='RUNNING' AND updated_at < now() - make_interval(mins => 15)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
 }
 /// Task pump: run agent/gateway tasks through `agent-runtime` with a concrete
 /// `AgentBackend` (never `None`). One live task per conversation: a

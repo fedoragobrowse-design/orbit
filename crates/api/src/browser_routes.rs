@@ -342,6 +342,17 @@ pub async fn create_session(
         check_task(&state.pool, a.scope.owner_id, task).await?;
     }
     let url = input.url.unwrap_or_default();
+    // Profile-gated browser ceiling (1 pi / 2 full): count live RUNNING
+    // sessions owned by anyone — Chromium contexts are host-global, not
+    // per-owner. Over-capacity creates fail `BROWSER_BUSY` (503 via
+    // `Unavailable`) *before* any insert or host dispatch, so the caller
+    // retries instead of stacking contexts on a 2GiB host.
+    let live: i64 = sqlx::query_scalar("SELECT count(*) FROM browser_sessions WHERE state='RUNNING'")
+        .fetch_one(&state.pool)
+        .await?;
+    if live >= crate::browser_concurrency() as i64 {
+        return Err(Error::Unavailable("BROWSER_BUSY".to_string()).into());
+    }
     // Pre-screen before any host dispatch (second backstop lives in the host).
     if !url.is_empty() {
         screen_browser_url(&url).await?;
@@ -929,6 +940,15 @@ pub async fn execute_session_tool(
             }
             if !url.is_empty() {
                 screen_browser_url(&url).await?;
+            }
+            // Same profile-gated ceiling as the HTTP create: agent-actuated
+            // opens fail closed (503 `BROWSER_BUSY`) instead of stacking a
+            // second Chromium context on a 2GiB host.
+            let live: i64 = sqlx::query_scalar("SELECT count(*) FROM browser_sessions WHERE state='RUNNING'")
+                .fetch_one(pool)
+                .await?;
+            if live >= crate::browser_concurrency() as i64 {
+                return Err(Error::Unavailable("BROWSER_BUSY".to_string()));
             }
             let mut tx = pool.begin().await?;
             let id = insert_session(&mut tx, scope.owner_id, task, &url).await?;

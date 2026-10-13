@@ -38,6 +38,7 @@ import {
 import { api, post, queryClient, setSession, type Session } from "./api";
 import { syncPushSubscription } from "./push";
 import { ErrorNotice, Input } from "./ui";
+import { SetupChecklist } from "./setup";
 import { ObservationIndicator } from "./observation";
 // Tab bundles split per route so the Pi serves a small first paint: the shell
 // (Home/Chat/Tasks) loads first, heavier tabs load on navigation.
@@ -414,13 +415,7 @@ function Auth({
           auth.mutate();
         }}
       >
-        {setup && (
-          <ol className="muted">
-            <li>On the server itself, run <code>docker exec orbit-server-1 orbit-server bootstrap-token</code> and copy the token it prints. (Only someone on the server can see it — that is what makes you the owner.)</li>
-            <li>Paste it into Setup token below, then pick your name, email, and a password of 12+ characters.</li>
-            <li>Mail is optional: connect an inbox now or skip it and add one later under Connections → Email.</li>
-          </ol>
-        )}
+        {setup && <SetupChecklist />}
         <SetupEmail visible={setup} />
         {setup && (
           <>

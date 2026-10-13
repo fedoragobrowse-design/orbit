@@ -33,7 +33,13 @@ services:
       # Pi has no KVM: run the server with ORBIT_AIEC_RUNTIME=docker so sandbox
       # connections request Docker instead of Firecracker (default_runtime_kind).
       ORBIT_AIEC_RUNTIME: ${ORBIT_AIEC_RUNTIME:-firecracker}
-    volumes: ["keys:/var/lib/orbit/keys", "artifacts:/var/lib/orbit/artifacts"]
+      # Browser socket (plan step 5): the Rust server dials browser-host over
+      # this private socket; compose maps the install-minted secret through.
+      ORBIT_BROWSER_HOST_SOCK: /run/orbit/browser-host.sock
+      ORBIT_BROWSER_HOST_TOKEN: ${BROWSER_HOST_TOKEN_SECRET:?Set BROWSER_HOST_TOKEN_SECRET in .env}
+      # Sandbox guest image (plan step 11): one-shot AIec dispatch only, never
+      # a daemon — build with `docker build -f deploy/docker/agent-runner.Dockerfile -t orbit-agent-runner .`
+    volumes: ["keys:/var/lib/orbit/keys", "artifacts:/var/lib/orbit/artifacts", "exec-sock:/run/orbit:ro"]
     depends_on:
       postgres: {condition: service_healthy}
     healthcheck:
@@ -134,6 +140,16 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks: [orbit]
+  # Agent sandbox guest (plan step 11): NOT a daemon — AIec dispatches
+  # one-shot commands into this image. No ports, no volumes, no restart.
+  # Profile-gated so `up` stays Pi-light; build/prefetch with
+  # `docker compose --profile full build agent-runner`.
+  agent-runner:
+    build: {context: ., dockerfile: deploy/docker/agent-runner.Dockerfile}
+    image: orbit-agent-runner
+    profiles: [full]
+    networks: [orbit]
+
 networks:
   orbit: {}
 volumes:
