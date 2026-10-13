@@ -69,6 +69,7 @@ export const FAMILIES = [
     title: "Do",
     links: [
       ["/tasks", "Tasks", ListTodo],
+      ["/attention", "Attention", BellRing],
       ["/approvals", "Approvals", ShieldCheck],
       ["/automations", "Automations", Workflow],
       ["/agents", "Agents", Users],

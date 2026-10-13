@@ -5,6 +5,17 @@
 //! named IANA zones are rejected until a tz database (e.g. `chrono-tz`) is
 //! added. Wall-clock iteration goes through a gap/fold-aware conversion, so
 //! nonexistent local times are skipped and repeated local times fire once.
+//!
+//! Step 9 proactive candidates: deterministic builders live in
+//! [`proactive_builders`]. Watchers never execute skills or tools and never
+//! call models directly; the only path to a model call is the synthesis
+//! gate in that module.
+pub mod proactive_builders;
+pub use proactive_builders::{
+    CandidateDraft, SynthesisDecision, SynthesisInput, confidence_met, decide_synthesis,
+    draft_calendar_due, draft_matched_mail, draft_reminder_due, draft_stale_task,
+    draft_watched_file_change, parked_from_router_error,
+};
 
 use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveDateTime, TimeZone, Timelike, Utc};
 use orbit_core::{Error, EventType, OwnerScope, Result, literal, validate_event};
@@ -44,13 +55,24 @@ pub struct Automation {
 }
 
 /// Typed trigger: event selector, cron schedule with timezone, or one-shot timer.
+///
+/// Event triggers bind an `event_type` to an exact source: either a free-form
+/// `source` string or a structured `source_type` + `source_id` pair. The
+/// proactive rule types (`SOURCE_CHANGED`, `CALENDAR_DUE`, `REMINDER_DUE`)
+/// always require one of those bindings; legacy types keep it optional so
+/// existing automations validate unchanged.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum Trigger {
     #[serde(rename = "event")]
     Event {
         event_type: String,
+        #[serde(default)]
         source: Option<String>,
+        #[serde(default)]
+        source_type: Option<String>,
+        #[serde(default)]
+        source_id: Option<String>,
     },
     #[serde(rename = "cron")]
     Cron {
@@ -68,6 +90,220 @@ pub struct Filter {
     pub operator: String,
     pub value: Option<Value>,
 }
+/// Proactive per-case rule behavior: how a matched observation may act.
+///
+/// Stored inside the automation's `policy_scope` JSONB object (no new
+/// columns, so legacy rows keep working): `policy_scope.behavior` holds one
+/// of these literals. Absent = legacy automation, treated as `Auto` for
+/// compatibility but skipping the new proactive gates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RuleBehavior {
+    Off,
+    Suggest,
+    Ask,
+    Auto,
+}
+
+impl Default for RuleBehavior {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// Bounded action-scope reference: which tool+resource grant an AUTO rule may
+/// consume. Revisions pin the grant so a stale grant never authorizes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionScopeRef {
+    pub tool: String,
+    pub scope_key: String,
+    pub scope_revision: i64,
+}
+
+/// Quiet-hours window inside `policy_scope.quiet_hours`. Times are `HH:MM`
+/// wall-clock in the named fixed-offset timezone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuietHours {
+    pub start: String,
+    pub end: String,
+    #[serde(default = "default_quiet_timezone")]
+    pub timezone: String,
+}
+
+fn default_quiet_timezone() -> String {
+    "UTC".into()
+}
+
+/// Parsed per-case proactive rule config from `policy_scope`. Every field is
+/// optional at the JSON layer: defaults keep legacy automations validating
+/// unchanged, while rule-style triggers get their floors enforced in
+/// [`validate_rule_config`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuleConfig {
+    #[serde(default)]
+    pub behavior: Option<RuleBehavior>,
+    #[serde(default)]
+    pub source_scopes: Vec<String>,
+    #[serde(default)]
+    pub cooldown_seconds: Option<i64>,
+    #[serde(default)]
+    pub quiet_hours: Option<QuietHours>,
+    #[serde(default)]
+    pub max_runs_per_day: Option<i32>,
+    #[serde(default)]
+    pub max_daily_micro_usd: Option<i64>,
+    #[serde(default)]
+    pub minimum_confidence: Option<f64>,
+    #[serde(default)]
+    pub action_scopes: Vec<ActionScopeRef>,
+}
+
+impl Default for RuleConfig {
+    fn default() -> Self {
+        Self {
+            behavior: None,
+            source_scopes: Vec::new(),
+            cooldown_seconds: None,
+            quiet_hours: None,
+            max_runs_per_day: None,
+            max_daily_micro_usd: None,
+            minimum_confidence: None,
+            action_scopes: Vec::new(),
+        }
+    }
+}
+
+fn parse_hhmm(s: &str) -> Result<(u32, u32)> {
+    let (h, m) = s.split_once(':').ok_or_else(|| Error::Validation("quiet_hours times must be HH:MM".into()))?;
+    let h: u32 = h.parse().map_err(|_| Error::Validation("quiet_hours hour must be 00..23".into()))?;
+    let m: u32 = m.parse().map_err(|_| Error::Validation("quiet_hours minute must be 00..59".into()))?;
+    if h > 23 || m > 59 {
+        return Err(Error::Validation("quiet_hours times must be HH:MM".into()));
+    }
+    Ok((h, m))
+}
+
+/// Parse the `policy_scope` rule section without touching the database.
+/// Unknown `policy_scope` keys outside the rule set are preserved verbatim
+/// for legacy callers; only the known rule keys are type-checked here.
+pub fn parse_rule_config(policy_scope: &Value) -> Result<RuleConfig> {
+    let obj = policy_scope.as_object().ok_or_else(|| Error::Validation("policy_scope must be an object".into()))?;
+    let mut cfg = RuleConfig::default();
+    if let Some(v) = obj.get("behavior") {
+        if !v.is_null() {
+            cfg.behavior = Some(serde_json::from_value(v.clone()).map_err(|e| Error::Validation(format!("invalid behavior: {e}")))?);
+        }
+    }
+    if let Some(v) = obj.get("source_scopes") {
+        let scopes: Vec<String> = serde_json::from_value(v.clone()).map_err(|e| Error::Validation(format!("invalid source_scopes: {e}")))?;
+        if scopes.len() > 64 || scopes.iter().any(|s| s.is_empty() || s.len() > 256) {
+            return Err(Error::Validation("source_scopes must be 1..256 char strings, max 64".into()));
+        }
+        cfg.source_scopes = scopes;
+    }
+    if let Some(v) = obj.get("cooldown_seconds") {
+        if !v.is_null() {
+            let c: i64 = serde_json::from_value(v.clone()).map_err(|e| Error::Validation(format!("invalid cooldown_seconds: {e}")))?;
+            if c < 0 || c > 86_400 * 30 {
+                return Err(Error::Validation("cooldown_seconds must be 0..2592000".into()));
+            }
+            cfg.cooldown_seconds = Some(c);
+        }
+    }
+    if let Some(v) = obj.get("quiet_hours") {
+        if !v.is_null() {
+            let q: QuietHours = serde_json::from_value(v.clone()).map_err(|e| Error::Validation(format!("invalid quiet_hours: {e}")))?;
+            parse_hhmm(&q.start)?;
+            parse_hhmm(&q.end)?;
+            resolve_offset(&q.timezone)?;
+            cfg.quiet_hours = Some(q);
+        }
+    }
+    if let Some(v) = obj.get("max_runs_per_day") {
+        if !v.is_null() {
+            let n: i32 = serde_json::from_value(v.clone()).map_err(|e| Error::Validation(format!("invalid max_runs_per_day: {e}")))?;
+            if n < 1 || n > 10_000 {
+                return Err(Error::Validation("max_runs_per_day must be 1..10000".into()));
+            }
+            cfg.max_runs_per_day = Some(n);
+        }
+    }
+    if let Some(v) = obj.get("max_daily_micro_usd") {
+        if !v.is_null() {
+            let n: i64 = serde_json::from_value(v.clone()).map_err(|e| Error::Validation(format!("invalid max_daily_micro_usd: {e}")))?;
+            if n < 0 {
+                return Err(Error::Validation("max_daily_micro_usd must be >= 0".into()));
+            }
+            cfg.max_daily_micro_usd = Some(n);
+        }
+    }
+    if let Some(v) = obj.get("minimum_confidence") {
+        if !v.is_null() {
+            let n: f64 = serde_json::from_value(v.clone()).map_err(|e| Error::Validation(format!("invalid minimum_confidence: {e}")))?;
+            if !(0.0..=1.0).contains(&n) || !n.is_finite() {
+                return Err(Error::Validation("minimum_confidence must be 0..1".into()));
+            }
+            cfg.minimum_confidence = Some(n);
+        }
+    }
+    if let Some(v) = obj.get("action_scopes") {
+        let refs: Vec<ActionScopeRef> = serde_json::from_value(v.clone()).map_err(|e| Error::Validation(format!("invalid action_scopes: {e}")))?;
+        if refs.len() > 64 {
+            return Err(Error::Validation("too many action_scopes".into()));
+        }
+        for r in &refs {
+            if r.tool.is_empty() || r.tool.len() > 256 || r.scope_key.is_empty() || r.scope_key.len() > 256 || r.scope_revision < 0 {
+                return Err(Error::Validation("invalid action scope ref".into()));
+            }
+        }
+        cfg.action_scopes = refs;
+    }
+    Ok(cfg)
+}
+
+/// Convenience: read just the behavior, defaulting to legacy `Auto`.
+pub fn rule_behavior(policy_scope: &Value) -> RuleBehavior {
+    parse_rule_config(policy_scope).ok().and_then(|c| c.behavior).unwrap_or(RuleBehavior::Auto)
+}
+
+/// Proactive floors for observation-bound rules. Legacy automations (no
+/// `behavior` key) skip this: they keep exact historical semantics. New
+/// rules (behavior present) get: source_scopes required, numeric bounds
+/// re-checked, and AUTO additionally requiring an agent + at least one
+/// action scope + a daily budget + a confidence floor. Pure value checks.
+pub fn validate_rule_config(trigger: &Trigger, policy_scope: &Value, agent_id: Option<Uuid>) -> Result<RuleConfig> {
+    let cfg = parse_rule_config(policy_scope)?;
+    let is_rule_trigger = matches!(trigger, Trigger::Event { event_type, .. } if event_type == "SOURCE_CHANGED" || event_type == "CALENDAR_DUE" || event_type == "REMINDER_DUE");
+    let has_behavior = cfg.behavior.is_some();
+    if !is_rule_trigger && !has_behavior {
+        return Ok(cfg);
+    }
+    if is_rule_trigger && !has_behavior {
+        return Err(Error::Validation("observation triggers require policy_scope.behavior (OFF|SUGGEST|ASK|AUTO)".into()));
+    }
+    if cfg.source_scopes.is_empty() {
+        return Err(Error::Validation("proactive rules require policy_scope.source_scopes".into()));
+    }
+    if cfg.behavior == Some(RuleBehavior::Auto) {
+        if agent_id.is_none() {
+            return Err(Error::Validation("AUTO rules require agent_id".into()));
+        }
+        if cfg.action_scopes.is_empty() {
+            return Err(Error::Validation("AUTO rules require policy_scope.action_scopes".into()));
+        }
+        if cfg.max_daily_micro_usd.is_none() {
+            return Err(Error::Validation("AUTO rules require policy_scope.max_daily_micro_usd".into()));
+        }
+        if cfg.minimum_confidence.is_none() {
+            return Err(Error::Validation("AUTO rules require policy_scope.minimum_confidence".into()));
+        }
+    }
+    Ok(cfg)
+}
+
 
 /// Lease over a due automation: the schedule slot that must fire exactly once.
 #[derive(Debug, Clone)]
@@ -105,7 +341,7 @@ pub fn parse_trigger(value: &Value) -> Result<Trigger> {
     let trigger: Trigger = serde_json::from_value(value.clone())
         .map_err(|e| Error::Validation(format!("invalid trigger: {e}")))?;
     match &trigger {
-        Trigger::Event { event_type, source } => {
+        Trigger::Event { event_type, source, source_type, source_id } => {
             if event_type.is_empty() || event_type.len() > 64 {
                 return Err(Error::Validation(
                     "event trigger needs a 1..64 char event_type".into(),
@@ -117,6 +353,30 @@ pub fn parse_trigger(value: &Value) -> Result<Trigger> {
                 if s.is_empty() || s.len() > 256 {
                     return Err(Error::Validation(
                         "event trigger source must be 1..256 chars".into(),
+                    ));
+                }
+            }
+            if let Some(t) = source_type {
+                if !matches!(t.as_str(), "email" | "calendar" | "file" | "browser" | "desktop" | "connector") {
+                    return Err(Error::Validation(format!("unknown source_type {t}")).into());
+                }
+            }
+            if let Some(s) = source_id {
+                if s.is_empty() || s.len() > 256 {
+                    return Err(Error::Validation(
+                        "event trigger source_id must be 1..256 chars".into(),
+                    ));
+                }
+            }
+            // Proactive observation triggers bind exact sources/filters: a
+            // bare SOURCE_CHANGED/CALENDAR_DUE/REMINDER_DUE would fan out to
+            // every observation, so require a source or a typed source pair.
+            if matches!(event_type.as_str(), "SOURCE_CHANGED" | "CALENDAR_DUE" | "REMINDER_DUE") {
+                let has_source = source.as_ref().is_some_and(|s| !s.is_empty());
+                let has_pair = source_type.is_some() && source_id.is_some();
+                if !has_source && !has_pair {
+                    return Err(Error::Validation(
+                        "SOURCE_CHANGED/CALENDAR_DUE/REMINDER_DUE triggers require a source or source_type+source_id binding".into(),
                     ));
                 }
             }
@@ -759,8 +1019,12 @@ pub async fn create(
     scope: &OwnerScope,
     automation: Automation,
 ) -> Result<Automation> {
-    parse_trigger(&automation.trigger)?;
+    let initial_trigger = parse_trigger(&automation.trigger)?;
     validate_filters(&automation.filters)?;
+    if !automation.policy_scope.is_object() {
+        return Err(Error::Validation("policy_scope must be an object".into()));
+    }
+    validate_rule_config(&initial_trigger, &automation.policy_scope, automation.agent_id)?;
     if automation.instructions.trim().is_empty() || automation.instructions.len() > 8000 {
         return Err(Error::Validation(
             "automation instructions must be 1..8000 chars".into(),
@@ -783,8 +1047,7 @@ pub async fn create(
             ));
         }
     }
-    let trigger = parse_trigger(&automation.trigger)?;
-    let next = compute_next_run(&trigger, Utc::now())?;
+    let next = compute_next_run(&initial_trigger, Utc::now())?;
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT revision FROM authorization_epochs WHERE owner_id=$1 FOR UPDATE")
         .bind(scope.owner_id)
@@ -891,6 +1154,9 @@ pub async fn update(
         current.instructions = s.trim().to_owned();
     }
     if let Some(v) = patch.get("policy_scope") {
+        if !v.is_object() {
+            return Err(Error::Validation("policy_scope must be an object".into()));
+        }
         current.policy_scope = v.clone();
     }
     if let Some(v) = patch.get("model_role") {
@@ -930,6 +1196,7 @@ pub async fn update(
         }
     }
     let trigger = parse_trigger(&current.trigger)?;
+    validate_rule_config(&trigger, &current.policy_scope, current.agent_id)?;
     let next = compute_next_run(&trigger, Utc::now())?;
     let updated = sqlx::query(&format!("UPDATE automations SET \"trigger\"=$1,filters=$2,agent_id=$3,instructions=$4,policy_scope=$5,model_role=$6,notification_behavior=$7,timezone=$8,next_run=$9,revision=revision+1,updated_at=now() WHERE owner_id=$10 AND id=$11 RETURNING {COLUMNS}"))
         .bind(&current.trigger).bind(&current.filters).bind(current.agent_id).bind(&current.instructions)
@@ -1355,5 +1622,47 @@ mod tests {
         assert!(
             validate_filters(&json!([{"field": "a;DROP", "operator": "eq", "value": 1}])).is_err()
         );
+    }
+
+    #[test]
+    fn observation_triggers_require_source_binding() {
+        // Legacy types keep exact semantics: bare event_type still validates.
+        assert!(parse_trigger(&json!({"kind": "event", "event_type": "EMAIL_RECEIVED"})).is_ok());
+        for t in ["SOURCE_CHANGED", "CALENDAR_DUE", "REMINDER_DUE"] {
+            assert!(parse_trigger(&json!({"kind": "event", "event_type": t})).is_err(), "{t} without source must fail");
+            assert!(parse_trigger(&json!({"kind": "event", "event_type": t, "source": "email:inbox"})).is_ok());
+            assert!(parse_trigger(&json!({"kind": "event", "event_type": t, "source_type": "email", "source_id": "inbox"})).is_ok());
+            assert!(parse_trigger(&json!({"kind": "event", "event_type": t, "source_type": "email"})).is_err(), "{t} half pair must fail");
+        }
+        // Unknown extra trigger keys still rejected.
+        assert!(parse_trigger(&json!({"kind": "event", "event_type": "SOURCE_CHANGED", "source": "x", "bogus": 1})).is_err());
+    }
+
+    #[test]
+    fn rule_config_defaults_keep_legacy_valid() {
+        // Empty policy_scope parses; legacy (no behavior, non-rule trigger)
+        // validates unchanged.
+        let cron = parse_trigger(&json!({"kind": "cron", "expression": "0 9 * * *", "timezone": "UTC"})).unwrap();
+        let cfg = parse_rule_config(&json!({})).unwrap();
+        assert!(cfg.behavior.is_none());
+        validate_rule_config(&cron, &json!({}), None).unwrap();
+        // Observation trigger without behavior fails even with scopes.
+        let obs = parse_trigger(&json!({"kind": "event", "event_type": "SOURCE_CHANGED", "source": "email:inbox"})).unwrap();
+        assert!(validate_rule_config(&obs, &json!({"source_scopes": ["email:inbox"]}), None).is_err());
+        // New rules need source_scopes.
+        assert!(validate_rule_config(&obs, &json!({"behavior": "SUGGEST"}), None).is_err());
+        // ASK validates with scopes alone.
+        validate_rule_config(&obs, &json!({"behavior": "ASK", "source_scopes": ["email:inbox"]}), None).unwrap();
+        // AUTO needs agent + action scopes + budget + confidence.
+        let agent = Uuid::new_v4();
+        let base = json!({"behavior": "AUTO", "source_scopes": ["email:inbox"]});
+        assert!(validate_rule_config(&obs, &base, Some(agent)).is_err());
+        let full = json!({"behavior": "AUTO", "source_scopes": ["email:inbox"], "action_scopes": [{"tool": "mail.read", "scope_key": "email:inbox", "scope_revision": 1}], "max_daily_micro_usd": 1000, "minimum_confidence": 0.7});
+        validate_rule_config(&obs, &full, Some(agent)).unwrap();
+        // Bad numerics rejected at parse time.
+        assert!(parse_rule_config(&json!({"cooldown_seconds": -1})).is_err());
+        assert!(parse_rule_config(&json!({"max_runs_per_day": 0})).is_err());
+        assert!(parse_rule_config(&json!({"minimum_confidence": 2.0})).is_err());
+        assert!(parse_rule_config(&json!({"quiet_hours": {"start": "25:00", "end": "01:00"}})).is_err());
     }
 }

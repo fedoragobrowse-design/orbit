@@ -22,6 +22,19 @@ use uuid::Uuid;
 /// - `{"kind":"timer","run_at":"<rfc3339>"}` — one-shot timer.
 /// - `{"kind":"event","event_type":"EMAIL_RECEIVED","filters":[...]}` —
 ///   durable file/event trigger; the scheduler matches filters at claim time.
+/// - Observation rules: `{"kind":"event","event_type":"SOURCE_CHANGED"|
+///   "CALENDAR_DUE"|"REMINDER_DUE","source":"email:inbox"}` or the typed pair
+///   `source_type`+`source_id`. One binding is required — a bare observation
+///   type is rejected so a rule can never fan out to every source.
+///
+/// Rule behavior lives in `policy_scope` (no new columns; legacy rows keep
+/// exact semantics when the keys are absent):
+/// `behavior` OFF|SUGGEST|ASK|AUTO, `source_scopes`, `agent_id` (top-level
+/// column), `cooldown_seconds`, `quiet_hours {start,end,timezone}`,
+/// `max_runs_per_day`, `max_daily_micro_usd`, `minimum_confidence`, and
+/// `action_scopes [{tool,scope_key,scope_revision}]`. Observation triggers
+/// require `behavior`; AUTO additionally requires an agent, action scopes, a
+/// daily budget, and a confidence floor.
 ///
 /// Missed windows coalesce: if the worker was down, a cron/timer automation
 /// fires exactly one trigger for the whole backlog and records the rest as
@@ -108,10 +121,24 @@ pub async fn create_automation(
     Json(input): Json<CreateAutomationRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let auth = authenticate(&state, &headers, true).await?;
+    // New per-case rules start disabled: enabling (especially AUTO, which
+    // can act) is a separate explicit PATCH /enable after the owner has
+    // configured behavior + scopes + budget. Legacy cron/timer/event rows
+    // keep the client-supplied `enabled` default.
+    let is_rule = input
+        .trigger
+        .get("event_type")
+        .and_then(|v| v.as_str())
+        .is_some_and(|t| matches!(t, "SOURCE_CHANGED" | "CALENDAR_DUE" | "REMINDER_DUE"))
+        || input.trigger.get("behavior").is_some()
+        || input
+            .policy_scope
+            .get("behavior")
+            .is_some_and(|v| !v.is_null());
     let automation = orbit_scheduler::Automation {
         id: Uuid::new_v4(),
         owner_id: auth.scope.owner_id,
-        enabled: input.enabled,
+        enabled: if is_rule { false } else { input.enabled },
         trigger: input.trigger,
         filters: if input.filters.is_null() {
             Value::Array(vec![])

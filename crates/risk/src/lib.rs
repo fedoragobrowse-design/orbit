@@ -151,6 +151,16 @@ impl EventClassifier {
             EventType::TaskFailed | EventType::ComputerDisconnected => {
                 (ClassificationKind::Notify, None, "RESOURCE_STATUS")
             }
+            EventType::SourceChanged => (
+                ClassificationKind::StoreOnly,
+                None,
+                "OBSERVATION_REQUIRES_SOURCE_RULE",
+            ),
+            EventType::CalendarDue | EventType::ReminderDue => (
+                ClassificationKind::Notify,
+                None,
+                "DUE_SWEEP_REQUIRES_DUE_RULE",
+            ),
             _ => (
                 ClassificationKind::StoreOnly,
                 None,
@@ -327,5 +337,18 @@ mod tests {
         let c = EventClassifier::classify(&e).unwrap();
         assert!(!c.reason.is_empty() && c.confidence.is_finite(), "reason/confidence must be populated for audit call sites");
         assert_eq!(c.reason, "UNTRUSTED_MAIL_REQUIRES_ACCOUNT_RULE");
+    }
+    #[test]
+    fn observation_triggers_classify_without_default_authority() {
+        let event = |t: &str, payload: serde_json::Value| -> Event {
+            serde_json::from_value(serde_json::json!({"id": uuid::Uuid::new_v4(), "owner_id": uuid::Uuid::new_v4(), "event_type": t, "source": "src", "principal_id": uuid::Uuid::new_v4(), "timestamp": "2026-01-01T00:00:00Z", "payload": payload, "trust_level": "UNTRUSTED_EXTERNAL", "privacy_class": "PRIVATE", "correlation_id": uuid::Uuid::new_v4(), "related_entities": [], "source_event_key": "k"})).unwrap()
+        };
+        let c = EventClassifier::classify(&event("SOURCE_CHANGED", serde_json::json!({"source_reference": "email:inbox:m1"}))).unwrap();
+        assert_eq!(c.kind, ClassificationKind::StoreOnly);
+        assert_eq!(c.reason, "OBSERVATION_REQUIRES_SOURCE_RULE");
+        for t in ["CALENDAR_DUE", "REMINDER_DUE"] {
+            let c = EventClassifier::classify(&event(t, serde_json::json!({"source_reference": "due:x"}))).unwrap();
+            assert_eq!(c.kind, ClassificationKind::Notify);
+        }
     }
 }

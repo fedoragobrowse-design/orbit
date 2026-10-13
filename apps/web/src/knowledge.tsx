@@ -556,6 +556,33 @@ function Retention() {
 }
 
 const SCHEDULE_TYPES: Record<string, true> = { SCHEDULE_TRIGGER: true, TIMER_TRIGGER: true };
+const RULE_CASES = [
+  { value: "email", label: "Email — new mail in an account", eventType: "SOURCE_CHANGED", sourceType: "email", hint: "e.g. inbox account id" },
+  { value: "calendar", label: "Calendar — upcoming event due", eventType: "CALENDAR_DUE", sourceType: "calendar", hint: "e.g. calendar id" },
+  { value: "file", label: "Files — a watched folder changes", eventType: "SOURCE_CHANGED", sourceType: "file", hint: "e.g. folder path or root id" },
+  { value: "browser", label: "Browser — a watched page changes", eventType: "SOURCE_CHANGED", sourceType: "browser", hint: "e.g. watched page id" },
+  { value: "desktop", label: "Desktop — a device event fires", eventType: "SOURCE_CHANGED", sourceType: "desktop", hint: "e.g. node id" },
+] as const;
+const BEHAVIORS = [
+  { value: "OFF", label: "Off — keep the rule but never run it" },
+  { value: "SUGGEST", label: "Suggest — file a suggestion I review" },
+  { value: "ASK", label: "Ask — ask me before acting" },
+  { value: "AUTO", label: "Act with permissions — act inside my grants and budget" },
+] as const;
+function triggerLabel(trigger: unknown): string {
+  if (typeof trigger !== "object" || trigger === null) return text(trigger);
+  const t = trigger as RecordData;
+  const kind = text(t.kind);
+  if (kind !== "event") return kind || text(trigger);
+  const et = text(t.event_type);
+  const src = text((t as RecordData).source) || text((t as RecordData).source_id);
+  return src ? `${et} · ${src}` : et;
+}
+function ruleBehavior(policyScope: unknown): string {
+  if (typeof policyScope !== "object" || policyScope === null) return "—";
+  const b = text((policyScope as RecordData).behavior);
+  return b || "—";
+}
 function AutomationManager() {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -594,6 +621,7 @@ function AutomationManager() {
                 <tr>
                   <th scope="col">Instructions</th>
                   <th scope="col">Trigger</th>
+                  <th scope="col">Behavior</th>
                   <th scope="col">Next run</th>
                   <th scope="col">Enabled</th>
                   <th scope="col">Actions</th>
@@ -601,9 +629,12 @@ function AutomationManager() {
               </thead>
               <tbody>
                 {items.map((row) => (
-                  <tr key={row.id}>
+                  <tr key={row.id} id={`automation-${String(row.id)}`}>
                     <th scope="row">{text(row.instructions).slice(0, 80)}</th>
-                    <td>{text((row.trigger as RecordData)?.kind ?? row.trigger)}</td>
+                    <td>{triggerLabel(row.trigger)}</td>
+                    <td>
+                      <Status value={ruleBehavior(row.policy_scope)} />
+                    </td>
                     <td>{timestamp(row.next_run)}</td>
                     <td>
                       <Status value={row.enabled} />
@@ -683,11 +714,22 @@ function NewBriefShortcut() {
 
 function NewAutomation({ onDone }: { onDone: () => void }) {
   const client = useQueryClient();
+  const agents = useQuery({ queryKey: ["rule-agents"], queryFn: () => api<{ items: RecordData[] }>("/agents?limit=100").then((r) => r.items ?? []) });
   const [form, setForm] = useState({
     kind: "timer",
     expression: "",
     runAt: "",
     eventType: "EMAIL_RECEIVED",
+    ruleCase: "email" as string,
+    sourceId: "",
+    behavior: "ASK" as string,
+    agentId: "",
+    cooldown: "3600",
+    maxRuns: "10",
+    budgetUsd: "1.00",
+    confidence: "0.7",
+    quietStart: "",
+    quietEnd: "",
     notify: "NONE",
     instructions: "",
   });
@@ -696,21 +738,52 @@ function NewAutomation({ onDone }: { onDone: () => void }) {
     { name: "Bill reminders", kind: "event", eventType: "EMAIL_RECEIVED", notify: "PUSH", instructions: "When a bill arrives, queue a summary and remind me before it is due. Never pay or reply without my approval." },
     { name: "File watcher", kind: "event", eventType: "EMAIL_RECEIVED", notify: "EMAIL_DIGEST", instructions: "Watch for shared-file notifications and add a digest entry summarizing what changed." },
   ] as const;
+  const ruleCase = RULE_CASES.find((c) => c.value === form.ruleCase) ?? RULE_CASES[0];
+  const needsAgent = form.kind === "rule" && form.behavior === "AUTO";
   const create = useMutation({
     mutationFn: () => {
-      const trigger =
-        form.kind === "cron"
-          ? { kind: "cron", expression: form.expression, timezone: "UTC" }
-          : form.kind === "timer"
-            ? {
-                kind: "timer",
-                run_at: form.runAt
-                  ? new Date(form.runAt).toISOString()
-                  : new Date(Date.now() + 3600_000).toISOString(),
-              }
-            : { kind: "event", event_type: form.eventType };
+      if (form.kind !== "rule") {
+        const trigger =
+          form.kind === "cron"
+            ? { kind: "cron", expression: form.expression, timezone: "UTC" }
+            : form.kind === "timer"
+              ? {
+                  kind: "timer",
+                  run_at: form.runAt
+                    ? new Date(form.runAt).toISOString()
+                    : new Date(Date.now() + 3600_000).toISOString(),
+                }
+              : { kind: "event", event_type: form.eventType };
+        return post<RecordData>("/automations", {
+          trigger,
+          notification_behavior: form.notify,
+          instructions: form.instructions,
+        });
+      }
+      const sourceId = form.sourceId.trim();
+      const trigger = { kind: "event", event_type: ruleCase.eventType, source_type: ruleCase.sourceType, source_id: sourceId };
+      const policyScope: Record<string, unknown> = {
+        behavior: form.behavior,
+        source_scopes: [`${ruleCase.sourceType}:${sourceId}`],
+      };
+      const cooldown = Number(form.cooldown);
+      if (Number.isFinite(cooldown) && form.cooldown.trim() !== "") policyScope.cooldown_seconds = Math.max(0, Math.floor(cooldown));
+      const maxRuns = Number(form.maxRuns);
+      if (Number.isFinite(maxRuns) && form.maxRuns.trim() !== "") policyScope.max_runs_per_day = Math.max(1, Math.floor(maxRuns));
+      const budget = Number(form.budgetUsd);
+      if (Number.isFinite(budget) && form.budgetUsd.trim() !== "") policyScope.max_daily_micro_usd = Math.max(0, Math.round(budget * 1_000_000));
+      const confidence = Number(form.confidence);
+      if (Number.isFinite(confidence) && form.confidence.trim() !== "") policyScope.minimum_confidence = Math.min(1, Math.max(0, confidence));
+      if (form.quietStart.trim() !== "" && form.quietEnd.trim() !== "") {
+        policyScope.quiet_hours = { start: form.quietStart.trim(), end: form.quietEnd.trim(), timezone: "UTC" };
+      }
+      if (form.behavior === "AUTO") {
+        policyScope.action_scopes = [{ tool: "*", scope_key: `${ruleCase.sourceType}:${sourceId}`, scope_revision: 1 }];
+      }
       return post<RecordData>("/automations", {
         trigger,
+        agent_id: form.agentId.trim() !== "" ? form.agentId.trim() : undefined,
+        policy_scope: policyScope,
         notification_behavior: form.notify,
         instructions: form.instructions,
       });
@@ -746,6 +819,7 @@ function NewAutomation({ onDone }: { onDone: () => void }) {
         <option value="timer">One-shot timer</option>
         <option value="cron">Cron schedule</option>
         <option value="event">Event trigger</option>
+        <option value="rule">Proactive rule (email/calendar/file/browser/desktop)</option>
       </Select>
       {form.kind === "cron" && (
         <Input
@@ -774,6 +848,98 @@ function NewAutomation({ onDone }: { onDone: () => void }) {
           <option value="FILE_CREATED">File created</option>
           <option value="TASK_COMPLETED">Task completed</option>
         </Select>
+      )}
+      {form.kind === "rule" && (
+        <>
+          <Select
+            label="What should Orbit watch?"
+            value={form.ruleCase}
+            onChange={(e) => setForm({ ...form, ruleCase: e.target.value })}
+          >
+            {RULE_CASES.map((c) => (
+              <option key={c.value} value={c.value}>{c.label}</option>
+            ))}
+          </Select>
+          <Input
+            label={`Exact source (${ruleCase.hint})`}
+            required
+            placeholder={ruleCase.hint}
+            value={form.sourceId}
+            onChange={(e) => setForm({ ...form, sourceId: e.target.value })}
+          />
+          <Select
+            label="When it matches, Orbit should…"
+            value={form.behavior}
+            onChange={(e) => setForm({ ...form, behavior: e.target.value })}
+          >
+            {BEHAVIORS.map((b) => (
+              <option key={b.value} value={b.value}>{b.label}</option>
+            ))}
+          </Select>
+          <p className="muted">
+            <small>
+              New rules are saved <strong>disabled</strong>. Enable the rule after
+              reviewing — Act-with-permissions additionally needs an agent, a
+              grant, and a budget below.
+            </small>
+          </p>
+          {(form.behavior === "ASK" || form.behavior === "AUTO") && (
+            <Select
+              label={needsAgent ? "Agent (required for Act-with-permissions)" : "Agent (optional)"}
+              value={form.agentId}
+              required={needsAgent}
+              onChange={(e) => setForm({ ...form, agentId: e.target.value })}
+            >
+              <option value="">No agent — notify only</option>
+              {(agents.data ?? []).map((a) => (
+                <option key={String(a.id)} value={String(a.id)}>{text(a.name) || text(a.id)}</option>
+              ))}
+            </Select>
+          )}
+          <Input
+            label="Quiet hours start (HH:MM UTC, optional)"
+            placeholder="22:00"
+            value={form.quietStart}
+            onChange={(e) => setForm({ ...form, quietStart: e.target.value })}
+          />
+          <Input
+            label="Quiet hours end (HH:MM UTC, optional)"
+            placeholder="07:00"
+            value={form.quietEnd}
+            onChange={(e) => setForm({ ...form, quietEnd: e.target.value })}
+          />
+          <Input
+            label="Cooldown between runs (seconds)"
+            type="number"
+            min={0}
+            value={form.cooldown}
+            onChange={(e) => setForm({ ...form, cooldown: e.target.value })}
+          />
+          <Input
+            label="Max runs per day"
+            type="number"
+            min={1}
+            value={form.maxRuns}
+            onChange={(e) => setForm({ ...form, maxRuns: e.target.value })}
+          />
+          <Input
+            label="Max spend per day (USD)"
+            type="number"
+            min={0}
+            step="0.01"
+            value={form.budgetUsd}
+            onChange={(e) => setForm({ ...form, budgetUsd: e.target.value })}
+          />
+          <Input
+            label="Minimum confidence (0–1)"
+            type="number"
+            min={0}
+            max={1}
+            step="0.05"
+            value={form.confidence}
+            onChange={(e) => setForm({ ...form, confidence: e.target.value })}
+          />
+        </>
       )}
       <Select
         label="Also tell me"

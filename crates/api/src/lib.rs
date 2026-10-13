@@ -19,6 +19,7 @@ pub mod memory;
 pub mod models;
 pub mod notes;
 pub mod ops;
+pub mod proactive;
 pub mod push;
 pub mod runtimes;
 pub mod search;
@@ -118,6 +119,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(workspace_routes::router())
         .merge(shell_routes::router())
         .merge(browser_routes::router())
+        .merge(proactive::router())
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state)
 }
@@ -268,6 +270,12 @@ async fn run_housekeeping(state: &ApiState, bus: &orbit_event_bus::PostgresEvent
     // automation scheduler, before event processing.
     if let Err(error) = run_due_sweep(state).await {
         tracing::error!(error=%error,"due sweep failed")
+    }
+    // Proactive drain: unpublished observation-outbox rows queue one
+    // candidate per matching enabled rule, in the same tx that stamps
+    // published_at (replay-safe via the UNIQUE fire-key guard).
+    if let Err(error) = crate::proactive::drain_observation_outbox(&state.pool, 20).await {
+        tracing::error!(error=%error,"proactive drain failed")
     }
     // retrieval stops returning them. Owner-scoped sweep; no-op when empty.
     if let Err(error) = run_memory_sweep(state).await {

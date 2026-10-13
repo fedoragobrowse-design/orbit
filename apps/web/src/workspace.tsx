@@ -163,6 +163,9 @@ export function Home() {
                     .map((r) => <TaskRow key={r.id} row={r} />)
                 }
               </Resource>
+              <Link className="safe-link" to="/attention">
+                Open attention queue
+              </Link>{" · "}
               <Link className="safe-link" to="/tasks">
                 All tasks
               </Link>

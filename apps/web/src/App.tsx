@@ -53,6 +53,7 @@ const Connections = lazy(() => import("./connections").then((m) => ({ default: m
 const Computers = lazy(() => import("./connections").then((m) => ({ default: m.Computers })));
 const Files = lazy(() => import("./connections").then((m) => ({ default: m.Files })));
 const HomeAssistant = lazy(() => import("./connections").then((m) => ({ default: m.HomeAssistant })));
+const Attention = lazy(() => import("./attention").then((m) => ({ default: m.Attention })));
 const Notes = lazy(() => import("./content").then((m) => ({ default: m.Notes })));
 const Inbox = lazy(() => import("./content").then((m) => ({ default: m.Inbox })));
 const Reminders = lazy(() => import("./utility").then((m) => ({ default: m.Reminders })));
@@ -285,6 +286,7 @@ export function App() {
             <Route path="/bookmarks" element={<Bookmarks />} />
             <Route path="/clips" element={<Clips />} />
             <Route path="/automations" element={<Automations />} />
+            <Route path="/attention" element={<Attention />} />
             <Route path="/models" element={<Models />} />
             <Route path="/marketplace" element={<Marketplace />} />
             <Route path="/connections/*" element={<Connections />} />
