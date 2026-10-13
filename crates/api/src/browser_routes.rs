@@ -324,7 +324,7 @@ async fn insert_session(
         owner,
         id,
         task,
-        "nav",
+        "STATUS",
         json!({"state": "RUNNING", "session_id": id, "url": url}),
     )
     .await?;
@@ -533,7 +533,7 @@ async fn tool_navigate_session(
         scope.owner_id,
         id,
         task,
-        "nav",
+        "STATUS",
         json!({"nav": true, "session_id": id, "url": final_url, "dom_revision": dom_revision}),
     )
     .await?;
@@ -734,7 +734,7 @@ pub async fn actuate_session(
         scope.owner_id,
         session,
         task,
-        "nav",
+        "STATUS",
         json!({"op": op, "session_id": session, "url": url, "dom_revision": dom_revision}),
     )
     .await?;
@@ -818,7 +818,7 @@ async fn quarantine_download(
         scope.owner_id,
         session,
         task,
-        "nav",
+        "STATUS",
         json!({"download": true, "session_id": session, "artifact_id": artifact_id, "entry_id": entry.id, "sha256": quarantined.sha256, "mime": quarantined.mime}),
     )
     .await?;
