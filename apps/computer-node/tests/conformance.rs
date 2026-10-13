@@ -84,3 +84,71 @@ fn fixture_tree() -> (tempfile::TempDir, PathBuf) {
     let entries = node.control(&json!({"command": "status"})).unwrap(); assert_eq!(entries["roots"].as_array().unwrap().len(), 1);
     let _ = sha256(b"conformance hello");
 }
+#[test] fn watch_create_modify_delete_delivers_and_cancels() {
+    use orbit_computer_node::index::Index;
+    let (state, dir) = fixture_tree(); let root = read_root(&dir);
+    let config = config(state.path(), vec![root.clone()]);
+    let mut node = open(&state, vec![root.clone()]); node.reindex(root.id).unwrap();
+    // Create via the durable watch path: registration, initial scan, pending.
+    let payload = execution(&config, &root, "files.watch", json!({"node_id": config.node_id.to_string(), "root_id": root.id.to_string()}));
+    let request = serde_json::from_value::<ExecutionRequest>(payload).unwrap();
+    let (tool, arguments) = request.validate(&config).unwrap(); assert_eq!(tool, "files.watch");
+    let _ = arguments;
+    let status = node.status();
+    assert_eq!(status["roots"].as_array().unwrap().len(), 1);
+    let mut index = Index::open(&state.path().join("index.sqlite")).unwrap();
+    let row = index.create_watch(root.id, "", vec!["FILE_CREATED".into(), "FILE_MODIFIED".into(), "FILE_DELETED".into()]).unwrap();
+    // The reindex scan above queued CREATED rows for the fixture files; ack
+    // them so each phase below asserts only on its own newly queued events.
+    let seq = index.pending_events().unwrap().iter().map(|e|e.sequence).max().unwrap_or(0);
+    index.ack(seq).unwrap();
+    // Modify: rewrite an existing file, observe the signalled path, expect MODIFIED.
+    std::fs::write(dir.join("notes.txt"), b"conformance hello v2").unwrap();
+    let mut paths = std::collections::HashSet::new(); paths.insert("notes.txt".into());
+    index.observe_paths(&root, &paths).unwrap();
+    let pending = index.pending_events().unwrap();
+    assert!(pending.iter().any(|e| e.event_type == "FILE_MODIFIED"), "modify must queue FILE_MODIFIED, got {pending:?}");
+    index.ack(pending.iter().map(|e|e.sequence).max().unwrap_or(0)).unwrap();
+    // Create: brand-new file queues CREATED; delete queues DELETED.
+    std::fs::write(dir.join("fresh.txt"), b"brand new").unwrap();
+    let mut paths = std::collections::HashSet::new(); paths.insert("fresh.txt".into());
+    index.observe_paths(&root, &paths).unwrap();
+    let pending = index.pending_events().unwrap();
+    assert!(pending.iter().any(|e| e.event_type == "FILE_CREATED"), "create must queue FILE_CREATED, got {pending:?}");
+    index.ack(pending.iter().map(|e|e.sequence).max().unwrap_or(0)).unwrap();
+    std::fs::remove_file(dir.join("fresh.txt")).unwrap();
+    let mut paths = std::collections::HashSet::new(); paths.insert("fresh.txt".into());
+    index.observe_paths(&root, &paths).unwrap();
+    let pending = index.pending_events().unwrap();
+    assert!(pending.iter().any(|e| e.event_type == "FILE_DELETED"), "delete must queue FILE_DELETED, got {pending:?}");
+    index.ack(pending.iter().map(|e|e.sequence).max().unwrap_or(0)).unwrap();
+    // Coalescing: CREATE then MODIFY before ACK collapses to one CREATED.
+    std::fs::write(dir.join("coalesce.txt"), b"v1").unwrap();
+    let mut paths = std::collections::HashSet::new(); paths.insert("coalesce.txt".into());
+    index.observe_paths(&root, &paths).unwrap();
+    std::fs::write(dir.join("coalesce.txt"), b"v2 longer").unwrap();
+    index.observe_paths(&root, &paths).unwrap();
+    let pending = index.pending_events().unwrap();
+    assert_eq!(pending.len(), 1, "create+modify must coalesce, got {pending:?}");
+    assert_eq!(pending[0].event_type, "FILE_CREATED");
+    index.ack(pending.iter().map(|e|e.sequence).max().unwrap_or(0)).unwrap();
+    // Cancel via control socket; status must no longer list the watch.
+    let cancelled = node.control(&json!({"command": "watch_cancel", "watch_id": row.id})).unwrap();
+    assert_eq!(cancelled["status"], json!("CANCELLED"));
+    let status = node.control(&json!({"command": "status"})).unwrap();
+    assert!(status["watches"].as_array().unwrap().is_empty(), "cancelled watch must vanish from status");
+}
+#[test] fn watch_overflow_reconciles_with_bounded_outbox() {
+    use orbit_computer_node::index::Index;
+    let (state, dir) = fixture_tree(); let root = read_root(&dir);
+    let mut index = Index::open(&state.path().join("index.sqlite")).unwrap();
+    index.scan(&root).unwrap();
+    index.create_watch(root.id, "", vec!["FILE_CREATED".into(), "FILE_MODIFIED".into(), "FILE_DELETED".into()]).unwrap();
+    // Simulate a notify overflow: new file appears with no per-path signal.
+    std::fs::write(dir.join("overflow.txt"), b"appeared during gap").unwrap();
+    let status = index.reconcile(&root, 500).unwrap();
+    assert!(!status.gap, "reconcile scan must clear the gap marker");
+    let pending = index.pending_events().unwrap();
+    assert!(pending.len() <= 500, "overflow outbox must stay bounded");
+    assert!(pending.iter().any(|e| e.event_type == "FILE_CREATED"), "reconcile must recover the missed create, got {pending:?}");
+}

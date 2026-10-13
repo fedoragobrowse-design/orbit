@@ -22,6 +22,7 @@ pub mod ops;
 pub mod push;
 pub mod runtimes;
 pub mod search;
+pub mod observations;
 pub mod shell_routes;
 pub mod skills;
 pub mod updates;
@@ -445,7 +446,22 @@ async fn run_scheduler_tick(state: &ApiState) -> orbit_core::Result<()> {
 /// summary (label-only rules stay silent). Mail bodies are never copied
 /// into the notification — subject + sender only; the body stays behind
 /// the authenticated reader. SKIP LOCKED so multi-worker ticks don't
-/// double-fire.
+/// double-fire. Calendar/reminder claims additionally emit one CALENDAR_DUE
+/// / REMINDER_DUE event each (fire-key idempotent) after the claim commits.
+/// Owner scope for worker-originated emits (due sweep): the owner's SYSTEM
+/// `orbit-worker` principal when present, else any owner principal. The
+/// events table needs a principal_id; the SYSTEM trust on due events comes
+/// from the emit itself, not from which principal row is named here.
+async fn worker_scope(pool: &sqlx::PgPool, owner: uuid::Uuid) -> orbit_core::Result<OwnerScope> {
+    use sqlx::Row;
+    if let Some(r) = sqlx::query("SELECT id FROM principals WHERE owner_id=$1 AND principal_type='SYSTEM' AND source='orbit-worker' ORDER BY id LIMIT 1").bind(owner).fetch_optional(pool).await? {
+        let principal_id: uuid::Uuid = r.get("id");
+        return Ok(OwnerScope { owner_id: owner, principal_id });
+    }
+    let r = sqlx::query("SELECT id FROM principals WHERE owner_id=$1 ORDER BY id LIMIT 1").bind(owner).fetch_optional(pool).await?.ok_or(orbit_core::Error::NotFound)?;
+    let principal_id: uuid::Uuid = r.get("id");
+    Ok(OwnerScope { owner_id: owner, principal_id })
+}
 async fn run_due_sweep(state: &ApiState) -> orbit_core::Result<()> {
     use sqlx::Row;
     // Calendar events whose start arrived and never fired.
@@ -460,6 +476,12 @@ async fn run_due_sweep(state: &ApiState) -> orbit_core::Result<()> {
         let corr = uuid::Uuid::new_v4();
         sqlx::query("INSERT INTO notifications(id,owner_id,correlation_id,severity,title,body) VALUES($1,$2,$3,'ACTION_REQUIRED','Event starting',$4)").bind(uuid::Uuid::new_v4()).bind(owner).bind(corr).bind(format!("Starting now: {title}")).execute(&mut *tx).await?;
         tx.commit().await?;
+        // Due-sweep fire key: one CALENDAR_DUE event per calendar row,
+        // idempotent on calendar-due:<id> (CAS claim above preserved; the
+        // event insert is its own tx so a crash between claim and emit
+        // replays as a silent no-op, never a double-fire).
+        let scope = worker_scope(&state.pool, owner).await?;
+        crate::observations::emit_due_event(&state.pool, &scope, orbit_core::EventType::CalendarDue, id, &title).await?;
     }
     // Reminders whose time arrived, not done, never fired.
     let due_rems = sqlx::query("SELECT owner_id,id,title FROM reminders WHERE done=false AND remind_at IS NOT NULL AND remind_at <= now() AND notified_at IS NULL ORDER BY remind_at LIMIT 20 FOR UPDATE SKIP LOCKED").fetch_all(&state.pool).await?;
@@ -473,9 +495,13 @@ async fn run_due_sweep(state: &ApiState) -> orbit_core::Result<()> {
         let corr = uuid::Uuid::new_v4();
         sqlx::query("INSERT INTO notifications(id,owner_id,correlation_id,severity,title,body) VALUES($1,$2,$3,'ACTION_REQUIRED','Reminder',$4)").bind(uuid::Uuid::new_v4()).bind(owner).bind(corr).bind(format!("Reminder due: {title}")).execute(&mut *tx).await?;
         tx.commit().await?;
+        // Same fire-key pattern: one REMINDER_DUE per reminder row.
+        let scope = worker_scope(&state.pool, owner).await?;
+        crate::observations::emit_due_event(&state.pool, &scope, orbit_core::EventType::ReminderDue, id, &title).await?;
     }
     // New mail: only when a triage rule with summarize=true matches.
-    // Label-only rules stay silent by design.
+    // Label-only rules stay silent by design. Explicit per-rule priority
+    // first (`action.priority`, default 0), then created_at, then id.
     let fresh = sqlx::query("SELECT owner_id,id,account_id,metadata FROM email_messages WHERE notified_at IS NULL ORDER BY received_at LIMIT 20 FOR UPDATE SKIP LOCKED").fetch_all(&state.pool).await?;
     for m in fresh {
         let owner: uuid::Uuid = m.get("owner_id");
@@ -484,7 +510,10 @@ async fn run_due_sweep(state: &ApiState) -> orbit_core::Result<()> {
         let from = meta.get("from").and_then(|v| v.as_str()).unwrap_or("");
         let subject = meta.get("subject").and_then(|v| v.as_str()).unwrap_or("(no subject)");
         let topic = meta.get("topic").and_then(|v| v.as_str()).unwrap_or("");
-        let rules: Vec<(serde_json::Value, serde_json::Value)> = sqlx::query("SELECT matcher,action FROM triage_rules WHERE owner_id=$1 AND enabled").bind(owner).fetch_all(&state.pool).await?.iter().map(|r| (r.get("matcher"), r.get("action"))).collect();
+        let mut rules: Vec<(serde_json::Value, serde_json::Value)> = sqlx::query("SELECT matcher,action FROM triage_rules WHERE owner_id=$1 AND enabled").bind(owner).fetch_all(&state.pool).await?.iter().map(|r| (r.get("matcher"), r.get("action"))).collect();
+        // Explicit priority first, then creation order, then id (no DDL:
+        // priority is an optional action key, default 0).
+        rules.sort_by(|a, b| crate::email::rule_priority(&a.1).cmp(&crate::email::rule_priority(&b.1)));
         let mut wants_summary = false;
         for (matcher, action) in &rules {
             if crate::email::triage_matches(matcher, from, subject, topic) {

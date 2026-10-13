@@ -840,15 +840,17 @@ pub async fn execute_action(
         return Err(Error::Forbidden.into());
     }
     let action = orbit_core::AuthorizedAction::from_submission(snapshot, authorization, 1);
-    if tool_name == "orbit-control.ask_owner" {
-        use orbit_tools::ToolExecutor;
-        let output = orbit_tools::SafeTools { pool: state.pool.clone(), artifact_dir: state.artifact_dir.clone(), key_dir: state.key_dir.clone() }
-            .execute(&a.scope, action)
-            .await?
-            .output;
-        sqlx::query("UPDATE tool_calls SET state='WAITING_FOR_INPUT',result=$3,completed_at=now() WHERE owner_id=$1 AND id=$2")
-            .bind(a.scope.owner_id).bind(call).bind(json!({"question_id": output.get("question_id")})).execute(&state.pool).await?;
-        return Ok(Json(json!({"call_id": call, "state": "WAITING_FOR_INPUT", "question_id": output.get("question_id"), "task_id": task})));
+    // The two catalog-native tools live in the catalog, not the registry:
+    // search is registry-independent by construction; execute re-entering
+    // itself would journal a second call row per recursion, so refuse.
+    if tool_name == "orbit-control.search_actions" {
+        let items = orbit_tools::catalog::search(&catalog, input.arguments.get("query").and_then(Value::as_str).unwrap_or(""), input.arguments.get("limit").and_then(Value::as_i64).unwrap_or(5) as usize);
+        sqlx::query("UPDATE tool_calls SET state='COMPLETED',result=$3,completed_at=now() WHERE owner_id=$1 AND id=$2")
+            .bind(a.scope.owner_id).bind(call).bind(json!({"items": items})).execute(&state.pool).await?;
+        return Ok(Json(json!({"call_id": call, "state": "COMPLETED", "task_id": task, "result": {"items": items}})));
+    }
+    if tool_name == "orbit-control.execute_action" {
+        return Err(Error::Validation("execute_action cannot execute itself; resolve the inner action_id first".into()).into());
     }
     let registry = crate::ExecutorRegistry { pool: state.pool.clone(), key_dir: state.key_dir.clone(), artifact_dir: state.artifact_dir.clone(), origin: state.origin.clone() };
     let result = registry.route(&a.scope, task, Uuid::nil(), &tool_name, &input.arguments, action).await;
@@ -860,7 +862,6 @@ pub async fn execute_action(
         }
         Err(e) => {
             let code = match &e {
-                Error::Unauthorized => "UNAUTHORIZED",
                 Error::Forbidden => "FORBIDDEN",
                 Error::NotFound => "NOT_FOUND",
                 Error::Validation(_) => "VALIDATION",

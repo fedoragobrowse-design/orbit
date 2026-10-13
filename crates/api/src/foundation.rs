@@ -69,31 +69,49 @@ async fn detail(state:ApiState,headers:HeaderMap,id:Uuid,table:&str)->Result<Jso
 /// the same correlation id (subagent tasks, when present). Owner-scoped;
 /// depth falls back to the task checkpoint JSON when no subagent table row
 /// exists. Empty items when no agent run was recorded (foundation tasks).
+/// Sources read `model_context_sources` receipts (one row per CONTEXT block
+/// per turn), never the live `agent_runs.context` JSON. Labels read
+/// "Provided as context" unless the run's assistant text cites the pin.
 #[utoipa::path(get,path="/api/v1/tasks/{id}/runs",params(("id"=Uuid,Path)),responses((status=200,body=TaskRuns)))]
 pub async fn task_runs(State(s):State<ApiState>,h:HeaderMap,Path(id):Path<Uuid>)->Result<Json<TaskRuns>,ApiError>{
  let a=authenticate(&s,&h,false).await?;
  let correlation:Option<Uuid>=sqlx::query_scalar("SELECT correlation_id FROM tasks WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).fetch_optional(&s.pool).await?.ok_or(Error::NotFound)?;
  let correlation=correlation.ok_or(Error::NotFound)?;
- let rows=sqlx::query("SELECT r.task_id,r.phase,r.model_calls,r.model_retries,r.turn,r.depth,r.tool_calls,r.tokens,r.context,t.checkpoint FROM agent_runs r JOIN tasks t ON t.owner_id=r.owner_id AND t.id=r.task_id WHERE r.owner_id=$1 AND (r.task_id=$2 OR t.correlation_id=$3) ORDER BY r.depth,r.task_id").bind(a.scope.owner_id).bind(id).bind(correlation).fetch_all(&s.pool).await?;
+ let rows=sqlx::query("SELECT r.task_id,r.phase,r.model_calls,r.model_retries,r.turn,r.depth,r.tool_calls,r.tokens,t.checkpoint FROM agent_runs r JOIN tasks t ON t.owner_id=r.owner_id AND t.id=r.task_id WHERE r.owner_id=$1 AND (r.task_id=$2 OR t.correlation_id=$3) ORDER BY r.depth,r.task_id").bind(a.scope.owner_id).bind(id).bind(correlation).fetch_all(&s.pool).await?;
  let mut items=Vec::with_capacity(rows.len());
  for r in &rows{
   let checkpoint:Value=r.get("checkpoint");
   let checkpoint_depth=checkpoint.get("depth").and_then(Value::as_i64).and_then(|d|i32::try_from(d).ok()).unwrap_or_else(||r.get("depth"));
-  let ctx:Value=r.get("context");
+  let task:Uuid=r.get("task_id");
+  let receipts=sqlx::query("SELECT source_type,source_id,source_version,locator,trust_level,turn FROM model_context_sources WHERE owner_id=$1 AND task_id=$2 ORDER BY turn,source_type,source_id LIMIT 24").bind(a.scope.owner_id).bind(task).fetch_all(&s.pool).await.unwrap_or_default();
+  // Assistant text for this run: a receipt counts as cited when the same-turn
+  // reply (turn_key `assistant:{turn}`) names its pin; otherwise the chip
+  // reads "Provided as context".
+  let replies:Vec<(String,Option<String>)>=sqlx::query("SELECT content,turn_key FROM chat_messages WHERE owner_id=$1 AND task_id=$2 AND role='assistant' ORDER BY sequence LIMIT 24").bind(a.scope.owner_id).bind(task).fetch_all(&s.pool).await.map(|rows|rows.iter().map(|m|(m.get::<String,_>("content"),m.get::<Option<String>,_>("turn_key"))).collect()).unwrap_or_default();
+  // Tombstones: deletion never removes receipt rows; the referenced record
+  // going missing (or memory FORGOTTEN) surfaces as a deleted pin instead.
+  let mem_ids:Vec<Uuid>=receipts.iter().filter(|q|q.get::<String,_>("source_type")=="memory").filter_map(|q|Uuid::parse_str(q.get::<String,_>("source_id").as_str()).ok()).collect();
+  let mem_rows=if mem_ids.is_empty(){Vec::new()}else{sqlx::query("SELECT id,version,status FROM memory_records WHERE owner_id=$1 AND id=ANY($2)").bind(a.scope.owner_id).bind(&mem_ids).fetch_all(&s.pool).await.unwrap_or_default()};
   let mut sources=Vec::new();
-  if let Some(blocks)=ctx.as_array(){
-   for b in blocks.iter().take(40){
-    let kind=b.get("kind").and_then(Value::as_str).unwrap_or("");
-    let reference=b.get("source_reference").and_then(Value::as_str).unwrap_or("").to_string();
-    if reference.is_empty(){continue;}
-    if matches!(kind,"Memory"|"UntrustedExternalContent"|"UserInstruction")||reference.starts_with("orbit-memory:")||reference.starts_with("attachment:"){
-     let text=b.get("text_or_reference").and_then(Value::as_str).unwrap_or("");
-     sources.push(serde_json::json!({"kind":kind,"reference":reference,"trust":b.get("trust_level"),"preview":text.chars().take(140).collect::<String>()}));
-     if sources.len()>=12{break;}
+  for q in receipts.iter().take(12){
+   let source_type:String=q.get("source_type");
+   let source_id:String=q.get("source_id");
+   let source_version:String=q.get("source_version");
+   let locator:String=q.get("locator");
+   let trust:Value=json!(q.get::<String,_>("trust_level"));
+   let cited={
+    let pin=format!("assistant:{}",q.get::<i32,_>("turn"));
+    replies.iter().any(|(t,k)|k.as_deref()==Some(pin.as_str())&&(t.contains(&source_id)||t.contains(&locator)))
+   };
+   let tombstone=if source_type=="memory"{
+    match mem_rows.iter().find(|m|m.get::<Uuid,_>("id").to_string()==source_id){
+     None=>true,
+     Some(m)=>m.get::<String,_>("status")=="FORGOTTEN",
     }
-   }
+   }else{false};
+   sources.push(json!({"kind":source_type,"reference":locator,"source_id":source_id,"source_version":source_version,"trust":trust,"turn":q.get::<i32,_>("turn"),"cited":cited,"tombstone":tombstone,"label":if cited {"Cited by model"} else {"Provided as context"}}));
   }
-  items.push(TaskRunItem{task_id:r.get("task_id"),phase:r.get("phase"),model_calls:r.get("model_calls"),model_retries:r.get("model_retries"),turn:r.get("turn"),depth:checkpoint_depth,tool_calls:r.get("tool_calls"),tokens:r.get("tokens"),sources});
+  items.push(TaskRunItem{task_id:task,phase:r.get("phase"),model_calls:r.get("model_calls"),model_retries:r.get("model_retries"),turn:r.get("turn"),depth:checkpoint_depth,tool_calls:r.get("tool_calls"),tokens:r.get("tokens"),sources});
  }
  Ok(Json(TaskRuns{items}))
 }

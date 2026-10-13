@@ -9,7 +9,7 @@
 //! wire, but only a deliberate `roots add` on this machine may broaden one. A
 //! reduced or revoked root takes effect on the next dispatch and its local index
 //! material is purged.
-use crate::{NativeMutation, index::Index, native};
+use crate::{NativeMutation, index::Index, native, observation};
 use chrono::Utc;
 use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
@@ -39,7 +39,10 @@ pub struct Node {
     pub config: NodeConfig,
     key: SigningKey,
     index: Index,
-    watches: std::collections::HashMap<String, serde_json::Value>,
+    watch_tx: std::sync::mpsc::Sender<observation::ObserveWake>,
+    watch_rx: std::sync::mpsc::Receiver<observation::ObserveWake>,
+    watch_overflow: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    watcher: Option<notify::RecommendedWatcher>,
 }
 
 impl Node {
@@ -53,7 +56,10 @@ impl Node {
         );
         std::fs::create_dir_all(&config.state_dir)?;
         let index = Index::open(&config.state_dir.join("index.sqlite"))?;
-        Ok(Self { config, key, index, watches: std::collections::HashMap::new() })
+        let (watch_tx, watch_rx) = observation::wake_channel();
+        let mut node = Self { config, key, index, watch_tx, watch_rx, watch_overflow: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), watcher: None };
+        node.restore_watches()?;
+        Ok(node)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -150,6 +156,8 @@ impl Node {
                     }
                 }
                 _ = heartbeat.tick() => {
+                    let roots: std::collections::HashMap<uuid::Uuid, RootGrant> = self.config.roots.iter().filter(|r|!r.revoked).map(|r|(r.id,r.clone())).collect();
+                    observation::drain(&self.watch_rx, &roots, &mut self.index, &self.watch_overflow)?;
                     let pending = self.index.pending_events()?;
                     if !pending.is_empty() {
                         let events: Vec<Value> = serde_json::to_value(&pending)?.as_array().cloned().unwrap_or_default();
@@ -352,13 +360,45 @@ impl Node {
                 )
             }
             "files.watch" => {
+                // Watch activation: the watched path is validated against the
+                // authorized root grant, persisted to the durable watches
+                // table, and attached to the kernel watcher. Renewing an
+                // identical registration returns the same id (idempotent); a
+                // `cancel:true` argument removes it and returns its last state.
                 let path = match arguments["relative_path"].as_str() {
                     None | Some("") | Some(".") => String::new(),
                     Some(p) => normalize_path(p)?,
                 };
-                let watch_id = uuid::Uuid::new_v4().to_string();
-                self.watches.insert(watch_id.clone(), json!({"root_id": root.id, "relative_path": path}));
-                Ok(json!({"watch_id": watch_id, "status": "ACTIVE"}))
+                if !path.is_empty() {
+                    let probe = if root.mode == RootMode::Ask { native::metadata_only(&root, &path) } else { native::metadata(&root, &path) };
+                    // A watch target must exist and stay inside the grant; a
+                    // vanished path reports FORBIDDEN like any other stale read.
+                    probe.map_err(|_| Error::Forbidden)?;
+                }
+                if arguments["cancel"].as_bool() == Some(true) {
+                    let id = arguments["watch_id"].as_str().ok_or(Error::Invalid("watch id required".into()))?;
+                    let prior = self.index.watch(id)?.filter(|w|w.root == root.id).ok_or(Error::Forbidden)?;
+                    self.index.cancel_watch(id)?;
+                    self.sync_watcher()?;
+                    return Ok(json!({"watch_id": id, "status": "CANCELLED", "root_id": prior.root, "relative_path": prior.path}));
+                }
+                let types = match arguments["types"].as_array() {
+                    Some(list) => list.iter().filter_map(|t|t.as_str()).map(str::to_owned).collect::<Vec<_>>(),
+                    None => crate::index::WATCH_TYPES.iter().map(|s|s.to_string()).collect::<Vec<_>>(),
+                };
+                let existing = self.index.watches_for_root(root.id)?.into_iter().find(|w|w.path == path && w.types == types);
+                let row = match existing {
+                    Some(row) => row,
+                    None => { let row = self.index.create_watch(root.id, &path, types)?; self.sync_watcher()?; row }
+                };
+                // An initial scan diff feeds pre-existing files into the EventPush
+                // outbox; without it a watch would miss everything already there.
+                let status = if path.is_empty() { self.index.scan(&root)? } else {
+                    let mut set = std::collections::HashSet::new(); set.insert(path.clone());
+                    self.index.observe_paths(&root, &set)?
+                };
+                let pending = self.index.pending_events()?.len();
+                Ok(json!({"watch_id": row.id, "status": if status.gap {"GAP"} else {"ACTIVE"}, "root_id": row.root, "relative_path": row.path, "types": row.types, "pending_events": pending}))
             }
             _ => Err(Error::Unsupported),
         }
@@ -442,6 +482,10 @@ impl Node {
         let root = root.clone();
         if root.revoked || root.mode == RootMode::Read {
             self.index.purge(root.id)?;
+            // A revoke or narrowing also drops every watch on that root; the
+            // kernel set is re-synced so no signalled path can leak back in.
+            for watch in self.index.watches_for_root(root.id)? { self.index.cancel_watch(&watch.id)?; }
+            self.sync_watcher()?;
         }
         write_config(&self.config)?;
         Ok(serde_json::to_value(self.capabilities())?)
@@ -475,6 +519,12 @@ impl Node {
             }
             Some("root_revoke") => self.revoke(command),
             Some("root_add") => self.add_root(command),
+            Some("watch_cancel") => {
+                let id = command["watch_id"].as_str().ok_or(Error::Invalid("watch id required".into()))?;
+                if !self.index.cancel_watch(id)? { return Err(Error::Invalid("unknown watch id".into())); }
+                self.sync_watcher()?;
+                Ok(json!({"watch_id": id, "status": "CANCELLED"}))
+            }
             _ => Err(Error::Invalid("unknown control command".into())),
         }
     }
@@ -546,9 +596,37 @@ impl Node {
             "owner_id":self.config.owner_id,
             "server":self.config.server,
             "roots":self.config.roots.iter().map(|root| json!({"root_id":root.id,"path":root.path,"mode":root.mode,"revision":root.revision,"revoked":root.revoked,"mutation_available":mutation_available(root),"index_status":self.index.status(root.id).unwrap_or_default()})).collect::<Vec<_>>(),
+            "watches":self.index.watches().unwrap_or_default().iter().map(|w| json!({"watch_id":w.id,"root_id":w.root,"relative_path":w.path,"types":w.types,"status": if self.config.roots.iter().any(|r|r.id==w.root && r.revoked) {"GAP"} else {"ACTIVE"}})).collect::<Vec<_>>(),
             "semantic_available":self.config.embedding.is_some(),
             "operations":self.capabilities().operations,
         })
+    }
+
+    /// (Re)attach the kernel watcher to the durable watch table. Restores
+    /// every persisted registration on restart; a missing path un-watches
+    /// rather than failing the whole set.
+    pub fn sync_watcher(&mut self) -> Result<()> {
+        if self.watcher.is_none() {
+            let tx = self.watch_tx.clone();
+            let overflow = self.watch_overflow.clone();
+            let roots = self.config.roots.clone();
+            self.watcher = Some(notify::recommended_watcher(move |res: std::result::Result<notify::Event, notify::Error>| {
+                match res {
+                    Ok(event) => observation::route_notify_event(&event, &roots, &tx, &overflow),
+                    Err(_) => overflow.store(true, std::sync::atomic::Ordering::SeqCst),
+                }
+            }).map_err(|_| Error::Invalid("file watch failed".into()))?);
+        }
+        let watcher = self.watcher.as_mut().ok_or(Error::Invalid("file watch failed".into()))?;
+        observation::sync_watches(watcher, &self.config.roots, &self.index)
+    }
+
+    /// Re-attach persisted watches after a restart and replay any unacked
+    /// queued events on the next heartbeat (the outbox is never cleared).
+    pub fn restore_watches(&mut self) -> Result<()> {
+        let watched = self.index.watches()?;
+        if watched.is_empty() { return Ok(()); }
+        self.sync_watcher()
     }
 
     pub fn pending(&self) -> Result<Vec<FileEvent>> {

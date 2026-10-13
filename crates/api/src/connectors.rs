@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;
+use sha2::Digest;
 use crate::{ApiError, ApiState, authenticate};
 /// One `CONNECTOR_*_RECEIVED` receipt per successful sync (email `sync_batch`
 /// gate, adapted): writes when — and only when — at least one row was
@@ -154,21 +155,28 @@ pub async fn sync_ha(State(state): State<ApiState>, headers: HeaderMap, Path(id)
     if resp.status().is_redirection() { return Err(ApiError(Error::Unavailable("home assistant rejected the request (redirect refused)".to_string()))); }
     let states: Vec<Value> = resp.error_for_status().map_err(|_| ApiError(Error::Unavailable("home assistant rejected the request".to_string())))?.json().await.map_err(|_| ApiError(Error::Validation("home assistant returned invalid states".to_string())))?;
     let mut stored = 0i64;
+    let mut observed = 0i64;
     for s in states.iter().take(MAX_ROWS as usize) {
         let entity = s.get("entity_id").and_then(Value::as_str).unwrap_or("");
         let st = s.get("state").and_then(Value::as_str).unwrap_or("");
         if !entity_ok(entity) || !text_ok(st, 1024) { continue; }
         let attrs = s.get("attributes").cloned().unwrap_or(json!({}));
-        let observed: Option<chrono::DateTime<chrono::Utc>> = s.get("last_updated").and_then(Value::as_str).and_then(|v| v.parse().ok());
+        let observed_at: Option<chrono::DateTime<chrono::Utc>> = s.get("last_updated").and_then(Value::as_str).and_then(|v| v.parse().ok());
         sqlx::query("INSERT INTO ha_states(id,owner_id,connection_id,entity_id,state,attributes,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (owner_id,connection_id,entity_id) DO UPDATE SET state=EXCLUDED.state,attributes=EXCLUDED.attributes,observed_at=EXCLUDED.observed_at")
-            .bind(Uuid::new_v4()).bind(a.scope.owner_id).bind(id).bind(entity).bind(st).bind(attrs).bind(observed).execute(&state.pool).await?;
+            .bind(Uuid::new_v4()).bind(a.scope.owner_id).bind(id).bind(entity).bind(st).bind(attrs).bind(observed_at).execute(&state.pool).await?;
         stored += 1;
+        // Versioned observation per entity: content-hash version, silent on
+        // replay. Cache row is ha_states (no artifact row id passed).
+        let version = format!("{:x}", sha2::Sha256::digest(format!("{st}|{}", s.get("attributes").cloned().unwrap_or(json!({}))).as_bytes()));
+        if crate::observations::record_observation(&state.pool, &a.scope, "ha", &id.to_string(), &version, entity, None, "UNTRUSTED_EXTERNAL", "PRIVATE", observed_at).await?.is_some() {
+            observed += 1;
+        }
     }
     sqlx::query("UPDATE ha_connections SET last_sync=now(),updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).execute(&state.pool).await?;
     if stored > 0 {
-        emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_HA_RECEIVED", &format!("ha:{id}"), &format!("ha-sync:{id}:{}", Uuid::new_v4()), json!({"connection_id": id, "stored": stored, "source_reference": format!("ha:{id}")})).await?;
+        emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_HA_RECEIVED", &format!("ha:{id}"), &format!("ha-sync:{id}:{}", Uuid::new_v4()), json!({"connection_id": id, "stored": stored, "observed": observed, "source_reference": format!("ha:{id}")})).await?;
     }
-    Ok(Json(json!({"synced": true, "stored": stored})))
+    Ok(Json(json!({"synced": true, "stored": stored, "observed": observed})))
 }
 #[utoipa::path(post, path = "/api/v1/ha/connections/{id}/remove", params(("id" = String, Path)), responses((status = 200, body = Value)))]
 pub async fn remove_ha(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>, ApiError> {
@@ -210,6 +218,7 @@ pub async fn sync_github(State(state): State<ApiState>, headers: HeaderMap, Path
         .error_for_status().map_err(|_| Error::Unavailable("github rejected the token".to_string()))?
         .json().await.map_err(|_| Error::Validation("github returned invalid notifications".to_string()))?;
     let mut stored = 0i64;
+    let mut observed = 0i64;
     for (i, n) in notifs.iter().take(50).enumerate() {
         let title = n.get("subject").and_then(|s| s.get("title")).and_then(Value::as_str).unwrap_or("");
         let url = n.get("subject").and_then(|s| s.get("url")).and_then(Value::as_str).unwrap_or("");
@@ -218,12 +227,17 @@ pub async fn sync_github(State(state): State<ApiState>, headers: HeaderMap, Path
         sqlx::query("INSERT INTO github_events_cache(id,owner_id,connection_id,repo,kind,number,title,state,url,observed_at) VALUES($1,$2,$3,'', $4,$5,$6,'', $7,now()) ON CONFLICT (owner_id,connection_id,kind,number) DO UPDATE SET title=EXCLUDED.title,url=EXCLUDED.url,observed_at=now()")
             .bind(Uuid::new_v4()).bind(a.scope.owner_id).bind(id).bind(kind).bind(100000 + i as i32).bind(title).bind(url).execute(&state.pool).await?;
         stored += 1;
+        // Versioned observation per notification: title+url content hash.
+        let version = format!("{:x}", sha2::Sha256::digest(format!("{title}|{url}").as_bytes()));
+        if crate::observations::record_observation(&state.pool, &a.scope, "github", &id.to_string(), &version, &format!("{kind}:{}", 100000 + i as i32), None, "UNTRUSTED_EXTERNAL", "PRIVATE", None).await?.is_some() {
+            observed += 1;
+        }
     }
     sqlx::query("UPDATE github_connections SET last_sync=now(),updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).execute(&state.pool).await?;
     if stored > 0 {
-        emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_GITHUB_RECEIVED", &format!("github:{id}"), &format!("github-sync:{id}:{}", Uuid::new_v4()), json!({"connection_id": id, "stored": stored, "source_reference": format!("github:{id}")})).await?;
+        emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_GITHUB_RECEIVED", &format!("github:{id}"), &format!("github-sync:{id}:{}", Uuid::new_v4()), json!({"connection_id": id, "stored": stored, "observed": observed, "source_reference": format!("github:{id}")})).await?;
     }
-    Ok(Json(json!({"synced": true, "stored": stored})))
+    Ok(Json(json!({"synced": true, "stored": stored, "observed": observed})))
 }
 #[utoipa::path(post, path = "/api/v1/github/connections/{id}/remove", params(("id" = String, Path)), responses((status = 200, body = Value)))]
 pub async fn remove_github(State(state): State<ApiState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>, ApiError> {

@@ -3,6 +3,7 @@
 //! timestamps parsed strictly, raw truncated at 64 KiB. No OAuth — Google/Graph
 //! stay `usable:false` by design; CalDAV basic-auth + public ICS only.
 use chrono::{DateTime, Utc};
+use sha2::Digest;
 use orbit_core::{Error, OwnerScope, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -143,6 +144,18 @@ pub async fn fetch_caldav(source: &CalendarSource) -> Result<String> {
     let body = get_body(req, "caldav unreachable", "caldav error").await?;
     if body.len() > 1024 * 1024 { return Err(Error::Validation("caldav response exceeds 1 MiB bound".into())); }
     Ok(body)
+}
+/// Versioned observation ingest: each parsed VEVENT becomes one
+/// `source_observations` row (`source_type="calendar"`, `source_id` = feed
+/// name, `external_key` = VEVENT UID, `source_version` = content hash of
+/// title+start+end) via the api-crate observation writer contract below.
+/// Direct callers keep using `sync_source`; the api route records the same
+/// versions through `orbit_api::observations::record_observation`, so a
+/// replayed feed writes zero new rows (UNIQUE on
+/// owner+type+id+key+version).
+pub fn event_version(e: &ParsedEvent) -> String {
+    let canon = format!("{}|{}|{}", e.title, e.starts_at.map(|t| t.to_rfc3339()).unwrap_or_default(), e.ends_at.map(|t| t.to_rfc3339()).unwrap_or_default());
+    hex::encode(sha2::Sha256::digest(canon.as_bytes()))[..32].to_owned()
 }
 pub async fn store_events(pool: &PgPool, scope: &OwnerScope, source: &str, events: Vec<ParsedEvent>, raw: &str) -> Result<usize> {
     let raw: String = raw.chars().take(MAX_RAW_BYTES).collect();

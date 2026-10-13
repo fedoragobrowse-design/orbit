@@ -593,8 +593,17 @@ fn valid_triage_rule(name: &str, matcher: &Value, action: &Value) -> Result<(Str
     }
     let action = action.as_object().ok_or_else(|| Error::Validation("action must be an object".into()))?;
     for key in action.keys() {
-        if !matches!(key.as_str(), "label" | "summarize" | "draft_reply") {
+        if !matches!(key.as_str(), "label" | "summarize" | "draft_reply" | "priority") {
             return Err(Error::Validation(format!("unknown action key {key}")).into());
+        }
+    }
+    // Optional explicit priority (default 0): first matching rule wins in
+    // priority order, then created_at, then id. Plain integer 0..1000; no
+    // DDL — rides the existing action JSONB. Documented in CONNECTORS.md.
+    if let Some(p) = action.get("priority") {
+        let p = p.as_i64().ok_or_else(|| Error::Validation("priority must be an integer".into()))?;
+        if !(0..=1000).contains(&p) {
+            return Err(Error::Validation("priority must be 0..1000".into()).into());
         }
     }
     if let Some(label) = action.get("label") {
@@ -633,6 +642,13 @@ pub fn triage_matches(matcher: &Value, from: &str, subject: &str, topic: &str) -
         }
     }
     true
+}
+/// Explicit rule order key: `action.priority` (default 0). Pure helper for
+/// the ORDER BY COALESCE((action->>'priority')::int, 0), created_at, id
+/// rule evaluation order (see CONNECTORS.md triage section). Clamps garbage
+/// to 0 so a hand-edited row can never panic the sweep.
+pub fn rule_priority(action: &Value) -> i64 {
+    action.get("priority").and_then(Value::as_i64).filter(|p| (0..=1000).contains(p)).unwrap_or(0)
 }
 #[utoipa::path(get, path = "/api/v1/email/triage-rules", responses((status = 200, body = Value)))]
 pub async fn list_triage_rules(State(state): State<ApiState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {

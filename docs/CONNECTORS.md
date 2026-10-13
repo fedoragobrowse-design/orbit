@@ -32,7 +32,29 @@ least one row emit; no-op syncs (zero rows stored) write nothing.
 All four payloads satisfy `validate_event` via `source_reference`; migration
 `0042_connector_events.sql` extends the `events` type check (no new tables).
 Events land `UNTRUSTED_EXTERNAL`/`PRIVATE`, like email receipts.
-
+## Observation stream (step 7)
+Every sync path additionally records one versioned `SOURCE_CHANGED` event
+per source mutation through `crates/api/src/observations.rs`:
+`record_observation` writes the cache row + resume cursor + observation row +
+foundation outbox in ONE transaction — the cursor advances only with a
+committed observation, so a crash/replay re-reads from the last committed
+cursor and the ingest UNIQUE (`owner_id, source_type, source_id,
+external_key, source_version`) turns the replay into a silent no-op
+(`Ok(None)`). Sync writes one versioned event; replay writes zero.
+Email ingests inline in `sync_batch` (same tx as the message row);
+calendar/HA/GitHub/inbox call `record_observation` per item alongside the
+cache upsert. The due sweep emits `CALENDAR_DUE` / `REMINDER_DUE` (one per
+row, fire-key idempotent on `calendar-due:<id>` / `reminder-due:<id>`,
+existing CAS claim preserved). Migration `0043_os_observation.sql` owns the
+tables and extends the events CHECK with the three new types.
+## Triage rule order
+First matching enabled rule wins, evaluated in
+`ORDER BY COALESCE((action->>'priority')::int, 0), created_at, id` —
+explicit `priority` first, then creation order, then id. `priority` is an
+optional action key (integer `0..=1000`, default `0` when absent); no DDL.
+Example: `{"label": "vip", "priority": 10}` outranks a priority-0 rule even
+when created later. Out-of-range or non-integer values are rejected at rule
+create/update; hand-edited rows clamp to 0 in-process (never panic).
 ## Connector manifests
 
 `GET /api/v1/connectors/manifests` returns one manifest per built-in

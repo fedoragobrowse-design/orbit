@@ -1,4 +1,5 @@
 pub mod index;
+pub mod observation;
 pub mod transport;
 pub mod admin;
 pub mod update;

@@ -804,6 +804,7 @@ pub async fn seed_agent_tools(state: &ApiState) -> orbit_core::Result<()> {
     let catalog: Vec<orbit_core::ToolDescriptor> = orbit_tools::descriptors()
         .into_iter()
         .chain(orbit_memory::descriptors())
+        .chain(orbit_tools::catalog::gateway_descriptors())
         .collect();
     for owner in owners {
         for d in &catalog {

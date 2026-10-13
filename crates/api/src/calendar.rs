@@ -51,13 +51,29 @@ pub async fn sync_source(State(state): State<ApiState>, headers: HeaderMap, Path
     let row: Option<(String, Value)> = sqlx::query_as("SELECT name,configuration FROM calendar_sources WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).fetch_optional(&state.pool).await?;
     let (name, cfg) = row.ok_or(Error::NotFound)?;
     let src = orbit_calendar::CalendarSource { kind: cfg.get("kind").and_then(Value::as_str).unwrap_or("").into(), url: cfg.get("url").and_then(Value::as_str).unwrap_or("").into(), username: cfg.get("username").and_then(Value::as_str).map(str::to_owned), password: cfg.get("password").and_then(Value::as_str).map(str::to_owned) };
-    let out = orbit_calendar::sync_source(&state.pool, &a.scope, &name, &src).await?;
-    sqlx::query("UPDATE calendar_sources SET last_sync=now(),updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).execute(&state.pool).await?;
-    if out.get("stored").and_then(Value::as_i64).unwrap_or(0) > 0 {
-        let stored = out.get("stored").cloned().unwrap_or(json!(0));
-        crate::connectors::emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_CALENDAR_RECEIVED", &format!("calendar:{name}"), &format!("calendar-sync:{id}:{}", uuid::Uuid::new_v4()), json!({"source_id": id, "source": name, "stored": stored, "source_reference": format!("calendar:{name}")})).await?;
+    src.validate().map_err(ApiError::from)?;
+    let body = if src.kind == "ics" { orbit_calendar::fetch_ics(&src.url).await } else { orbit_calendar::fetch_caldav(&src).await }.map_err(ApiError::from)?;
+    let events = orbit_calendar::parse_ics(&body).map_err(ApiError::from)?;
+    let stored = orbit_calendar::store_events(&state.pool, &a.scope, &name, events.clone(), &body).await.map_err(ApiError::from)?;
+    // One versioned SOURCE_CHANGED event per VEVENT (content-hash version);
+    // replays write zero (UNIQUE owner+type+id+key+version). Cursor (opaque
+    // resume token) advances only with committed observations — here the
+    // feed URL, round-tripped, never parsed.
+    let mut observed = 0i64;
+    for e in &events {
+        let version = orbit_calendar::event_version(e);
+        if crate::observations::record_observation_with_cursor(&state.pool, &a.scope, &crate::observations::ObservationInput { source_type: "calendar".into(), source_id: name.clone(), version, external_key: e.uid.clone(), artifact_id: None, trust: "UNTRUSTED_EXTERNAL".into(), privacy: "PRIVATE".into(), observed_at: e.starts_at }, Some(&src.url)).await.map_err(ApiError::from)?.is_some() {
+            observed += 1;
+        }
     }
-    Ok(Json(out))
+    sqlx::query("UPDATE calendar_sources SET last_sync=now(),updated_at=now() WHERE owner_id=$1 AND id=$2").bind(a.scope.owner_id).bind(id).execute(&state.pool).await?;
+    // Legacy receipt kept alongside the observation stream (augment, not
+    // replace): fires only on a non-empty sync, as before.
+    if stored > 0 {
+        let stored_v = json!(stored);
+        crate::connectors::emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_CALENDAR_RECEIVED", &format!("calendar:{name}"), &format!("calendar-sync:{id}:{}", uuid::Uuid::new_v4()), json!({"source_id": id, "source": name, "stored": stored_v, "source_reference": format!("calendar:{name}")})).await?;
+    }
+    Ok(Json(json!({"source": name, "stored": stored, "observed": observed})))
 }
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct EventsQuery { pub from: Option<String>, pub to: Option<String>, pub limit: Option<i64> }

@@ -2134,11 +2134,13 @@ version = "1.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "hex",
  "orbit-core",
  "orbit-model-router",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tokio",
  "uuid",

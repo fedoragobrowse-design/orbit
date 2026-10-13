@@ -128,7 +128,22 @@ type ChatMsg = {
   sequence?: number;
 };
 type RunDelta = { id: number; task_id?: unknown; kind: string; payload: { text?: unknown; role?: unknown } };
-type RunSource = { kind: string; reference: string; trust?: unknown; preview?: unknown };
+type RunSource = { kind: string; reference: string; trust?: unknown; source_id?: unknown; source_version?: unknown; turn?: unknown; cited?: unknown; tombstone?: unknown; label?: unknown };
+function sourceHref(s: RunSource): string | null {
+  // Citation links resolve the exact pinned version the receipt recorded:
+  // memory detail, file range, mail ID, browser URL+snapshot. Targets that
+  // cannot deep-link (chat turns, agent revisions, skills) render as plain
+  // chips — deletion leaves a tombstone, never removes the receipt row.
+  const ref = s.reference || "";
+  const id = text(s.source_id);
+  if (s.kind === "memory" && id) return `/memory/${id}`;
+  if (s.kind === "file" && id) return `/connections/api?file=${encodeURIComponent(id)}`;
+  if (s.kind === "mail" && id) return `/connections/email`;
+  if (s.kind === "browser") return `/browser`;
+  if (ref.startsWith("message:")) return null;
+  if (ref.startsWith("agent:")) return null;
+  return null;
+}
 function SourceChips({ taskId }: { taskId: string }) {
   const runs = useQuery({
     queryKey: ["chat-sources", taskId],
@@ -139,14 +154,37 @@ function SourceChips({ taskId }: { taskId: string }) {
   if (!sources.length) return null;
   return (
     <p className="source-chips" aria-label="What this answer used">
-      {sources.map((s, i) => (
-        <span key={i} className="source-chip" title={text(s.preview)}>
-          {s.reference.startsWith("orbit-memory:") ? "Saved memory" : s.reference.startsWith("attachment:") ? "Attached file" : s.reference.startsWith("message:") ? "Your message" : s.kind || "Source"}
-          {text(s.trust) && text(s.trust) !== "OwnerAuthenticated" && text(s.trust) !== "OWNER_AUTHENTICATED" && (
-            <> · untrusted</>
-          )}
-        </span>
-      ))}
+      {sources.map((s, i) => {
+        const href = sourceHref(s);
+        const tombstone = s.tombstone === true;
+        const untrusted = text(s.trust) !== "" && text(s.trust) !== "OwnerAuthenticated" && text(s.trust) !== "OWNER_AUTHENTICATED" && text(s.trust) !== "System" && text(s.trust) !== "SYSTEM";
+        // Provided as context unless the model cites the pin; deleted pins
+        // keep a tombstone chip so the receipt stays auditable. The title
+        // names the exact pinned version the chip resolves.
+        const pin = text(s.source_version) !== "" ? `${s.reference} (version ${text(s.source_version)})` : s.reference;
+        const title = tombstone ? `Deleted — source removed, receipt kept (${pin})` : `${text(s.label) || (s.cited === true ? "Cited by model" : "Provided as context")} — ${pin}`;
+        const name =
+          s.kind === "memory" ? "Saved memory"
+          : s.kind === "file" ? "Attached file"
+          : s.kind === "chat" ? "Your message"
+          : s.kind === "mail" ? "Mail message"
+          : s.kind === "browser" ? "Browser snapshot"
+          : s.reference.startsWith("orbit-memory:") ? "Saved memory"
+          : s.reference.startsWith("attachment:") ? "Attached file"
+          : s.reference.startsWith("message:") ? "Your message"
+          : s.kind || "Source";
+        const inner = (
+          <>
+            {name}
+            {tombstone ? <> · deleted</> : untrusted ? <> · untrusted</> : null}
+          </>
+        );
+        return (
+          <span key={i} className="source-chip" title={title}>
+            {href && !tombstone ? <Link to={href}>{inner}</Link> : inner}
+          </span>
+        );
+      })}
     </p>
   );
 }

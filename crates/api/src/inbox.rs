@@ -8,6 +8,7 @@ use orbit_core::{ContextBlock, ContextKind, Error, PrivacyClass};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
+use sha2::Digest;
 const MAX_TITLE: usize = 256;
 const MAX_BODY: usize = 100_000;
 const MAX_SOURCE: usize = 128;
@@ -95,6 +96,7 @@ pub async fn import_inbox(State(state): State<ApiState>, headers: HeaderMap, Jso
         return Err(Error::Validation("too many inbox items in one import (200 max)".into()).into());
     }
     let mut imported = 0i64;
+    let mut observed = 0i64;
     let mut quarantined_count = 0i64;
     let mut errors = Vec::new();
     for (index, row) in input.items.iter().enumerate() {
@@ -108,13 +110,21 @@ pub async fn import_inbox(State(state): State<ApiState>, headers: HeaderMap, Jso
         if quarantined(&title, &body) {
             quarantined_count += 1;
         }
-        sqlx::query("INSERT INTO ai_inbox(id,owner_id,source,title,body) VALUES($1,$2,$3,$4,$5)").bind(Uuid::new_v4()).bind(a.scope.owner_id).bind(&source).bind(&title).bind(&body).execute(&state.pool).await?;
+        let item_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO ai_inbox(id,owner_id,source,title,body) VALUES($1,$2,$3,$4,$5)").bind(item_id).bind(a.scope.owner_id).bind(&source).bind(&title).bind(&body).execute(&state.pool).await?;
         imported += 1;
+        // Versioned observation per imported row: content-hash version over
+        // title+body, artifact = the ai_inbox row. Replay of the same
+        // content writes zero new observations (UNIQUE version guard).
+        let version = format!("{:x}", sha2::Sha256::digest(format!("{title}|{body}").as_bytes()));
+        if crate::observations::record_observation(&state.pool, &a.scope, "inbox", &source, &version, &item_id.to_string(), Some(item_id), "UNTRUSTED_EXTERNAL", "PRIVATE", None).await?.is_some() {
+            observed += 1;
+        }
     }
     if imported > 0 {
-        crate::connectors::emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_INBOX_RECEIVED", "inbox:import", &format!("inbox-import:{}", uuid::Uuid::new_v4()), json!({"imported": imported, "quarantined": quarantined_count, "source_reference": "inbox:import"})).await?;
+        crate::connectors::emit_connector_receipt(&state.pool, &a.scope, "CONNECTOR_INBOX_RECEIVED", "inbox:import", &format!("inbox-import:{}", uuid::Uuid::new_v4()), json!({"imported": imported, "observed": observed, "quarantined": quarantined_count, "source_reference": "inbox:import"})).await?;
     }
-    Ok(Json(json!({"imported": imported, "quarantined": quarantined_count, "skipped": errors.len(), "errors": errors})))
+    Ok(Json(json!({"imported": imported, "observed": observed, "quarantined": quarantined_count, "skipped": errors.len(), "errors": errors})))
 }
 #[derive(utoipa::OpenApi)]
 #[openapi(paths(list_inbox, handle_item, import_inbox))]

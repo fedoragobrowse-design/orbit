@@ -404,6 +404,64 @@ impl orbit_agent_backend::RunEventSink for PgEventSink {
     }
 }
 
+/// Bounded-context-stream receipts (step 7): one `model_context_sources` row
+/// per CONTEXT block sent to the model, keyed (owner, task, turn, type, id,
+/// version). The `source_reference` string maps to (source_type, source_id,
+/// source_version) with the exact-version pin in `locator`; trust mirrors the
+/// block's trust level. Best-effort like `PgEventSink`: receipt failure never
+/// fails the model step. Deletion leaves tombstone rows behind (no DELETE
+/// here — forget paths tombstone instead).
+fn receipt_key(source_reference: &str) -> Option<(String, String, String, String)> {
+    // Split scheme on the first colon only: locators may carry URLs with
+    // their own colons (`https://…`), which splitn(3) would truncate.
+    let (scheme, rest) = source_reference.split_once(':').map(|(s, r)| (s.trim(), r.trim()))?;
+    if scheme.is_empty() || rest.is_empty() {
+        return None;
+    }
+    // Exact-version pins: `orbit-memory:<id>:<version>`, `attachment:<id>`,
+    // `message:<id>`, `email:<account>:<id>`, `skill:<name>`,
+    // `marketplace:<name>`, `agent:<id>:<rev>`, `artifact:<id>`.
+    let (source_type, source_id, source_version) = match scheme {
+        "orbit-memory" => {
+            let mut tail = rest.splitn(2, ':');
+            let id = tail.next().unwrap_or("").trim().to_string();
+            let version = tail.next().unwrap_or("").trim().to_string();
+            if id.is_empty() || version.is_empty() {
+                return None;
+            }
+            ("memory".to_string(), id, version)
+        }
+        "attachment" => ("file".to_string(), rest.to_string(), String::new()),
+        "message" => ("chat".to_string(), rest.to_string(), String::new()),
+        "agent" => {
+            let mut tail = rest.splitn(2, ':');
+            let id = tail.next().unwrap_or("").trim().to_string();
+            let rev = tail.next().unwrap_or("").trim().to_string();
+            ("agent".to_string(), id, rev)
+        }
+        "email" => {
+            let mut tail = rest.splitn(2, ':');
+            let account = tail.next().unwrap_or("").trim().to_string();
+            let id = tail.next().unwrap_or("").trim().to_string();
+            if account.is_empty() || id.is_empty() {
+                return None;
+            }
+            ("mail".to_string(), format!("{account}:{id}"), String::new())
+        }
+        "artifact" => ("file".to_string(), rest.to_string(), String::new()),
+        "skill" | "marketplace" => (scheme.to_string(), rest.to_string(), String::new()),
+        _ => (scheme.to_string(), rest.to_string(), String::new()),
+    };
+    // The locator is the exact-version pin the chip resolves: full reference.
+    Some((source_type, source_id, source_version, source_reference.to_string()))
+}
+fn trust_name(trust: TrustLevel) -> &'static str {
+    match trust {
+        TrustLevel::OwnerAuthenticated => "OWNER_AUTHENTICATED",
+        TrustLevel::System => "SYSTEM",
+        TrustLevel::UntrustedExternal => "UNTRUSTED_EXTERNAL",
+    }
+}
 /// Tool descriptors the agent may use, filtered to its allow-list. Shared by
 /// the CONTEXT arm (alias registration) and the backend adapter.
 async fn permitted_tools(scope: &OwnerScope, dispatcher: &dyn Dispatcher, agent: &AgentDefinition) -> Result<Vec<orbit_core::ToolDescriptor>> {
@@ -630,6 +688,15 @@ async fn run(
                 };
                 let mut tx = lock(pool, scope, task, fence).await?;
                 sqlx::query("UPDATE agent_runs SET context=$3,chat=$4,model_retries=0 WHERE owner_id=$1 AND task_id=$2").bind(scope.owner_id).bind(task).bind(json!(context)).bind(json!(chat)).execute(&mut *tx).await?;
+                // Durable bounded-context receipts: persist one
+                // `model_context_sources` row per CONTEXT block before the
+                // model request, bound to this turn. Upsert keeps retries
+                // idempotent; labels read "Provided as context unless model cites".
+                for b in &context {
+                    if let Some((source_type, source_id, source_version, locator)) = receipt_key(&b.source_reference) {
+                        let _ = sqlx::query("INSERT INTO model_context_sources(owner_id,task_id,turn,source_type,source_id,source_version,locator,trust_level) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(owner_id,task_id,turn,source_type,source_id,source_version) DO UPDATE SET locator=EXCLUDED.locator,trust_level=EXCLUDED.trust_level").bind(scope.owner_id).bind(task).bind(turn).bind(&source_type).bind(&source_id).bind(&source_version).bind(&locator).bind(trust_name(b.trust_level)).execute(&mut *tx).await;
+                    }
+                }
                 tx.commit().await?;
                 phase(pool, scope, task, fence, "MODEL").await?;
             }

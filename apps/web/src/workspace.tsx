@@ -785,7 +785,7 @@ function ToolRow({ row }: { row: RecordData }) {
     </li>
   );
 }
-type RunSourceView = { kind: string; reference: string; trust?: unknown; preview?: unknown };
+type RunSourceView = { kind: string; reference: string; trust?: unknown; source_id?: unknown; source_version?: unknown; turn?: unknown; cited?: unknown; tombstone?: unknown; label?: unknown };
 function runSourcesOf(r: TaskRun): RunSourceView[] {
   const v = r.sources;
   return Array.isArray(v) ? (v as RunSourceView[]) : [];
@@ -793,22 +793,45 @@ function runSourcesOf(r: TaskRun): RunSourceView[] {
 function RunSources({ items }: { items: TaskRun[] }) {
   const all = items.flatMap(runSourcesOf).slice(0, 8);
   if (!all.length) return null;
-  const name = (s: RunSourceView) =>
-    s.reference.startsWith("orbit-memory:")
-      ? "Saved memory"
-      : s.reference.startsWith("attachment:")
-        ? "Attached file"
-        : s.kind || "Source";
   return (
     <>
       <h3>What the answer used</h3>
       <ul className="memory-files">
-        {all.map((s, i) => (
-          <li key={i}>
-            <span className="notes-item-title">{name(s)}</span>
-            <span className="notes-item-meta">{text(s.preview)}</span>
-          </li>
-        ))}
+        {all.map((s, i) => {
+          const ref = s.reference || "";
+          const id = text(s.source_id);
+          const href =
+            s.kind === "memory" && id ? `/memory/${id}`
+            : s.kind === "file" && id ? `/connections/api?file=${encodeURIComponent(id)}`
+            : s.kind === "mail" && id ? `/connections/email`
+            : s.kind === "browser" ? `/browser`
+            : null;
+          const tombstone = s.tombstone === true;
+          const untrusted = text(s.trust) !== "" && text(s.trust) !== "OwnerAuthenticated" && text(s.trust) !== "OWNER_AUTHENTICATED" && text(s.trust) !== "System" && text(s.trust) !== "SYSTEM";
+          const name =
+            s.kind === "memory" ? "Saved memory"
+            : s.kind === "file" ? "Attached file"
+            : s.kind === "chat" ? "Your message"
+            : s.kind === "mail" ? "Mail message"
+            : s.kind === "browser" ? "Browser snapshot"
+            : ref.startsWith("orbit-memory:") ? "Saved memory"
+            : ref.startsWith("attachment:") ? "Attached file"
+            : s.kind || "Source";
+          // Receipt label: Provided as context unless the model cited the
+          // pin; deletion leaves a tombstone row, never removes the receipt.
+          // The state names the exact pinned version the link resolves.
+          const pin = text(s.source_version) !== "" ? `${s.reference} (version ${text(s.source_version)})` : s.reference;
+          const state = `${tombstone ? "Deleted — source removed, receipt kept" : text(s.label) || (s.cited === true ? "Cited by model" : "Provided as context")} — ${pin}`;
+          return (
+            <li key={i}>
+              <span className="notes-item-title">
+                {href && !tombstone ? <Link to={href}>{name}</Link> : name}
+                {tombstone ? " · deleted" : untrusted ? " · untrusted" : ""}
+              </span>
+              <span className="notes-item-meta">{state}{text(s.turn) !== "" ? ` · turn ${text(s.turn)}` : ""}</span>
+            </li>
+          );
+        })}
       </ul>
     </>
   );
