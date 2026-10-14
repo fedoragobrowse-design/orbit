@@ -46,13 +46,25 @@ ALTER TABLE agent_questions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 ALTER TABLE agent_questions ADD COLUMN IF NOT EXISTS answer_event_id BIGINT;
 -- Ordered conversation timeline: identity cursor backfilled in
 -- (created_at, id) order so existing rows keep deterministic positions.
+-- Guarded: on a partially applied database the column may already be
+-- GENERATED ALWAYS (identity columns reject direct UPDATE), in which
+-- case the original backfill already ran and there is nothing to do.
 ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS sequence BIGINT;
-WITH ordered AS (
-  SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) AS rn FROM chat_messages
-)
-UPDATE chat_messages m SET sequence = ordered.rn FROM ordered WHERE ordered.id = m.id AND m.sequence IS NULL;
-ALTER TABLE chat_messages ALTER COLUMN sequence SET NOT NULL;
-ALTER TABLE chat_messages ALTER COLUMN sequence ADD GENERATED ALWAYS AS IDENTITY;
-SELECT setval(pg_get_serial_sequence('chat_messages', 'sequence'), (SELECT GREATEST(COALESCE(max(sequence), 0), 1) FROM chat_messages), false);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'chat_messages' AND column_name = 'sequence'
+      AND is_identity = 'YES'
+  ) THEN
+    WITH ordered AS (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) AS rn FROM chat_messages
+    )
+    UPDATE chat_messages m SET sequence = ordered.rn FROM ordered WHERE ordered.id = m.id AND m.sequence IS NULL;
+    ALTER TABLE chat_messages ALTER COLUMN sequence SET NOT NULL;
+    ALTER TABLE chat_messages ALTER COLUMN sequence ADD GENERATED ALWAYS AS IDENTITY;
+    PERFORM setval(pg_get_serial_sequence('chat_messages', 'sequence'), (SELECT GREATEST(COALESCE(max(sequence), 0), 1) FROM chat_messages), false);
+  END IF;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS chat_messages_sequence_unique ON chat_messages(sequence);
 CREATE INDEX IF NOT EXISTS chat_messages_conversation_sequence ON chat_messages(owner_id, conversation_id, sequence);
