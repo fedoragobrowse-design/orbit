@@ -289,8 +289,8 @@ export function App() {
             <Route path="/automations" element={<Automations />} />
             <Route path="/attention" element={<Attention />} />
             <Route path="/models" element={<Models />} />
+            <Route path="/files" element={<Files />} />
             <Route path="/marketplace" element={<Marketplace />} />
-            <Route path="/connections/*" element={<Connections />} />
             <Route path="/calendar" element={<Navigate to="/connections/calendars" replace />} />
             <Route path="/email" element={<Navigate to="/connections/email" replace />} />
             <Route path="/computers" element={<Computers />} />
