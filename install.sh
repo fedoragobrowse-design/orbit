@@ -11,8 +11,8 @@ READY_TIMEOUT="${ORBIT_READY_TIMEOUT:-180}"
 COMPOSE_FILE="${ORBIT_COMPOSE_FILE:-compose.yaml}"
 ENV_FILE="${ORBIT_ENV_FILE:-.env}"
 CRED_IMPORT="${ORBIT_CREDENTIALS_IMPORT:-credentials.import}"
-RELEASE_PUB="untrusted comment: orbit release v1.0 pubkey
-RWSzBSQjWJVlUbMFJCNYlWVRfuLTNHh6iajfDCWrIfiZxn0aGXdva0y5"
+RELEASE_PUB="untrusted comment: orbit release v2 key
+RWTzPRz2nzU7tNi1f+FM4A1lbUYpgS59itGwa1lqNcQj+d3DyMVbE2bF"
 usage() { cat <<'USAGE'
 Usage: install.sh (--version vX.Y.Z | --latest) [--yes] [--dry-run] [--upgrade] [--uninstall] [--with-keys] [--with-oauth google[,outlook][,github]] [--profile pi|full]
   --version vX.Y.Z   pinned release tag (or set GITHUB_REF / ORBIT_VERSION).
