@@ -2326,6 +2326,7 @@ dependencies = [
  "futures-util",
  "jsonschema",
  "orbit-core",
+ "orbit-risk",
  "orbit-secrets",
  "reqwest",
  "serde",

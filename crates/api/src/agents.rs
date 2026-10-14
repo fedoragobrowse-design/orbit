@@ -99,6 +99,34 @@ impl AgentDispatcher {
             .collect(),
         )
     }
+    /// Floor-first classification with Jev advisory escalation.
+    /// Sync floor always applies; if the owner configured a Jev provider
+    /// row, `JevAdvisor::advise_async` may ONLY escalate (never lower).
+    /// Any Jev failure degrades to the floor silently.
+    pub async fn classify_with_jev(
+        &self,
+        scope: &orbit_core::OwnerScope,
+        name: &str,
+        args: &Value,
+        descriptor: &orbit_core::ToolDescriptor,
+    ) -> Result<orbit_core::RiskLevel, Error> {
+        let ctx = orbit_risk::ActionContext { optional_escalation: None };
+        let action = orbit_risk::ProposedAction { tool_name: name.into(), arguments: args.clone() };
+        let floor = orbit_risk::RiskClassifier::classify_action(&action, descriptor, &ctx)?.level;
+        let settings: Value = sqlx::query_scalar("SELECT value FROM settings WHERE owner_id=$1")
+            .bind(scope.owner_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .unwrap_or(serde_json::json!({}));
+        let model = settings.get("decision_model").and_then(|m| m.as_str()).filter(|m| !m.is_empty()).map(|m| m.to_string());
+        let advisor = orbit_model_router::jev::JevAdvisor::new(self.pool.clone(), self.key_dir.clone(), model);
+        if let Some(escalation) = advisor.advise_async(scope, &action, &ctx).await {
+            if escalation.level > floor {
+                return Ok(escalation.level);
+            }
+        }
+        Ok(floor)
+    }
     /// Policy stub: admission is registry presence plus the agent allow-list and
     /// schema validity. Unadmitted tools deny; admitted ones get the owner policy
     /// decision with no pre-M4 grants bypass.
@@ -110,17 +138,7 @@ impl AgentDispatcher {
         args: &Value,
     ) -> Result<(orbit_core::ToolDescriptor, Value, orbit_core::RiskLevel), Error> {
         let descriptor = self.admission_in_pool(scope, agent, name, args).await?;
-        let risk = orbit_risk::RiskClassifier::classify_action(
-            &orbit_risk::ProposedAction {
-                tool_name: name.into(),
-                arguments: args.clone(),
-            },
-            &descriptor,
-            &orbit_risk::ActionContext {
-                optional_escalation: None,
-            },
-        )?
-        .level;
+        let risk = self.classify_with_jev(scope, name, args, &descriptor).await?;
         // Same Jev destructive-bash verdict the backends run on runner commands:
         // any tool proposal carrying command text is Denied on Block, before policy.
         if let Some(argv) = command_argv(args) {
@@ -343,16 +361,7 @@ impl orbit_agent_runtime::Dispatcher for AgentDispatcher {
                 let descriptor_value = serde_json::to_value(&descriptor)?;
                 let digest =
                     orbit_computer_node_protocol::sha256(&serde_json::to_vec(&descriptor)?);
-                let risk = orbit_risk::RiskClassifier::classify_action(
-                    &orbit_risk::ProposedAction {
-                        tool_name: name.into(),
-                        arguments: args.clone(),
-                    },
-                    &descriptor,
-                    &orbit_risk::ActionContext {
-                        optional_escalation: None,
-                    },
-                )?;
+                let risk = self.classify_with_jev(scope, name, &args, &descriptor).await?;
                 let state = if is_registry_routable(name) {
                     "PROPOSED"
                 } else {
@@ -679,12 +688,7 @@ impl AgentDispatcher {
         let descriptor: orbit_core::ToolDescriptor =
             serde_json::from_value(descriptor).map_err(|_| Error::Forbidden)?;
         orbit_tools::validate_value(&descriptor.input_schema, &args)?;
-        let risk = orbit_risk::RiskClassifier::classify_action(
-            &orbit_risk::ProposedAction { tool_name: name.into(), arguments: args.clone() },
-            &descriptor,
-            &orbit_risk::ActionContext { optional_escalation: None },
-        )?
-        .level;
+        let risk = self.classify_with_jev(scope, name, &args, &descriptor).await?;
         if let Some(argv) = command_argv(&args) {
             if orbit_sandbox_dispatch::decide_with_threshold(&argv, 0.8).verdict
                 == orbit_sandbox_dispatch::Verdict::Block

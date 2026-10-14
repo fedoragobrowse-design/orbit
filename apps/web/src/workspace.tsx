@@ -1103,6 +1103,7 @@ type SettingsData = {
   sandbox_enabled: boolean;
   agent_may_change_settings: boolean;
   agent_may_manage_mcp: boolean;
+  decision_model: string;
   revision: number;
 };
 const HIDEABLE_TABS: [string, string, string][] = FAMILIES.flatMap((f) =>
@@ -1319,6 +1320,21 @@ export function Settings() {
             Chat: only answers you. Observe: watches and suggests, changes
             nothing. Assist: can act but asks first. Trusted automation:
             runs approved routines on its own.
+          </p>
+          <Input
+            label="Safety classifier model (optional)"
+            value={settings.decision_model ?? ""}
+            placeholder="e.g. jev-decision-v1 (blank = built-in rules only)"
+            maxLength={120}
+            onChange={(e) =>
+              setSettings({ ...settings, decision_model: e.target.value })
+            }
+          />
+          <p className="muted">
+            A second opinion on risky actions. Add a Jev provider under
+            Models first, then name its decision model here. It can only
+            make Orbit stricter, never looser — and if it is unreachable,
+            the built-in rules decide alone.
           </p>
           <label className="check">
             <input

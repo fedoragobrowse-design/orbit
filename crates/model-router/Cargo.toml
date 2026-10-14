@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 orbit-core = { path = "../core" }
+orbit-risk = { path = "../risk" }
 orbit-secrets = { path = "../secrets" }
 async-trait.workspace = true
 tokio.workspace = true

@@ -16,6 +16,7 @@ const PROVIDER_PRESETS: { kind: string; label: string; origin: string; local: bo
   { kind: "OPENAI_COMPATIBLE", label: "DeepSeek", origin: "https://api.deepseek.com/v1", local: false },
   { kind: "OPENAI_COMPATIBLE", label: "xAI", origin: "https://api.x.ai/v1", local: false },
   { kind: "GEMINI", label: "Gemini", origin: "https://generativelanguage.googleapis.com", local: false },
+  { kind: "JEV", label: "Jev (safety classifier, decision-only)", origin: "https://jevtypesafeai.com", local: false },
   { kind: "OPENAI_COMPATIBLE", label: "Custom (OpenAI-compatible)", origin: "https://", local: false },
 ];
 

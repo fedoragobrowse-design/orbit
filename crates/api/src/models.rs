@@ -160,7 +160,7 @@ fn parse_kind(kind: &str) -> Result<ProviderKind, Error> {
     serde_json::from_value::<ProviderKind>(Value::String(normalize_enum_token(kind))).map_err(
         |_| {
             Error::Validation(
-                "unknown provider kind; expected OLLAMA, OPENAI_COMPATIBLE, ANTHROPIC or GEMINI"
+                "unknown provider kind; expected OLLAMA, OPENAI_COMPATIBLE, ANTHROPIC, GEMINI or JEV"
                     .into(),
             )
         },
@@ -547,6 +547,9 @@ pub async fn create_provider(
     let local = input.local.unwrap_or(false);
     let admitted = parse_admitted(input.admitted_addresses.unwrap_or_default())?;
     validate_origin(&input.origin, local, &admitted)?;
+    if kind == ProviderKind::Jev && input.origin.trim_end_matches('/').to_ascii_lowercase() != "https://jevtypesafeai.com" {
+        return Err(Error::Validation("JEV providers must use origin https://jevtypesafeai.com".into()).into());
+    }
     let credential_kind = parse_credential_kind(input.credential_kind)?;
     let rerank_path = validate_rerank_path(input.rerank_path)?;
     let enabled = input.enabled.unwrap_or(true);

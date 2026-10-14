@@ -1,4 +1,5 @@
 pub mod endpoint;
+pub mod jev;
 pub mod provider;
 mod types;
 use orbit_core::{ContextBlock, Error, ModelRole, OwnerScope, PrivacyClass, Result};

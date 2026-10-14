@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 #[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="SCREAMING_SNAKE_CASE")]
-pub enum ProviderKind { Ollama,OpenaiCompatible,Anthropic,Gemini }
+pub enum ProviderKind { Ollama,OpenaiCompatible,Anthropic,Gemini,Jev }
 #[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq,Default)]
 #[serde(rename_all="SCREAMING_SNAKE_CASE")]
 pub enum CredentialKind { #[default] ApiKey,Oauth }

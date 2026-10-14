@@ -292,7 +292,7 @@ export function App() {
             <Route path="/files" element={<Files />} />
             <Route path="/marketplace" element={<Marketplace />} />
             <Route path="/calendar" element={<Navigate to="/connections/calendars" replace />} />
-            <Route path="/email" element={<Navigate to="/connections/email" replace />} />
+            <Route path="/connections/*" element={<Connections />} />
             <Route path="/computers" element={<Computers />} />
             <Route path="/browser" element={<BrowserPage />} />
             <Route path="/terminal" element={<TerminalPage />} />

@@ -459,7 +459,7 @@ async fn submit_mutation(
     if orbit_core::ContextBlock::looks_like_injection(&args.to_string()) {
         return Err(Error::Forbidden);
     }
-    let risk = orbit_risk::RiskClassifier::classify_action(
+    let floor = orbit_risk::RiskClassifier::classify_action(
         &orbit_risk::ProposedAction {
             tool_name: name.into(),
             arguments: args.clone(),
@@ -469,6 +469,14 @@ async fn submit_mutation(
             optional_escalation: None,
         },
     )?;
+    // Jev advisory escalation (floor kept on any failure).
+    let settings: Value = sqlx::query_scalar("SELECT value FROM settings WHERE owner_id=$1").bind(scope.owner_id).fetch_optional(&state.pool).await?.unwrap_or(serde_json::json!({}));
+    let model = settings.get("decision_model").and_then(|m| m.as_str()).filter(|m| !m.is_empty()).map(|m| m.to_string());
+    let advisor = orbit_model_router::jev::JevAdvisor::new(state.pool.clone(), state.key_dir.clone(), model);
+    let risk = match advisor.advise_async(scope, &orbit_risk::ProposedAction { tool_name: name.into(), arguments: args.clone() }, &orbit_risk::ActionContext { optional_escalation: None }).await {
+        Some(e) if e.level > floor.level => e,
+        _ => floor,
+    };
     let decision = load_policy_decision(&state.pool, scope, name, &args, descriptor, risk.level).await?;
     if decision.get("denied").and_then(Value::as_bool).unwrap_or(true) {
         return Err(Error::Forbidden);
