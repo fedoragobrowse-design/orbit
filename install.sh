@@ -51,7 +51,7 @@ write_import() { if [ "$STAGED" -eq 0 ]; then return 0; fi; umask 077; printf '{
 print_import_help() { if [ "$STAGED" -eq 0 ]; then return 0; fi; cat <<HELP
 post-install credential import (values stay in ${CRED_IMPORT}; commands below carry names only):
   # after owner setup + login, import each staged entry (credential write-only), then delete ${CRED_IMPORT}:
-  curl -sS -X POST http://127.0.0.1:8080/api/v1/providers -H 'Content-Type: application/json' --data '{"name":"<staged-name>","kind":"<OPENAI_COMPATIBLE|ANTHROPIC|GEMINI>","origin":"<staged-origin>","credential":"<value-from-import>"}'
+  curl -sS -X POST http://127.0.0.1:8080/api/v1/providers -H 'Content-Type: application/json' --data '{"name":"<staged-name>","kind":"<OPENAI_COMPATIBLE|ANTHROPIC|GEMINI|JEV>","origin":"<staged-origin>","credential":"<value-from-import>"}'
   # oauth clients take client-id/client-secret per connector (google, outlook, github); e.g.:
   curl -sS -X PUT http://127.0.0.1:8080/api/v1/oauth/clients/<google|outlook|github> -H 'Content-Type: application/json' --data '{"client_id":"<id>","client_secret":"<secret>"}'
   # the app shows oauth connectors as "configured, pending verification" until verified; never fake green.

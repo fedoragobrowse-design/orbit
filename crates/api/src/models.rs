@@ -678,6 +678,11 @@ pub async fn update_provider(
     if let Some(enabled) = input.enabled {
         config.enabled = enabled;
     }
+    // JEV pin (same as create): kind==Jev requires the Jev origin and vice versa.
+    let jev_origin = config.origin.trim_end_matches('/').to_ascii_lowercase() == "https://jevtypesafeai.com";
+    if (config.kind == ProviderKind::Jev) != jev_origin {
+        return Err(Error::Validation("JEV providers must use origin https://jevtypesafeai.com, and that origin is decision-only (kind JEV)".into()).into());
+    }
     if let Some(secret) = input.credential.as_deref() {
         validate_credential(secret)?;
         let store = SecretStore::open(state.pool.clone(), &state.key_dir).await?;
