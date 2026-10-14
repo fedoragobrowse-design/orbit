@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.0 — 2026-10-14 — Agentic OS: safety brain, live browser/terminal, workspace
+
+- Jev safety classifier: `JevAdvisor` in model-router calls hosted
+  `POST /api/v1/agent/risk` (allow/confirm/block + score + categories),
+  advisory-only — escalates the deterministic floor, never lowers it.
+  Outage/unconfigured/402 degrades to built-in rules silently. New
+  `JEV` provider kind (origin pinned to jevtypesafeai.com on create
+  and update), `decision_model` settings key + Settings UI, wired
+  into all 4 production classify sites (agents admission/propose/
+  execute, MCP dispatch).
+- Governed execution contract: `ExecutorRegistry` routes every tool;
+  `WAITING_FOR_INPUT` park/resume for ask_owner; worker split
+  (housekeeping 1s, task pump max 2); live OMP/Claude backends with
+  usage receipts; streaming timeline (sequence cursor, SSE replay).
+- Workspace filesystem: metadata/version/mount tables, 12 owner APIs,
+  node mounts, tools, CAS staging diff-commit.
+- Real shell + terminal: execution-host PTY service, sessions API,
+  AIec/Unsandboxed routing, xterm UI.
+- Managed browser: browser-host + broker loopback guard, sessions API,
+  live view, protocol bump.
+- MCP both directions: StreamableHTTP server, hybrid catalog,
+  connector events, skills loading.
+- Observation + proactive: versioned stream, node watcher, citation
+  receipts, desktop opt-in, per-case rules (OFF/SUGGEST/ASK/AUTO),
+  Attention inbox.
+- Fixes: email redirect, Files route mount, bookworm ALSA package,
+  browser event kinds, PATCH origin pin.
+
 ## Unreleased — Managed browser host + brokered network modes
 
 - Managed browser: `apps/browser-host` (Node 24, pinned Playwright Chromium 1.55.0) on a private Unix socket — launch/context/page ops, JPEG frames max 2fps only while a viewer/snapshot subscriber exists, URL/loading/title/nav events, cookie/profile bytes returned raw for the caller to seal as 30d artifacts, password values never echoed. `deploy/docker/browser-host.Dockerfile` (chromium deps, amd64+arm64, no ports/host mounts) + compose `browser-host` block (private net, socket volume, health probe); `BROWSER_HOST_TOKEN_SECRET` minted by `install.sh`.
