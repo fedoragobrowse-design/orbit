@@ -60,7 +60,7 @@ export const FAMILIES = [
       ["/contacts", "Contacts", Contact],
       ["/bookmarks", "Bookmarks", Bookmark],
       ["/clips", "Clips", Scissors],
-      ["/files", "Files", Folder],
+      ["/connections/files", "Files", Folder],
       ["/memory", "Memory", BookOpen],
     ],
   },
